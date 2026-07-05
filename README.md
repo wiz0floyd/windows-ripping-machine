@@ -1,4 +1,4 @@
-# wslc-arm — Windows-Native Automatic Ripping Machine
+# Windows-Native Automatic Ripping Machine
 
 A native Windows replacement for the Linux Automatic Ripping Machine: insert a disc → rips automatically → results land on your NAS, tray ejects, you're notified. Optional stage 2 upscales DVD rips using AI (Real-ESRGAN on your GPU).
 
