@@ -1,0 +1,3 @@
+MSG:1005,0,1,"Using direct disc access mode","%1",""
+MSG:5021,516,1,"Your registration key has expired. Please visit MakeMKV forum to obtain a new key.","%1",""
+MSG:5010,0,1,"AACS decrypt failed, missing key","%1",""

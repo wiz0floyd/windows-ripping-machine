@@ -1,0 +1,23 @@
+{
+  "page": 1,
+  "results": [
+    {
+      "id": 11,
+      "title": "Star Wars",
+      "original_title": "Star Wars",
+      "release_date": "1977-05-25",
+      "popularity": 82.512,
+      "vote_average": 8.2
+    },
+    {
+      "id": 100001,
+      "title": "Star Wars: A Musical Parody",
+      "original_title": "Star Wars: A Musical Parody",
+      "release_date": "2013-01-01",
+      "popularity": 1.203,
+      "vote_average": 4.1
+    }
+  ],
+  "total_pages": 1,
+  "total_results": 2
+}

@@ -1,0 +1,173 @@
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+BeforeAll {
+    # Dot-source only: setup.ps1's entry-point block is guarded on
+    # $MyInvocation.InvocationName -ne '.', so this never installs software,
+    # writes config, or touches Scheduled Tasks.
+    . (Join-Path $PSScriptRoot '..' 'setup.ps1')
+}
+
+Describe 'Test-WingetPackageInstalled' {
+    It 'returns true when winget list finds the id and exits 0' {
+        Mock winget {
+            $global:LASTEXITCODE = 0
+            'Name     Id                   Version'
+            'MakeMKV  GuinpinSoft.MakeMKV  1.17.2'
+        }
+
+        Test-WingetPackageInstalled -Id 'GuinpinSoft.MakeMKV' | Should -BeTrue
+    }
+
+    It 'returns false when winget list does not find the id' {
+        Mock winget {
+            $global:LASTEXITCODE = 0
+            'No installed package found matching input criteria.'
+        }
+
+        Test-WingetPackageInstalled -Id 'GuinpinSoft.MakeMKV' | Should -BeFalse
+    }
+
+    It 'returns false when winget exits non-zero' {
+        Mock winget {
+            $global:LASTEXITCODE = 1
+        }
+
+        Test-WingetPackageInstalled -Id 'GuinpinSoft.MakeMKV' | Should -BeFalse
+    }
+}
+
+Describe 'Install-WingetPackage' {
+    It 'skips installation when already installed' {
+        Mock Test-WingetPackageInstalled { $true }
+        Mock winget { }
+
+        Install-WingetPackage -Id 'GuinpinSoft.MakeMKV' -DisplayName 'MakeMKV'
+
+        Should -Invoke Test-WingetPackageInstalled -Times 1
+    }
+
+    It 'invokes winget install when not already installed' {
+        Mock Test-WingetPackageInstalled { $false }
+        Mock winget { $global:LASTEXITCODE = 0 }
+
+        Install-WingetPackage -Id 'enzo1982.freac' -DisplayName 'fre:ac'
+
+        Should -Invoke Test-WingetPackageInstalled -Times 1
+        Should -Invoke winget -Times 1
+    }
+}
+
+Describe 'Initialize-ArmDirectories' {
+    It 'creates missing directories and leaves existing ones alone' {
+        $root = Join-Path $TestDrive (New-Guid)
+        $existing = Join-Path $root 'already-there'
+        New-Item -ItemType Directory -Force -Path $existing | Out-Null
+
+        Initialize-ArmDirectories -Paths @{
+            StagingDir      = Join-Path $root 'staging'
+            UpscaleQueueDir = $existing
+            LogDir          = Join-Path $root 'logs'
+        }
+
+        Test-Path (Join-Path $root 'staging') | Should -BeTrue
+        Test-Path (Join-Path $root 'logs') | Should -BeTrue
+        Test-Path $existing | Should -BeTrue
+    }
+
+    It 'is idempotent when run twice' {
+        $root = Join-Path $TestDrive (New-Guid)
+        $paths = @{ StagingDir = Join-Path $root 'a'; UpscaleQueueDir = Join-Path $root 'b'; LogDir = Join-Path $root 'c' }
+
+        { Initialize-ArmDirectories -Paths $paths } | Should -Not -Throw
+        { Initialize-ArmDirectories -Paths $paths } | Should -Not -Throw
+        Test-Path $paths.StagingDir | Should -BeTrue
+    }
+}
+
+Describe 'New-ArmConfigFile' {
+    BeforeAll {
+        $script:ExamplePath = Join-Path $PSScriptRoot '..' 'config' 'config.example.psd1'
+    }
+
+    It 'copies the example verbatim with -NonInteractive' {
+        $out = Join-Path $TestDrive "$(New-Guid).psd1"
+        New-ArmConfigFile -ExamplePath $script:ExamplePath -OutputPath $out -NonInteractive
+
+        $config = Import-PowerShellDataFile -Path $out
+        $config.NasVideoPath | Should -Be '\\nas\media\import\movies'
+    }
+
+    It 'substitutes supplied values without prompting when all params are given' {
+        $out = Join-Path $TestDrive "$(New-Guid).psd1"
+        New-ArmConfigFile -ExamplePath $script:ExamplePath -OutputPath $out `
+            -NasVideoPath '\\myserver\movies' -NasMusicPath '\\myserver\music' `
+            -TmdbApiKey 'abc123' -HaWebhookUrl 'http://ha.local/hook'
+
+        $config = Import-PowerShellDataFile -Path $out
+        $config.NasVideoPath | Should -Be '\\myserver\movies'
+        $config.NasMusicPath | Should -Be '\\myserver\music'
+        $config.TmdbApiKey | Should -Be 'abc123'
+        $config.HaWebhookUrl | Should -Be 'http://ha.local/hook'
+        # Untouched keys survive the substitution.
+        $config.StagingDir | Should -Be 'C:\rips\staging'
+    }
+
+    It 'accepts explicit blank TmdbApiKey/HaWebhookUrl without prompting' {
+        $out = Join-Path $TestDrive "$(New-Guid).psd1"
+        New-ArmConfigFile -ExamplePath $script:ExamplePath -OutputPath $out `
+            -NasVideoPath '\\s\v' -NasMusicPath '\\s\m' -TmdbApiKey '' -HaWebhookUrl ''
+
+        $config = Import-PowerShellDataFile -Path $out
+        $config.TmdbApiKey | Should -Be ''
+        $config.HaWebhookUrl | Should -Be ''
+    }
+}
+
+Describe 'Register-ArmScheduledTask / Unregister-ArmScheduledTask' {
+    It 'skips registration when the task already exists' {
+        Mock Get-ScheduledTask { [pscustomobject]@{ TaskName = 'wslc-arm-watcher' } }
+        Mock New-ScheduledTaskAction { }
+        Mock Register-ScheduledTask { }
+
+        Register-ArmScheduledTask -TaskName 'wslc-arm-watcher' -ScriptPath 'C:\dev\src\DiscWatcher.ps1'
+
+        Should -Invoke Register-ScheduledTask -Times 0
+    }
+
+    It 'registers a hidden at-logon task when absent' {
+        # New-Scheduled* cmdlets are pure, side-effect-free object constructors
+        # (they don't touch the Task Scheduler), so let them run for real rather
+        # than mocking them: their return types are typed to ScheduledTasks module
+        # classes (e.g. CimInstance[]), and a Pester mock's proxy still validates
+        # arguments against the real parameter metadata, so a fake/$null return
+        # value would fail type/ValidateNotNull binding on the next call anyway.
+        # Only mock the cmdlets that actually mutate system state.
+        Mock Get-ScheduledTask { $null }
+        Mock Register-ScheduledTask { }
+
+        Register-ArmScheduledTask -TaskName 'wslc-arm-upscaler' -ScriptPath 'C:\dev\src\Upscale-Worker.ps1'
+
+        Should -Invoke Register-ScheduledTask -Times 1 -ParameterFilter {
+            $Action.Execute -eq 'pwsh.exe' -and $Action.Arguments -match 'Hidden' -and $Action.Arguments -match 'Upscale-Worker\.ps1'
+        }
+    }
+
+    It 'unregisters an existing task' {
+        Mock Get-ScheduledTask { [pscustomobject]@{ TaskName = 'wslc-arm-watcher' } }
+        Mock Unregister-ScheduledTask { }
+
+        Unregister-ArmScheduledTask -TaskName 'wslc-arm-watcher'
+
+        Should -Invoke Unregister-ScheduledTask -Times 1
+    }
+
+    It 'no-ops unregistering a task that does not exist' {
+        Mock Get-ScheduledTask { $null }
+        Mock Unregister-ScheduledTask { }
+
+        Unregister-ArmScheduledTask -TaskName 'wslc-arm-nonexistent'
+
+        Should -Invoke Unregister-ScheduledTask -Times 0
+    }
+}

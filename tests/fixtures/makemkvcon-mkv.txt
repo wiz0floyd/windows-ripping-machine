@@ -1,0 +1,24 @@
+MSG:1005,0,1,"Using direct disc access mode","%1",""
+MSG:3007,0,0,"Detected MakeMKV v1.17.5 edition. Some functionality may be unavailable.","Detected MakeMKV v1.17.5 edition. Some functionality may be unavailable.",""
+CINFO:1,0,"STAR_WARS_ANH"
+TINFO:0,2,0,"1:59:14"
+TINFO:0,9,0,"1:59:14"
+TINFO:0,27,0,"title_t00.mkv"
+TINFO:1,2,0,"0:05:32"
+TINFO:1,9,0,"0:05:32"
+TINFO:1,27,0,"title_t01.mkv"
+PRGC:5017,0,"Saving all titles to MKV files"
+PRGT:5017,0,"Saving all titles to MKV files"
+PRGV:0,0,65536
+PRGV:6553,65536,65536
+PRGV:13107,65536,65536
+PRGV:19660,65536,65536
+PRGV:26214,65536,65536
+PRGV:32768,65536,65536
+PRGV:39321,65536,65536
+PRGV:45875,65536,65536
+PRGV:52428,65536,65536
+PRGV:58982,65536,65536
+PRGV:65536,65536,65536
+MSG:5036,0,1,"Copy complete. 2 titles saved.","%1",""
+MSG:5010,0,1,"Operation successfully completed","%1",""
