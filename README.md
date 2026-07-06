@@ -1,4 +1,4 @@
-# Windows-Native Automatic Ripping Machine
+# Windows Ripping Machine
 
 [![CI](https://github.com/wiz0floyd/windows-ripping-machine/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/wiz0floyd/windows-ripping-machine/actions/workflows/ci.yml)
 
