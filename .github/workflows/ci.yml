@@ -10,22 +10,34 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  PESTER_VERSION: '5.8.0'
+  PSSCRIPTANALYZER_VERSION: '1.25.0'
+
 jobs:
   test:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache PowerShell modules
+        id: cache-modules
+        uses: actions/cache@v4
+        with:
+          path: ~\Documents\PowerShell\Modules
+          key: psmodules-${{ runner.os }}-pester${{ env.PESTER_VERSION }}-psa${{ env.PSSCRIPTANALYZER_VERSION }}
+
       - name: Install Pester and PSScriptAnalyzer
+        if: steps.cache-modules.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          Install-Module Pester -MinimumVersion 5.0 -Force -Scope CurrentUser -SkipPublisherCheck
-          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          Install-Module Pester -RequiredVersion $env:PESTER_VERSION -Force -Scope CurrentUser -SkipPublisherCheck
+          Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION -Force -Scope CurrentUser
 
       - name: Run Pester tests
         shell: pwsh
         run: |
-          Import-Module Pester -MinimumVersion 5.0
+          Import-Module Pester -RequiredVersion $env:PESTER_VERSION
           $config = New-PesterConfiguration
           $config.Run.Path = 'tests'
           $config.Run.Exit = $true
