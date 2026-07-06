@@ -39,6 +39,14 @@ Describe 'Get-ArmCleanDiscLabel' {
         Get-ArmCleanDiscLabel -DiscLabel 'BLADE_RUNNER_REGION1_RETAIL' | Should -Be 'BLADE RUNNER'
     }
 
+    It 'strips audio codec noise tokens' {
+        Get-ArmCleanDiscLabel -DiscLabel 'CASTAWAY_DTS' | Should -Be 'CASTAWAY'
+        Get-ArmCleanDiscLabel -DiscLabel 'BLADE_RUNNER_DTS-HD_MA' | Should -Be 'BLADE RUNNER'
+        Get-ArmCleanDiscLabel -DiscLabel 'BLADE_RUNNER_DOLBY_ATMOS' | Should -Be 'BLADE RUNNER'
+        Get-ArmCleanDiscLabel -DiscLabel 'BLADE_RUNNER_TRUEHD_AC3' | Should -Be 'BLADE RUNNER'
+        Get-ArmCleanDiscLabel -DiscLabel 'BLADE_RUNNER_DD5.1' | Should -Be 'BLADE RUNNER'
+    }
+
     It 'collapses whitespace and trims' {
         Get-ArmCleanDiscLabel -DiscLabel '  THE___MATRIX  ' | Should -Be 'THE MATRIX'
     }
@@ -138,5 +146,23 @@ Describe 'Resolve-Title' {
     It 'never throws' {
         Mock Invoke-RestMethod { throw 'boom' }
         { Resolve-Title -DiscLabel 'ANYTHING' -Config $script:Config } | Should -Not -Throw
+    }
+
+    It 'matches a disc label carrying an audio codec suffix (e.g. CASTAWAY_DTS)' {
+        Mock Invoke-RestMethod {
+            return [pscustomobject]@{
+                results = @(
+                    [pscustomobject]@{ title = 'Cast Away'; release_date = '2000-12-22'; popularity = 16.39 },
+                    [pscustomobject]@{ title = 'Castaway'; release_date = '1986-03-05'; popularity = 1.71 }
+                )
+            }
+        }
+
+        $result = Resolve-Title -DiscLabel 'CASTAWAY_DTS' -Config $script:Config
+
+        $result.Matched | Should -Be $true
+        $result.Title | Should -Be 'Cast Away'
+        $result.Year | Should -Be 2000
+        $result.FolderName | Should -Be 'Cast Away (2000)'
     }
 }

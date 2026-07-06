@@ -70,7 +70,14 @@ function Get-ArmCleanDiscLabel {
         'BLU\s*RAY',
         'BD25',
         'BD50',
-        'BD9'
+        'BD9',
+        'DTS(?:-?HD)?(?:\s*MA)?',
+        'DOLBY',
+        'ATMOS',
+        'TRUEHD',
+        '\bAC3\b',
+        '\bDD\s*5\s*1\b',
+        '\bDD\s*7\s*1\b'
     )
     foreach ($token in $noiseTokens) {
         $s = $s -replace "(?i)$token", ' '
