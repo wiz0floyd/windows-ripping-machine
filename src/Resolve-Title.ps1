@@ -162,6 +162,27 @@ function Test-ArmTmdbAcceptance {
 
 <#
 .SYNOPSIS
+    Build a sanitized "Title (Year)" (or just "Title" when Year is blank)
+    folder name, shared by Resolve-Title and Resolve-TitleOverride.
+#>
+function ConvertTo-ArmFolderName {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string] $Title,
+
+        [AllowNull()]
+        $Year
+    )
+
+    $folderRaw = if ($Year) { "$Title ($Year)" } else { $Title }
+    return ConvertTo-ArmSafeFileName -Name $folderRaw
+}
+
+<#
+.SYNOPSIS
     Resolve a disc's display title/year via TMDb, falling back to a cleaned-label name.
 
 .DESCRIPTION
@@ -230,8 +251,7 @@ function Resolve-Title {
             try { $year = ([datetime]$top.release_date).Year } catch { $year = $null }
         }
 
-        $folderRaw = if ($year) { "$title ($year)" } else { $title }
-        $folderName = ConvertTo-ArmSafeFileName -Name $folderRaw
+        $folderName = ConvertTo-ArmFolderName -Title $title -Year $year
 
         return [pscustomobject]@{ FolderName = $folderName; Matched = $true; Title = $title; Year = $year }
 
@@ -261,9 +281,10 @@ function Resolve-Title {
     a "Title (Year)" folder name (or just "Title" if Year is blank) from the
     override, sanitized the same way Resolve-Title sanitizes its own matches.
 
-    Never throws. Property access uses PSObject.Properties.Match(...) rather
-    than direct dot-access so a missing key (e.g. the user deletes the Year
-    line) doesn't throw under Set-StrictMode and discard a valid Title edit.
+    Never throws. Property access uses the PSObject.Properties[...] indexer
+    rather than direct dot-access so a missing key (e.g. the user deletes the
+    Year line) doesn't throw under Set-StrictMode and discard a valid Title
+    edit.
 
 .PARAMETER OutputDir
     The rip's staging output directory (same one metadata.json was written to).
@@ -297,26 +318,25 @@ function Resolve-TitleOverride {
 
     try {
         $path = Join-Path $OutputDir 'metadata.json'
-        if (-not (Test-Path $path)) {
+        if (-not (Test-Path -LiteralPath $path)) {
             return $FallbackResolved
         }
 
         $json = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
 
-        $titleProp = @($json.PSObject.Properties.Match('Title'))
-        $title = if ($titleProp.Count -gt 0) { "$($titleProp[0].Value)" } else { '' }
+        $titleProp = $json.PSObject.Properties['Title']
+        $title = if ($titleProp) { "$($titleProp.Value)" } else { '' }
         $title = $title.Trim()
 
         if (-not $title) {
             return $FallbackResolved
         }
 
-        $yearProp = @($json.PSObject.Properties.Match('Year'))
-        $year = if ($yearProp.Count -gt 0) { "$($yearProp[0].Value)" } else { '' }
+        $yearProp = $json.PSObject.Properties['Year']
+        $year = if ($yearProp) { "$($yearProp.Value)" } else { '' }
         $year = $year.Trim()
 
-        $folderRaw = if ($year) { "$title ($year)" } else { $title }
-        $folderName = ConvertTo-ArmSafeFileName -Name $folderRaw
+        $folderName = ConvertTo-ArmFolderName -Title $title -Year $year
 
         return [pscustomobject]@{
             FolderName = $folderName

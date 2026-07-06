@@ -160,6 +160,31 @@ Describe 'Invoke-VideoRip' {
         $metadata.Year | Should -Be ''
     }
 
+    It 'does not overwrite a pre-existing metadata.json (preserves a user edit from a prior failed attempt)' {
+        $preExistingOutDir = Join-Path $script:OutDir 'STAR_WARS_ANH'
+        $null = New-Item -ItemType Directory -Force -Path $preExistingOutDir
+        '{"Title": "User Edited Title", "Year": "2024"}' | Set-Content -Path (Join-Path $preExistingOutDir 'metadata.json')
+
+        Mock Invoke-ArmTool {
+            if ($Arguments -contains 'disc:9999') {
+                return [pscustomobject]@{ ExitCode = 0; StdOut = $script:InfoLines; StdErr = @() }
+            }
+            if ($Arguments -contains 'info') {
+                return [pscustomobject]@{ ExitCode = 0; StdOut = $script:DiscInfoLines; StdErr = @() }
+            }
+            $outDir = $Arguments[-1]
+            Set-Content -Path (Join-Path $outDir 'title_t00.mkv') -Value 'fake'
+            return [pscustomobject]@{ ExitCode = 0; StdOut = $script:RipLines; StdErr = @() }
+        }
+
+        $result = Invoke-VideoRip -DriveLetter 'D' -Config $script:Config
+
+        $metadataPath = Join-Path $result.OutputDir 'metadata.json'
+        $metadata = Get-Content $metadataPath -Raw | ConvertFrom-Json
+        $metadata.Title | Should -Be 'User Edited Title'
+        $metadata.Year | Should -Be '2024'
+    }
+
     It 'creates the output directory before ripping (real makemkvcon requires it to exist)' {
         Mock Invoke-ArmTool {
             if ($Arguments -contains 'disc:9999') {

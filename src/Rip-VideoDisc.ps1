@@ -245,22 +245,36 @@ function Write-MakeMkvProgress {
     Lets the user correct/fill in Title and Year while the rip is still
     running; re-read later by Resolve-TitleOverride before the destination
     folder name is finalized. Never throws - logs a WARN on failure.
+
+    Skips the write if metadata.json already exists in OutputDir, so a
+    retried rip of the same disc (staging dir reused) never clobbers an
+    edit the user made during a prior attempt.
 #>
 function Set-ArmMetadataFile {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory = $true)] [string] $OutputDir,
-        [AllowNull()] [string] $Title,
-        [AllowNull()] $Year,
-        [Parameter(Mandatory = $true)] [hashtable] $Config
+        [Parameter(Mandatory = $true)]
+        [string] $OutputDir,
+
+        [AllowNull()]
+        [string] $Title,
+
+        [AllowNull()]
+        [string] $Year,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable] $Config
     )
 
     try {
         $path = Join-Path $OutputDir 'metadata.json'
+        if (Test-Path -LiteralPath $path) {
+            return
+        }
         [pscustomobject]@{
             Title = if ($Title) { $Title } else { '' }
             Year  = if ($Year) { "$Year" } else { '' }
-        } | ConvertTo-Json | Set-Content -Path $path -Encoding utf8
+        } | ConvertTo-Json | Set-Content -LiteralPath $path -Encoding utf8
     } catch {
         Write-ArmLog -Level WARN -Message "Failed to write metadata.json in '$OutputDir': $_" -Config $Config
     }
