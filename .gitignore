@@ -3,3 +3,5 @@ logs/
 *.log
 
 testResults.xml
+CLAUDE.md
+.claude/
