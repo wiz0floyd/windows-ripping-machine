@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in improving the Windows-Native Automatic Ripping Machine.
+Thanks for your interest in improving the Windows Ripping Machine.
 
 ## Development setup
 
@@ -38,4 +38,4 @@ All simulate-mode tests must pass before submitting a change. If your change tou
 
 ## Reporting issues
 
-Include your `wslc-arm-<date>.log` excerpt (from `C:\rips\logs\`), the disc/media type involved, and your `config.psd1` settings (redact NAS paths/keys if needed).
+Include your `wrm-<date>.log` excerpt (from `C:\rips\logs\`), the disc/media type involved, and your `config.psd1` settings (redact NAS paths/keys if needed).
