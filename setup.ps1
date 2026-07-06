@@ -229,8 +229,13 @@ function Register-ArmScheduledTask {
     $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive
     $settings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 
-    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
-        -Principal $principal -Settings $settings -Description "wrm: $TaskName" -Force | Out-Null
+    try {
+        Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
+            -Principal $principal -Settings $settings -Description "wrm: $TaskName" -Force `
+            -ErrorAction Stop | Out-Null
+    } catch {
+        throw "Failed to register scheduled task '$TaskName': $($_.Exception.Message). Re-run setup.ps1 from an elevated (Run as Administrator) pwsh session."
+    }
     Write-Host "Registered scheduled task '$TaskName' -> $ScriptPath"
 }
 
@@ -262,6 +267,23 @@ function Unregister-ArmScheduledTask {
 # Guarded so the file can be dot-sourced by tests (functions only) without
 # installing software, writing config, or registering scheduled tasks.
 if ($MyInvocation.InvocationName -ne '.') {
+    $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        Write-Host 'Registering scheduled tasks requires elevation; relaunching as Administrator...'
+        $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
+        foreach ($key in $PSBoundParameters.Keys) {
+            $value = $PSBoundParameters[$key]
+            if ($value -is [switch]) {
+                if ($value.IsPresent) { $argList += "-$key" }
+            } else {
+                $argList += "-$key"
+                $argList += "`"$value`""
+            }
+        }
+        Start-Process -FilePath 'pwsh.exe' -ArgumentList $argList -Verb RunAs -Wait
+        return
+    }
+
     $repoRoot = $PSScriptRoot
     $watcherPath = Join-Path $repoRoot 'src' 'DiscWatcher.ps1'
     $upscalerPath = Join-Path $repoRoot 'src' 'Upscale-Worker.ps1'
