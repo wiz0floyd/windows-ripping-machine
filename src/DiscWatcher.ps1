@@ -224,7 +224,7 @@ function Invoke-VideoDispatch {
         return
     }
 
-    $resolved = Resolve-Title -DiscLabel $ripResult.DiscLabel -Config $Config
+    $resolved = Resolve-TitleOverride -OutputDir $ripResult.OutputDir -FallbackResolved $ripResult.Resolved -Config $Config
 
     $renamedDir = $ripResult.OutputDir
     $parentDir = Split-Path -Parent $ripResult.OutputDir

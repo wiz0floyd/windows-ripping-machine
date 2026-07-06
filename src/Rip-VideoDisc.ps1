@@ -239,6 +239,35 @@ function Write-MakeMkvProgress {
 
 <#
 .SYNOPSIS
+    Write a hand-editable metadata.json into a rip's staging output dir.
+
+.DESCRIPTION
+    Lets the user correct/fill in Title and Year while the rip is still
+    running; re-read later by Resolve-TitleOverride before the destination
+    folder name is finalized. Never throws - logs a WARN on failure.
+#>
+function Set-ArmMetadataFile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] [string] $OutputDir,
+        [AllowNull()] [string] $Title,
+        [AllowNull()] $Year,
+        [Parameter(Mandatory = $true)] [hashtable] $Config
+    )
+
+    try {
+        $path = Join-Path $OutputDir 'metadata.json'
+        [pscustomobject]@{
+            Title = if ($Title) { $Title } else { '' }
+            Year  = if ($Year) { "$Year" } else { '' }
+        } | ConvertTo-Json | Set-Content -Path $path -Encoding utf8
+    } catch {
+        Write-ArmLog -Level WARN -Message "Failed to write metadata.json in '$OutputDir': $_" -Config $Config
+    }
+}
+
+<#
+.SYNOPSIS
     Rip a video disc (DVD/BD) in a drive to the staging directory via makemkvcon.
 
 .DESCRIPTION
@@ -261,7 +290,10 @@ function Write-MakeMkvProgress {
     Configuration hashtable (StagingDir, MinTitleLengthSec, RipAllTitles, etc.).
 
 .OUTPUTS
-    [pscustomobject] @{ Success; DiscLabel; DiscType; OutputDir; TitleCount; Error }
+    [pscustomobject] @{ Success; DiscLabel; DiscType; OutputDir; TitleCount; Error; Resolved }
+    `Resolved` is the [pscustomobject] returned by Resolve-Title, computed as
+    soon as the disc label is known (before the long rip runs) and also
+    written to `metadata.json` in OutputDir for the user to hand-edit.
 
 .EXAMPLE
     $result = Invoke-VideoRip -DriveLetter 'D' -Config $config
@@ -282,6 +314,7 @@ function Invoke-VideoRip {
     $discType = $null
     $outputDir = $null
     $titleCount = 0
+    $resolved = $null
 
     function ConvertTo-RipResult([bool]$Success, [string]$ErrorMessage) {
         [pscustomobject]@{
@@ -291,6 +324,7 @@ function Invoke-VideoRip {
             OutputDir  = $outputDir
             TitleCount = $titleCount
             Error      = $ErrorMessage
+            Resolved   = $resolved
         }
     }
 
@@ -309,6 +343,13 @@ function Invoke-VideoRip {
         $discType = $driveInfo.DiscType
         $safeLabel = ($discLabel -replace '[\\/:*?"<>|]', '_')
         $outputDir = Join-Path $Config.StagingDir $safeLabel
+
+        if (-not (Test-Path $outputDir)) {
+            $null = New-Item -ItemType Directory -Force -Path $outputDir
+        }
+
+        $resolved = Resolve-Title -DiscLabel $discLabel -Config $Config
+        Set-ArmMetadataFile -OutputDir $outputDir -Title $resolved.Title -Year $resolved.Year -Config $Config
 
         $ripArgs = @('-r', "--minlength=$($Config.MinTitleLengthSec)", 'mkv', "disc:$($driveInfo.Index)")
         if ($Config.RipAllTitles) {
@@ -329,10 +370,6 @@ function Invoke-VideoRip {
             $ripArgs += "$mainIndex"
         }
         $ripArgs += $outputDir
-
-        if (-not (Test-Path $outputDir)) {
-            $null = New-Item -ItemType Directory -Force -Path $outputDir
-        }
 
         $ripResult = Invoke-ArmTool -Name makemkvcon -Arguments $ripArgs -Config $Config
 

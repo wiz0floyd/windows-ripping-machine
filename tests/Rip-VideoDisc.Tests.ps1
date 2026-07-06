@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 
 BeforeAll {
     . (Join-Path $PSScriptRoot '..' 'src' 'Common.ps1')
+    . (Join-Path $PSScriptRoot '..' 'src' 'Resolve-Title.ps1')
     . (Join-Path $PSScriptRoot '..' 'src' 'Rip-VideoDisc.ps1')
 
     $script:FixturesDir = Join-Path $PSScriptRoot 'fixtures'
@@ -102,6 +103,7 @@ Describe 'Invoke-VideoRip' {
             StagingDir        = $script:OutDir
             MinTitleLengthSec = 600
             RipAllTitles      = $true
+            TmdbApiKey        = ''
             LogDir            = Join-Path $script:TestDir 'logs'
         }
         $script:Config = $config
@@ -130,6 +132,32 @@ Describe 'Invoke-VideoRip' {
         $result.TitleCount | Should -Be 2
         $result.Error | Should -BeNullOrEmpty
         $result.OutputDir | Should -Be (Join-Path $script:OutDir 'STAR_WARS_ANH')
+    }
+
+    It 'writes metadata.json into the output dir and returns a Resolved result before the rip completes' {
+        Mock Invoke-ArmTool {
+            if ($Arguments -contains 'disc:9999') {
+                return [pscustomobject]@{ ExitCode = 0; StdOut = $script:InfoLines; StdErr = @() }
+            }
+            if ($Arguments -contains 'info') {
+                return [pscustomobject]@{ ExitCode = 0; StdOut = $script:DiscInfoLines; StdErr = @() }
+            }
+            $outDir = $Arguments[-1]
+            # metadata.json must already exist by the time the long rip runs.
+            Test-Path (Join-Path $outDir 'metadata.json') | Should -Be $true
+            Set-Content -Path (Join-Path $outDir 'title_t00.mkv') -Value 'fake'
+            return [pscustomobject]@{ ExitCode = 0; StdOut = $script:RipLines; StdErr = @() }
+        }
+
+        $result = Invoke-VideoRip -DriveLetter 'D' -Config $script:Config
+
+        $result.Resolved | Should -Not -BeNullOrEmpty
+        $result.Resolved.Matched | Should -Be $false
+        $metadataPath = Join-Path $result.OutputDir 'metadata.json'
+        Test-Path $metadataPath | Should -Be $true
+        $metadata = Get-Content $metadataPath -Raw | ConvertFrom-Json
+        $metadata.Title | Should -Be ''
+        $metadata.Year | Should -Be ''
     }
 
     It 'creates the output directory before ripping (real makemkvcon requires it to exist)' {
@@ -267,6 +295,7 @@ Describe 'Invoke-VideoRip (Simulate end-to-end via stub)' {
             StagingDir        = $outDir
             MinTitleLengthSec = 600
             RipAllTitles      = $true
+            TmdbApiKey        = ''
             LogDir            = Join-Path $script:TestDir 'logs'
         }
 

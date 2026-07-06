@@ -38,6 +38,10 @@ BeforeAll {
             param([string] $DiscLabel, [hashtable] $Config)
             [pscustomobject]@{ FolderName = 'STUB_TITLE'; Matched = $false; Title = $null; Year = $null }
         }
+        function Resolve-TitleOverride {
+            param([string] $OutputDir, [pscustomobject] $FallbackResolved, [hashtable] $Config)
+            $FallbackResolved
+        }
     }
 
     # Rip-AudioCd.ps1, Move-ToNas.ps1, Send-Notification.ps1, Common.ps1 are
@@ -96,10 +100,8 @@ Describe 'Invoke-DiscDispatch' {
                 [pscustomobject]@{
                     Success = $true; DiscLabel = 'RAW_LABEL'; DiscType = 'BD'
                     OutputDir = $ripOutputDir; TitleCount = 1; Error = $null
+                    Resolved = [pscustomobject]@{ FolderName = 'My Movie (2020)'; Matched = $true; Title = 'My Movie'; Year = 2020 }
                 }
-            }
-            Mock Resolve-Title {
-                [pscustomobject]@{ FolderName = 'My Movie (2020)'; Matched = $true; Title = 'My Movie'; Year = 2020 }
             }
 
             Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Video' -Config $script:Config
@@ -122,10 +124,8 @@ Describe 'Invoke-DiscDispatch' {
                 [pscustomobject]@{
                     Success = $true; DiscLabel = 'RAW_LABEL'; DiscType = 'DVD'
                     OutputDir = $ripOutputDir; TitleCount = 2; Error = $null
+                    Resolved = [pscustomobject]@{ FolderName = 'DVD Movie (1999)'; Matched = $true; Title = 'DVD Movie'; Year = 1999 }
                 }
-            }
-            Mock Resolve-Title {
-                [pscustomobject]@{ FolderName = 'DVD Movie (1999)'; Matched = $true; Title = 'DVD Movie'; Year = 1999 }
             }
 
             Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Video' -Config $script:Config
@@ -147,10 +147,8 @@ Describe 'Invoke-DiscDispatch' {
                 [pscustomobject]@{
                     Success = $true; DiscLabel = 'RAW_LABEL'; DiscType = 'BD'
                     OutputDir = $ripOutputDir; TitleCount = 1; Error = $null
+                    Resolved = [pscustomobject]@{ FolderName = 'BD Movie (2021)'; Matched = $true; Title = 'BD Movie'; Year = 2021 }
                 }
-            }
-            Mock Resolve-Title {
-                [pscustomobject]@{ FolderName = 'BD Movie (2021)'; Matched = $true; Title = 'BD Movie'; Year = 2021 }
             }
 
             Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Video' -Config $script:Config
@@ -160,9 +158,8 @@ Describe 'Invoke-DiscDispatch' {
 
         It 'sends a dedicated MAKEMKV_KEY_EXPIRED notification and keeps staging on key expiry' {
             Mock Invoke-VideoRip {
-                [pscustomobject]@{ Success = $false; DiscLabel = $null; DiscType = $null; OutputDir = $null; TitleCount = 0; Error = 'MAKEMKV_KEY_EXPIRED' }
+                [pscustomobject]@{ Success = $false; DiscLabel = $null; DiscType = $null; OutputDir = $null; TitleCount = 0; Error = 'MAKEMKV_KEY_EXPIRED'; Resolved = $null }
             }
-            Mock Resolve-Title { throw 'should not be called' }
             Mock Move-ToNas { throw 'should not be called' }
 
             Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Video' -Config $script:Config
@@ -175,7 +172,7 @@ Describe 'Invoke-DiscDispatch' {
 
         It 'notifies Error and keeps staging on generic rip failure' {
             Mock Invoke-VideoRip {
-                [pscustomobject]@{ Success = $false; DiscLabel = $null; DiscType = $null; OutputDir = $null; TitleCount = 0; Error = 'disc read error' }
+                [pscustomobject]@{ Success = $false; DiscLabel = $null; DiscType = $null; OutputDir = $null; TitleCount = 0; Error = 'disc read error'; Resolved = $null }
             }
 
             Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Video' -Config $script:Config
@@ -193,10 +190,8 @@ Describe 'Invoke-DiscDispatch' {
                 [pscustomobject]@{
                     Success = $true; DiscLabel = 'RAW_LABEL'; DiscType = 'BD'
                     OutputDir = $ripOutputDir; TitleCount = 1; Error = $null
+                    Resolved = [pscustomobject]@{ FolderName = 'Failing Movie (2020)'; Matched = $true; Title = 'Failing Movie'; Year = 2020 }
                 }
-            }
-            Mock Resolve-Title {
-                [pscustomobject]@{ FolderName = 'Failing Movie (2020)'; Matched = $true; Title = 'Failing Movie'; Year = 2020 }
             }
             Mock Move-ToNas {
                 [pscustomobject]@{ Success = $false; DestDir = $null; Error = 'robocopy failed' }
@@ -207,6 +202,48 @@ Describe 'Invoke-DiscDispatch' {
             Should -Invoke Send-ArmNotification -Times 1 -ParameterFilter { $Level -eq 'Error' }
             Should -Invoke Invoke-DiscEject -Times 0
             Test-Path (Join-Path $script:StagingDir 'Failing Movie (2020)') | Should -BeTrue
+        }
+
+        It 'uses a metadata.json override to rename the staging dir when present' {
+            $ripOutputDir = Join-Path $script:StagingDir 'RAW_LABEL'
+            New-Item -ItemType Directory -Force -Path $ripOutputDir | Out-Null
+            'fake mkv bytes' | Set-Content (Join-Path $ripOutputDir 'title1.mkv')
+            '{"Title": "Corrected Title", "Year": "2021"}' | Set-Content (Join-Path $ripOutputDir 'metadata.json')
+
+            Mock Invoke-VideoRip {
+                [pscustomobject]@{
+                    Success = $true; DiscLabel = 'RAW_LABEL'; DiscType = 'BD'
+                    OutputDir = $ripOutputDir; TitleCount = 1; Error = $null
+                    Resolved = [pscustomobject]@{ FolderName = 'My Movie (2020)'; Matched = $true; Title = 'My Movie'; Year = 2020 }
+                }
+            }
+
+            Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Video' -Config $script:Config
+
+            $expectedDest = Join-Path $script:NasVideoRoot 'Corrected Title (2021)'
+            Test-Path $expectedDest | Should -BeTrue
+            Should -Invoke Send-ArmNotification -Times 1 -ParameterFilter { $Level -eq 'Info' }
+        }
+
+        It 'falls back to the resolved title when metadata.json is malformed' {
+            $ripOutputDir = Join-Path $script:StagingDir 'RAW_LABEL'
+            New-Item -ItemType Directory -Force -Path $ripOutputDir | Out-Null
+            'fake mkv bytes' | Set-Content (Join-Path $ripOutputDir 'title1.mkv')
+            '{ not valid json' | Set-Content (Join-Path $ripOutputDir 'metadata.json')
+
+            Mock Invoke-VideoRip {
+                [pscustomobject]@{
+                    Success = $true; DiscLabel = 'RAW_LABEL'; DiscType = 'BD'
+                    OutputDir = $ripOutputDir; TitleCount = 1; Error = $null
+                    Resolved = [pscustomobject]@{ FolderName = 'My Movie (2020)'; Matched = $true; Title = 'My Movie'; Year = 2020 }
+                }
+            }
+
+            Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Video' -Config $script:Config
+
+            $expectedDest = Join-Path $script:NasVideoRoot 'My Movie (2020)'
+            Test-Path $expectedDest | Should -BeTrue
+            Should -Invoke Send-ArmNotification -Times 1 -ParameterFilter { $Level -eq 'Info' }
         }
     }
 

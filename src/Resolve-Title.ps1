@@ -248,3 +248,85 @@ function Resolve-Title {
         }
     }
 }
+
+<#
+.SYNOPSIS
+    Re-read a rip's metadata.json for a user-supplied Title/Year override.
+
+.DESCRIPTION
+    Called immediately before the staging dir is renamed for the NAS move.
+    If metadata.json is missing, unreadable, malformed, not a JSON object, or
+    has a blank/whitespace-only Title, returns $FallbackResolved unchanged
+    (the original Resolve-Title result from before the rip). Otherwise builds
+    a "Title (Year)" folder name (or just "Title" if Year is blank) from the
+    override, sanitized the same way Resolve-Title sanitizes its own matches.
+
+    Never throws. Property access uses PSObject.Properties.Match(...) rather
+    than direct dot-access so a missing key (e.g. the user deletes the Year
+    line) doesn't throw under Set-StrictMode and discard a valid Title edit.
+
+.PARAMETER OutputDir
+    The rip's staging output directory (same one metadata.json was written to).
+
+.PARAMETER FallbackResolved
+    The [pscustomobject] from Resolve-Title, computed before the rip started.
+
+.PARAMETER Config
+    Configuration hashtable (used for logging only).
+
+.OUTPUTS
+    [pscustomobject] @{ FolderName; Matched; Title; Year }
+
+.EXAMPLE
+    $resolved = Resolve-TitleOverride -OutputDir $ripResult.OutputDir -FallbackResolved $ripResult.Resolved -Config $config
+#>
+function Resolve-TitleOverride {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $OutputDir,
+
+        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        [pscustomobject] $FallbackResolved,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable] $Config
+    )
+
+    try {
+        $path = Join-Path $OutputDir 'metadata.json'
+        if (-not (Test-Path $path)) {
+            return $FallbackResolved
+        }
+
+        $json = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+
+        $titleProp = @($json.PSObject.Properties.Match('Title'))
+        $title = if ($titleProp.Count -gt 0) { "$($titleProp[0].Value)" } else { '' }
+        $title = $title.Trim()
+
+        if (-not $title) {
+            return $FallbackResolved
+        }
+
+        $yearProp = @($json.PSObject.Properties.Match('Year'))
+        $year = if ($yearProp.Count -gt 0) { "$($yearProp[0].Value)" } else { '' }
+        $year = $year.Trim()
+
+        $folderRaw = if ($year) { "$title ($year)" } else { $title }
+        $folderName = ConvertTo-ArmSafeFileName -Name $folderRaw
+
+        return [pscustomobject]@{
+            FolderName = $folderName
+            Matched    = $true
+            Title      = $title
+            Year       = if ($year) { $year } else { $null }
+        }
+
+    } catch {
+        Write-ArmLog -Level WARN -Message "Failed to read metadata.json override in '$OutputDir': $_" -Config $Config
+        return $FallbackResolved
+    }
+}
