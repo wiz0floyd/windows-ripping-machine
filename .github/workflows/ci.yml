@@ -34,4 +34,11 @@ jobs:
 
       - name: Run PSScriptAnalyzer
         shell: pwsh
-        run: Invoke-ScriptAnalyzer -Path src -Recurse -EnableExit
+        run: |
+          $results = Invoke-ScriptAnalyzer -Path src -Recurse
+          $results | Format-Table -AutoSize
+          $errors = @($results | Where-Object Severity -eq 'Error')
+          if ($errors.Count -gt 0) {
+            Write-Host "##[error]$($errors.Count) PSScriptAnalyzer error(s) found"
+            exit 1
+          }
