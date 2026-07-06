@@ -174,7 +174,7 @@ function Invoke-Upscale {
     try {
         $interlaceType = Get-InterlaceType -InputFile $InputFile -Config $Config
 
-        $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "wslc-arm-upscale-$(New-Guid)"
+        $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "wrm-upscale-$(New-Guid)"
         $null = New-Item -ItemType Directory -Path $tempDir -Force
 
         $baseName = [System.IO.Path]::GetFileNameWithoutExtension($InputFile)

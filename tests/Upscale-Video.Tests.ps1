@@ -6,7 +6,7 @@ BeforeAll {
     . (Join-Path $PSScriptRoot '..' 'src' 'Upscale-Video.ps1')
 
     $script:FixtureDir = Join-Path $PSScriptRoot 'fixtures'
-    $script:TestDir = New-Item -ItemType Directory -Path (Join-Path $env:TEMP "wslc-arm-upscale-test-$(New-Guid)")
+    $script:TestDir = New-Item -ItemType Directory -Path (Join-Path $env:TEMP "wrm-upscale-test-$(New-Guid)")
 
     function Get-FixtureLines($name) {
         Get-Content -Path (Join-Path $script:FixtureDir $name)
@@ -234,7 +234,7 @@ Describe 'Invoke-Upscale' {
             }
 
             $outFile = $Arguments[$Arguments.Count - 1]
-            if ((Split-Path -Leaf (Split-Path -Parent $outFile)) -like 'wslc-arm-upscale-*') {
+            if ((Split-Path -Leaf (Split-Path -Parent $outFile)) -like 'wrm-upscale-*') {
                 # preprocess/video2x steps write into Invoke-Upscale's own temp dir; capture it
                 $script:CapturedTempDir = Split-Path -Parent $outFile
             }

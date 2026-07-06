@@ -1,4 +1,4 @@
-# Windows-Native Automatic Ripping Pipeline ("wslc-arm")
+# Windows-Native Automatic Ripping Pipeline ("wrm")
 
 ## Context
 
@@ -51,10 +51,10 @@ NAS: Title (Year)/Title (Year) [AI upscale 1080p].mkv  — original remux always
 
 Sample-first gate: each title first produces a 2-minute upscaled sample clip for user review (`-SampleOnly`); the full run (est. several hours to overnight per movie on the 7800 XT) only proceeds per user approval or when `AutoUpscale = $true`. Upscale quality on live action is an aesthetic judgment (shimmer/oversharpening are real risks), so the user stays in the loop by default.
 
-## Repository layout (new; `C:\dev\wslc-arm`, will `git init`)
+## Repository layout (new; `C:\dev\wrm`, will `git init`)
 
 ```
-wslc-arm/
+wrm/
 ├── config/config.psd1          # all user settings (template checked in as config.example.psd1)
 ├── src/
 │   ├── DiscWatcher.ps1         # entry point: event loop, disc classification, dispatch
@@ -92,7 +92,7 @@ wslc-arm/
 5. `Move-ToNas.ps1`: `robocopy /E /Z /NP /R:3` staging → NAS, compare file sizes, delete staging on success only.
 6. `DiscWatcher.ps1`: `Register-WmiEvent Win32_VolumeChangeEvent` (EventType 2) + 30 s poll fallback; classify (no-filesystem ⇒ audio CD; UDF/CDFS ⇒ video via makemkvcon); serialize rips (one at a time); eject via Shell.Application; notify on success/failure.
 7. `Send-Notification.ps1`: BurntToast-free native toast (WinRT) + optional HA webhook POST.
-8. `setup.ps1`: winget installs, dir creation, config prompts (NAS paths, TMDb key), register hidden Scheduled Task "wslc-arm-watcher" (at logon, logged-in user).
+8. `setup.ps1`: winget installs, dir creation, config prompts (NAS paths, TMDb key), register hidden Scheduled Task "wrm-watcher" (at logon, logged-in user).
 9. `Upscale-Worker.ps1`: queue folder watcher as its own low-priority Scheduled Task; ffmpeg `idet` interlace classification → IVTC (`fieldmatch,decimate`) or `bwdif` → `video2x` (Real-ESRGAN ncnn/Vulkan) → `libx265 -crf 16` mux; `-SampleOnly` 2-min clip mode; deliver `[AI upscale 1080p]` variant next to the original on the NAS; toast/HA notify with sample path for review.
 10. Pester tests + `-Simulate` mode: stub rippers copy fixture files so the full pipeline (classify → "rip" → name → robocopy → notify) runs without a disc; upscale stage gets a short test clip fixture to exercise the real ffmpeg/video2x chain end-to-end.
 11. Commit; no remote exists, so work stays in the local repo (per background-job rules, will note location instead of opening a PR).

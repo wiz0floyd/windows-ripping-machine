@@ -32,16 +32,16 @@ foreach ($module in @(
 
 .DESCRIPTION
     When $Config.Simulate is $true, DiscWatcher does not query real WMI/CIM state.
-    Instead it reads WSLC_ARM_SIM_DISC, one of 'Video', 'AudioCD', 'Data', 'None'
+    Instead it reads WRM_SIM_DISC, one of 'Video', 'AudioCD', 'Data', 'None'
     (defaults to 'None' if unset/unrecognized). This lets tests drive the full
     dispatch path deterministically with -Once.
 #>
-$script:SimDiscEnvVar = 'WSLC_ARM_SIM_DISC'
+$script:SimDiscEnvVar = 'WRM_SIM_DISC'
 # 'D' matches the drive letter baked into tests/fixtures/makemkvcon-info.txt
 # (the DRV: line's "D:" field), so Invoke-VideoRip's disc-index lookup resolves
 # in simulate mode without a real optical drive.
 $script:SimDriveLetter = [char] 'D'
-$script:MutexName = 'Global\wslc-arm-rip'
+$script:MutexName = 'Global\wrm-rip'
 
 <#
 .SYNOPSIS
@@ -69,7 +69,7 @@ function Get-OpticalDriveLetters {
     Determine the drive letter and disc type of the disc that should be processed.
 
 .DESCRIPTION
-    In simulate mode, reads the WSLC_ARM_SIM_DISC environment variable instead of
+    In simulate mode, reads the WRM_SIM_DISC environment variable instead of
     querying real hardware, and reports a fixed placeholder drive letter ('D',
     matching the fixture data in tests/fixtures/makemkvcon-info.txt).
     Otherwise enumerates real optical drives via Get-OpticalDriveLetters and
@@ -368,7 +368,7 @@ function Invoke-DiscDispatch {
     } catch {
         Write-ArmLog -Level ERROR -Message "Unhandled error dispatching disc on $DriveLetter`: $_" -Config $Config
         try {
-            Send-ArmNotification -Title 'wslc-arm Error' `
+            Send-ArmNotification -Title 'wrm Error' `
                 -Message "Unhandled error processing disc on $DriveLetter`: $_. Staging preserved." `
                 -Level Error -Config $Config
         } catch {
@@ -382,7 +382,7 @@ function Invoke-DiscDispatch {
     Single-flight wrapper around Invoke-DiscDispatch using a named mutex.
 
 .DESCRIPTION
-    Acquires the 'wslc-arm-rip' named mutex without blocking; if a rip is already
+    Acquires the 'wrm-rip' named mutex without blocking; if a rip is already
     in progress (mutex held elsewhere), logs a WARN and skips this dispatch.
 
 .PARAMETER DriveLetter
@@ -449,7 +449,7 @@ function Start-DiscWatcherLoop {
 
     Write-ArmLog -Level INFO -Message 'DiscWatcher loop starting.' -Config $Config
 
-    $sourceId = 'wslc-arm-volchange'
+    $sourceId = 'wrm-volchange'
     $registered = $false
     try {
         $query = 'SELECT * FROM Win32_VolumeChangeEvent WHERE EventType = 2'

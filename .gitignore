@@ -2,3 +2,4 @@ config/config.psd1
 logs/
 *.log
 
+testResults.xml

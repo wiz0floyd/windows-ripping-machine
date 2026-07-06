@@ -7,7 +7,7 @@ BeforeAll {
 
     $script:FixturesDir = Join-Path $PSScriptRoot 'fixtures'
     $script:TmdbMatchJson = Get-Content -Path (Join-Path $script:FixturesDir 'tmdb-search.json') -Raw | ConvertFrom-Json
-    $script:TestDir = New-Item -ItemType Directory -Path (Join-Path $env:TEMP "wslc-arm-title-test-$(New-Guid)")
+    $script:TestDir = New-Item -ItemType Directory -Path (Join-Path $env:TEMP "wrm-title-test-$(New-Guid)")
     $script:Config = @{ TmdbApiKey = 'test-key'; LogDir = Join-Path $script:TestDir 'logs' }
 }
 

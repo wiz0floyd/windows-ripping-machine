@@ -11,7 +11,7 @@ BeforeAll {
     $script:RipLines = @(Get-Content -Path (Join-Path $script:FixturesDir 'makemkvcon-mkv.txt'))
     $script:ExpiredKeyLines = @(Get-Content -Path (Join-Path $script:FixturesDir 'makemkvcon-mkv-expired-key.txt'))
 
-    $script:TestDir = New-Item -ItemType Directory -Path (Join-Path $env:TEMP "wslc-arm-rip-test-$(New-Guid)")
+    $script:TestDir = New-Item -ItemType Directory -Path (Join-Path $env:TEMP "wrm-rip-test-$(New-Guid)")
 }
 
 AfterAll {

@@ -126,11 +126,11 @@ Describe 'New-ArmConfigFile' {
 
 Describe 'Register-ArmScheduledTask / Unregister-ArmScheduledTask' {
     It 'skips registration when the task already exists' {
-        Mock Get-ScheduledTask { [pscustomobject]@{ TaskName = 'wslc-arm-watcher' } }
+        Mock Get-ScheduledTask { [pscustomobject]@{ TaskName = 'wrm-watcher' } }
         Mock New-ScheduledTaskAction { }
         Mock Register-ScheduledTask { }
 
-        Register-ArmScheduledTask -TaskName 'wslc-arm-watcher' -ScriptPath 'C:\dev\src\DiscWatcher.ps1'
+        Register-ArmScheduledTask -TaskName 'wrm-watcher' -ScriptPath 'C:\dev\src\DiscWatcher.ps1'
 
         Should -Invoke Register-ScheduledTask -Times 0
     }
@@ -146,7 +146,7 @@ Describe 'Register-ArmScheduledTask / Unregister-ArmScheduledTask' {
         Mock Get-ScheduledTask { $null }
         Mock Register-ScheduledTask { }
 
-        Register-ArmScheduledTask -TaskName 'wslc-arm-upscaler' -ScriptPath 'C:\dev\src\Upscale-Worker.ps1'
+        Register-ArmScheduledTask -TaskName 'wrm-upscaler' -ScriptPath 'C:\dev\src\Upscale-Worker.ps1'
 
         Should -Invoke Register-ScheduledTask -Times 1 -ParameterFilter {
             $Action.Execute -eq 'pwsh.exe' -and $Action.Arguments -match 'Hidden' -and $Action.Arguments -match 'Upscale-Worker\.ps1'
@@ -154,10 +154,10 @@ Describe 'Register-ArmScheduledTask / Unregister-ArmScheduledTask' {
     }
 
     It 'unregisters an existing task' {
-        Mock Get-ScheduledTask { [pscustomobject]@{ TaskName = 'wslc-arm-watcher' } }
+        Mock Get-ScheduledTask { [pscustomobject]@{ TaskName = 'wrm-watcher' } }
         Mock Unregister-ScheduledTask { }
 
-        Unregister-ArmScheduledTask -TaskName 'wslc-arm-watcher'
+        Unregister-ArmScheduledTask -TaskName 'wrm-watcher'
 
         Should -Invoke Unregister-ScheduledTask -Times 1
     }
@@ -166,7 +166,7 @@ Describe 'Register-ArmScheduledTask / Unregister-ArmScheduledTask' {
         Mock Get-ScheduledTask { $null }
         Mock Unregister-ScheduledTask { }
 
-        Unregister-ArmScheduledTask -TaskName 'wslc-arm-nonexistent'
+        Unregister-ArmScheduledTask -TaskName 'wrm-nonexistent'
 
         Should -Invoke Unregister-ScheduledTask -Times 0
     }

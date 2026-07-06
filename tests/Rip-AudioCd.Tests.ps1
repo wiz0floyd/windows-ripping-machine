@@ -7,7 +7,7 @@ BeforeAll {
     . (Join-Path $PSScriptRoot '..' 'src' 'Common.ps1')
 
     # Create temp directories
-    $script:TestDir = New-Item -ItemType Directory -Path (Join-Path $env:TEMP "wslc-arm-audio-test-$(New-Guid)")
+    $script:TestDir = New-Item -ItemType Directory -Path (Join-Path $env:TEMP "wrm-audio-test-$(New-Guid)")
     $script:StagingDir = New-Item -ItemType Directory -Path (Join-Path $script:TestDir 'staging')
     $script:LogDir = New-Item -ItemType Directory -Path (Join-Path $script:TestDir 'logs')
 }
