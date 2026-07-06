@@ -56,7 +56,7 @@ Describe 'Start-UpscaleWorker -Once' {
     }
 
     BeforeEach {
-        $script:TestDir = New-Item -ItemType Directory -Path (Join-Path $env:TEMP "wslc-arm-worker-test-$(New-Guid)")
+        $script:TestDir = New-Item -ItemType Directory -Path (Join-Path $env:TEMP "wrm-worker-test-$(New-Guid)")
         $script:QueueDir = New-Item -ItemType Directory -Path (Join-Path $script:TestDir 'queue')
         $script:DestDir = New-Item -ItemType Directory -Path (Join-Path $script:TestDir 'dest')
         $script:LogDir = New-Item -ItemType Directory -Path (Join-Path $script:TestDir 'logs')

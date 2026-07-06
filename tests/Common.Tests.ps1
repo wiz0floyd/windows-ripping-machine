@@ -6,7 +6,7 @@ BeforeAll {
     . (Join-Path $PSScriptRoot '..' 'src' 'Common.ps1')
 
     # Create temp directory for tests
-    $script:TestDir = New-Item -ItemType Directory -Path (Join-Path $env:TEMP "wslc-arm-test-$(New-Guid)")
+    $script:TestDir = New-Item -ItemType Directory -Path (Join-Path $env:TEMP "wrm-test-$(New-Guid)")
     $script:ConfigDir = New-Item -ItemType Directory -Path (Join-Path $script:TestDir 'config')
     $script:LogDir = New-Item -ItemType Directory -Path (Join-Path $script:TestDir 'logs')
 
@@ -92,7 +92,7 @@ Describe 'Write-ArmLog' {
         { Write-ArmLog -Level INFO -Message 'Console test message' -Config $config } | Should -Not -Throw
 
         # Verify log file was created and contains the message
-        $logFile = Join-Path $script:LogDir "wslc-arm-$(Get-Date -Format 'yyyyMMdd').log"
+        $logFile = Join-Path $script:LogDir "wrm-$(Get-Date -Format 'yyyyMMdd').log"
         $logFile | Should -Exist
         Get-Content $logFile -Raw | Should -Match 'Console test message'
     }
@@ -104,7 +104,7 @@ Describe 'Write-ArmLog' {
 
         Write-ArmLog -Level INFO -Message 'Test log entry' -Config $config
 
-        $logFile = Get-Item -Path (Join-Path $script:LogDir "wslc-arm-$(Get-Date -Format 'yyyyMMdd').log") -ErrorAction SilentlyContinue
+        $logFile = Get-Item -Path (Join-Path $script:LogDir "wrm-$(Get-Date -Format 'yyyyMMdd').log") -ErrorAction SilentlyContinue
         $logFile | Should -Not -BeNullOrEmpty
 
         $content = Get-Content $logFile.FullName -Raw
@@ -127,7 +127,7 @@ Describe 'Write-ArmLog' {
         Write-ArmLog -Level INFO -Message 'First entry' -Config $config
         Write-ArmLog -Level INFO -Message 'Second entry' -Config $config
 
-        $logFile = Join-Path $script:LogDir "wslc-arm-$(Get-Date -Format 'yyyyMMdd').log"
+        $logFile = Join-Path $script:LogDir "wrm-$(Get-Date -Format 'yyyyMMdd').log"
         $content = Get-Content $logFile -Raw
 
         $content | Should -Match 'First entry'
@@ -141,7 +141,7 @@ Describe 'Write-ArmLog' {
 
         Write-ArmLog -Level WARN -Message 'Test warn' -Config $config
 
-        $logFile = Join-Path $script:LogDir "wslc-arm-$(Get-Date -Format 'yyyyMMdd').log"
+        $logFile = Join-Path $script:LogDir "wrm-$(Get-Date -Format 'yyyyMMdd').log"
         $content = Get-Content $logFile -Raw
 
         $content | Should -Match '\[.*\]'  # timestamp in brackets

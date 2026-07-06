@@ -291,7 +291,7 @@ Describe 'Invoke-DiscMutexDispatch (single-flight)' {
         $holderPs = [powershell]::Create()
         $holderPs.AddScript({
             param($ReadyPath, $ReleasePath)
-            $m = New-Object System.Threading.Mutex($false, 'Global\wslc-arm-rip')
+            $m = New-Object System.Threading.Mutex($false, 'Global\wrm-rip')
             $m.WaitOne() | Out-Null
             New-Item -ItemType File -Path $ReadyPath -Force | Out-Null
             while (-not (Test-Path $ReleasePath)) { Start-Sleep -Milliseconds 50 }
@@ -324,7 +324,7 @@ Describe 'Invoke-DiscMutexDispatch (single-flight)' {
         Should -Invoke Invoke-DiscDispatch -Times 1
 
         # Mutex must be released afterward: a second immediate acquire should succeed.
-        $m = New-Object System.Threading.Mutex($false, 'Global\wslc-arm-rip')
+        $m = New-Object System.Threading.Mutex($false, 'Global\wrm-rip')
         try {
             $m.WaitOne(0) | Should -BeTrue
         } finally {
@@ -335,18 +335,18 @@ Describe 'Invoke-DiscMutexDispatch (single-flight)' {
 }
 
 Describe 'Resolve-CurrentDisc' {
-    It 'reads WSLC_ARM_SIM_DISC when Config.Simulate is true' {
-        $env:WSLC_ARM_SIM_DISC = 'Video'
+    It 'reads WRM_SIM_DISC when Config.Simulate is true' {
+        $env:WRM_SIM_DISC = 'Video'
         try {
             $result = Resolve-CurrentDisc -Config @{ Simulate = $true }
             $result.DiscType | Should -Be 'Video'
         } finally {
-            Remove-Item Env:\WSLC_ARM_SIM_DISC -ErrorAction SilentlyContinue
+            Remove-Item Env:\WRM_SIM_DISC -ErrorAction SilentlyContinue
         }
     }
 
-    It 'defaults to None when WSLC_ARM_SIM_DISC is unset in simulate mode' {
-        Remove-Item Env:\WSLC_ARM_SIM_DISC -ErrorAction SilentlyContinue
+    It 'defaults to None when WRM_SIM_DISC is unset in simulate mode' {
+        Remove-Item Env:\WRM_SIM_DISC -ErrorAction SilentlyContinue
         $result = Resolve-CurrentDisc -Config @{ Simulate = $true }
         $result.DiscType | Should -Be 'None'
     }

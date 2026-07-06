@@ -1,4 +1,4 @@
-# wslc-arm — Interface Specification (v1)
+# wrm — Interface Specification (v1)
 
 Authoritative contract for all modules. Implementers: build exactly against these
 signatures and return shapes. Do not change a signature without architect approval.
@@ -28,7 +28,7 @@ runs natively on Windows in the logged-in user's session.
 ## Repository layout
 
 ```
-wslc-arm/
+wrm/
 ├── SPEC.md                      # this file
 ├── docs/PLAN.md                 # approved plan
 ├── config/config.example.psd1   # template; real config.psd1 is gitignored
@@ -93,7 +93,7 @@ Get-ArmConfig [-Path <string>] -> [hashtable]
 #  unless Simulate. Expands relative paths.
 
 Write-ArmLog -Level <INFO|WARN|ERROR> -Message <string> [-Config <hashtable>]
-#  Timestamped line to console AND $Config.LogDir\wslc-arm-<yyyyMMdd>.log.
+#  Timestamped line to console AND $Config.LogDir\wrm-<yyyyMMdd>.log.
 #  Must never throw (log dir auto-created; falls back to console-only).
 
 Invoke-ArmTool -Name <makemkvcon|freaccmd|ffmpeg|video2x> -Arguments <string[]>
@@ -176,7 +176,7 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #  Param: [-ConfigPath] [-Simulate] [-Once] (-Once: process current disc then exit —
 #  used by tests). Register-WmiEvent Win32_VolumeChangeEvent EventType 2 + 30s poll
 #  fallback (compare Get-DiscType per optical drive). Single-flight lock via named
-#  mutex 'wslc-arm-rip'. Dispatch:
+#  mutex 'wrm-rip'. Dispatch:
 #    Video  → Invoke-VideoRip → Resolve-Title → rename staging dir → Move-ToNas
 #             (NasVideoPath) → if DVD && UpscaleDvds: copy main mkv path into
 #             UpscaleQueueDir queue file (<name>.json: {Source;DestDir}) → eject+notify
@@ -197,7 +197,7 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #  (skip present); print manual step for Video2X (GitHub release). Create dirs.
 #  Prompt for NAS paths/TMDb key/HA URL → write config/config.psd1 (skip prompts
 #  with -NonInteractive; copies example). Register hidden Scheduled Tasks
-#  'wslc-arm-watcher' and 'wslc-arm-upscaler' (at logon, current user,
+#  'wrm-watcher' and 'wrm-upscaler' (at logon, current user,
 #  pwsh -WindowStyle Hidden -File <entrypoint>). -Uninstall removes tasks.
 ```
 

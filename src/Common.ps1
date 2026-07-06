@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 
 <#
 .SYNOPSIS
-    Load wslc-arm configuration from config/config.psd1 or config.example.psd1.
+    Load wrm configuration from config/config.psd1 or config.example.psd1.
 
 .DESCRIPTION
     Loads config/config.psd1; falls back to config.example.psd1 with a WARN log.
@@ -89,7 +89,7 @@ function Get-ArmConfig {
     Write timestamped log message to console and log file.
 
 .DESCRIPTION
-    Writes a timestamped line to both console and $Config.LogDir\wslc-arm-<yyyyMMdd>.log.
+    Writes a timestamped line to both console and $Config.LogDir\wrm-<yyyyMMdd>.log.
     Must never throw; log directory is auto-created, and logging falls back to console-only
     if the log directory cannot be created.
 
@@ -132,7 +132,7 @@ function Write-ArmLog {
                 $null = New-Item -ItemType Directory -Force -Path $logDir
             }
 
-            $logFile = Join-Path $logDir "wslc-arm-$(Get-Date -Format 'yyyyMMdd').log"
+            $logFile = Join-Path $logDir "wrm-$(Get-Date -Format 'yyyyMMdd').log"
             Add-Content -Path $logFile -Value $logLine -ErrorAction Stop
         } catch {
             # Fail silently; logging failure must not fail the pipeline

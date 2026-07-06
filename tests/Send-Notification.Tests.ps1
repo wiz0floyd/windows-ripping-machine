@@ -7,7 +7,7 @@ BeforeAll {
     . (Join-Path $PSScriptRoot '..' 'src' 'Send-Notification.ps1')
 
     # Create temp directory for logs
-    $script:TestDir = New-Item -ItemType Directory -Path (Join-Path $env:TEMP "wslc-arm-notify-test-$(New-Guid)")
+    $script:TestDir = New-Item -ItemType Directory -Path (Join-Path $env:TEMP "wrm-notify-test-$(New-Guid)")
     $script:LogDir = New-Item -ItemType Directory -Path (Join-Path $script:TestDir 'logs')
 }
 

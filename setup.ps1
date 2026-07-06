@@ -202,7 +202,7 @@ function New-ArmConfigFile {
     the current user (idempotent: skips if the task already exists).
 
 .PARAMETER TaskName
-    Scheduled task name (e.g. 'wslc-arm-watcher').
+    Scheduled task name (e.g. 'wrm-watcher').
 
 .PARAMETER ScriptPath
     Full path to the pwsh entry-point script to run.
@@ -230,7 +230,7 @@ function Register-ArmScheduledTask {
     $settings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
-        -Principal $principal -Settings $settings -Description "wslc-arm: $TaskName" -Force | Out-Null
+        -Principal $principal -Settings $settings -Description "wrm: $TaskName" -Force | Out-Null
     Write-Host "Registered scheduled task '$TaskName' -> $ScriptPath"
 }
 
@@ -267,13 +267,13 @@ if ($MyInvocation.InvocationName -ne '.') {
     $upscalerPath = Join-Path $repoRoot 'src' 'Upscale-Worker.ps1'
 
     if ($Uninstall) {
-        Unregister-ArmScheduledTask -TaskName 'wslc-arm-watcher'
-        Unregister-ArmScheduledTask -TaskName 'wslc-arm-upscaler'
-        Write-Host 'wslc-arm scheduled tasks removed.'
+        Unregister-ArmScheduledTask -TaskName 'wrm-watcher'
+        Unregister-ArmScheduledTask -TaskName 'wrm-upscaler'
+        Write-Host 'wrm scheduled tasks removed.'
         return
     }
 
-    Write-Host '== wslc-arm setup =='
+    Write-Host '== wrm setup =='
 
     Install-WingetPackage -Id 'GuinpinSoft.MakeMKV' -DisplayName 'MakeMKV'
     Install-WingetPackage -Id 'enzo1982.freac' -DisplayName 'fre:ac'
@@ -297,8 +297,8 @@ if ($MyInvocation.InvocationName -ne '.') {
             -TmdbApiKey $TmdbApiKey -HaWebhookUrl $HaWebhookUrl
     }
 
-    Register-ArmScheduledTask -TaskName 'wslc-arm-watcher' -ScriptPath $watcherPath
-    Register-ArmScheduledTask -TaskName 'wslc-arm-upscaler' -ScriptPath $upscalerPath
+    Register-ArmScheduledTask -TaskName 'wrm-watcher' -ScriptPath $watcherPath
+    Register-ArmScheduledTask -TaskName 'wrm-upscaler' -ScriptPath $upscalerPath
 
     Write-Host ''
     Write-Host 'Setup complete.'

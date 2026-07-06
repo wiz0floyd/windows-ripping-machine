@@ -76,7 +76,7 @@ BeforeAll {
 
 Describe 'End-to-end: DiscWatcher.ps1 -Simulate -Once (Video)' {
     BeforeAll {
-        $script:E2eRoot = Join-Path $env:TEMP "wslc-arm-e2e-video-$(New-Guid)"
+        $script:E2eRoot = Join-Path $env:TEMP "wrm-e2e-video-$(New-Guid)"
         New-Item -ItemType Directory -Force -Path $script:E2eRoot | Out-Null
         $script:E2eConfig = New-ArmE2eConfig -Root $script:E2eRoot
     }
@@ -99,11 +99,11 @@ Describe 'End-to-end: DiscWatcher.ps1 -Simulate -Once (Video)' {
             return
         }
 
-        $env:WSLC_ARM_SIM_DISC = 'Video'
+        $env:WRM_SIM_DISC = 'Video'
         try {
             & $script:WatcherScript -ConfigPath $script:E2eConfig.ConfigPath -Simulate -Once
         } finally {
-            Remove-Item Env:\WSLC_ARM_SIM_DISC -ErrorAction SilentlyContinue
+            Remove-Item Env:\WRM_SIM_DISC -ErrorAction SilentlyContinue
         }
 
         $mkvFiles = @(Get-ChildItem -Path $script:E2eConfig.Paths.NasVideoPath -Recurse -Filter '*.mkv' -ErrorAction SilentlyContinue)
@@ -120,7 +120,7 @@ Describe 'End-to-end: DiscWatcher.ps1 -Simulate -Once (Video)' {
 
 Describe 'End-to-end: DiscWatcher.ps1 -Simulate -Once (AudioCD)' {
     BeforeAll {
-        $script:E2eRoot = Join-Path $env:TEMP "wslc-arm-e2e-audio-$(New-Guid)"
+        $script:E2eRoot = Join-Path $env:TEMP "wrm-e2e-audio-$(New-Guid)"
         New-Item -ItemType Directory -Force -Path $script:E2eRoot | Out-Null
         $script:E2eConfig = New-ArmE2eConfig -Root $script:E2eRoot
     }
@@ -139,11 +139,11 @@ Describe 'End-to-end: DiscWatcher.ps1 -Simulate -Once (AudioCD)' {
             return
         }
 
-        $env:WSLC_ARM_SIM_DISC = 'AudioCD'
+        $env:WRM_SIM_DISC = 'AudioCD'
         try {
             & $script:WatcherScript -ConfigPath $script:E2eConfig.ConfigPath -Simulate -Once
         } finally {
-            Remove-Item Env:\WSLC_ARM_SIM_DISC -ErrorAction SilentlyContinue
+            Remove-Item Env:\WRM_SIM_DISC -ErrorAction SilentlyContinue
         }
 
         $flacFiles = @(Get-ChildItem -Path $script:E2eConfig.Paths.NasMusicPath -Recurse -Filter '*.flac' -ErrorAction SilentlyContinue)
@@ -158,7 +158,7 @@ Describe 'End-to-end: DiscWatcher.ps1 -Simulate -Once (AudioCD)' {
 
 Describe 'End-to-end: Upscale-Worker.ps1 -Simulate -Once' {
     BeforeAll {
-        $script:E2eRoot = Join-Path $env:TEMP "wslc-arm-e2e-upscale-$(New-Guid)"
+        $script:E2eRoot = Join-Path $env:TEMP "wrm-e2e-upscale-$(New-Guid)"
         New-Item -ItemType Directory -Force -Path $script:E2eRoot | Out-Null
         $script:E2eConfig = New-ArmE2eConfig -Root $script:E2eRoot
 

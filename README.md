@@ -15,7 +15,7 @@ A native Windows replacement for the Linux Automatic Ripping Machine: insert a d
 
 1. **Clone and configure:**
    ```powershell
-   cd C:\dev\wslc-arm
+   cd <path-to-cloned-repo>
    .\setup.ps1
    ```
    - Installs `makemkvcon` (MakeMKV), `freaccmd` (fre:ac), and `ffmpeg` via `winget`.
@@ -42,7 +42,7 @@ A native Windows replacement for the Linux Automatic Ripping Machine: insert a d
 ## Usage
 
 ### Normal operation
-- Insert a disc → DiscWatcher detects it → logs progress to `C:\rips\logs\wslc-arm-<date>.log` → files appear on NAS → toast/HA notification.
+- Insert a disc → DiscWatcher detects it → logs progress to `C:\rips\logs\wrm-<date>.log` → files appear on NAS → toast/HA notification.
 - Results folder: `\\nas\media\import\movies\Title (Year)\` or `\\nas\media\import\music\Artist\Album\`.
 
 ### Upscale a DVD (if `UpscaleDvds=true` in config)
@@ -112,7 +112,7 @@ The following tests require physical media and cannot be automated. Insert each 
 
 1. **Blu-ray disc:**
    - Insert a Blu-ray movie disc
-   - Watch logs: `Get-Content C:\rips\logs\wslc-arm-$(Get-Date -Format yyyyMMdd).log -Tail 20 -Wait`
+   - Watch logs: `Get-Content C:\rips\logs\wrm-$(Get-Date -Format yyyyMMdd).log -Tail 20 -Wait`
    - Verify `.mkv` files appear under `\\nas\media\import\movies\Title (Year)\`
    - Tray ejects automatically
    - Toast notification appears (or HA webhook fires if configured)
@@ -128,7 +128,7 @@ The following tests require physical media and cannot be automated. Insert each 
 
 4. **Reboot and task auto-start:**
    - Reboot the machine
-   - Verify Scheduled Task `wslc-arm-watcher` started automatically at logon
+   - Verify Scheduled Task `wrm-watcher` started automatically at logon
    - Repeat test 1 or 2 to confirm the daemon is running post-reboot
 
 5. **Upscale workflow** (requires `UpscaleDvds=true` in config):
@@ -143,7 +143,7 @@ The following tests require physical media and cannot be automated. Insert each 
 
 ## Troubleshooting
 
-Check `C:\rips\logs\wslc-arm-<date>.log` for detailed progress and errors.
+Check `C:\rips\logs\wrm-<date>.log` for detailed progress and errors.
 
 Key failure cases:
 - **MakeMKV key expired:** watcher detects and notifies (refresh key or buy license at makemkv.com).
