@@ -166,3 +166,88 @@ Describe 'Resolve-Title' {
         $result.FolderName | Should -Be 'Cast Away (2000)'
     }
 }
+
+Describe 'Resolve-TitleOverride' {
+    BeforeEach {
+        $script:OverrideDir = Join-Path $script:TestDir "override-$(New-Guid)"
+        $null = New-Item -ItemType Directory -Force -Path $script:OverrideDir
+        $script:Fallback = [pscustomobject]@{
+            FolderName = 'Fallback Title (1999)'
+            Matched    = $true
+            Title      = 'Fallback Title'
+            Year       = 1999
+        }
+    }
+
+    It 'returns the fallback unchanged when metadata.json is missing' {
+        $result = Resolve-TitleOverride -OutputDir $script:OverrideDir -FallbackResolved $script:Fallback -Config $script:Config
+        $result | Should -Be $script:Fallback
+    }
+
+    It 'uses the override when Title and Year are both present' {
+        '{"Title": "My Movie", "Year": "2020"}' | Set-Content -Path (Join-Path $script:OverrideDir 'metadata.json')
+
+        $result = Resolve-TitleOverride -OutputDir $script:OverrideDir -FallbackResolved $script:Fallback -Config $script:Config
+
+        $result.Matched | Should -Be $true
+        $result.Title | Should -Be 'My Movie'
+        $result.Year | Should -Be '2020'
+        $result.FolderName | Should -Be 'My Movie (2020)'
+    }
+
+    It 'uses the override with just Title when Year is blank' {
+        '{"Title": "My Movie", "Year": ""}' | Set-Content -Path (Join-Path $script:OverrideDir 'metadata.json')
+
+        $result = Resolve-TitleOverride -OutputDir $script:OverrideDir -FallbackResolved $script:Fallback -Config $script:Config
+
+        $result.Matched | Should -Be $true
+        $result.FolderName | Should -Be 'My Movie'
+    }
+
+    It 'falls back to the original result when Title is blank/whitespace-only' {
+        '{"Title": "   ", "Year": "2020"}' | Set-Content -Path (Join-Path $script:OverrideDir 'metadata.json')
+
+        $result = Resolve-TitleOverride -OutputDir $script:OverrideDir -FallbackResolved $script:Fallback -Config $script:Config
+
+        $result | Should -Be $script:Fallback
+    }
+
+    It 'uses the override when the Year key is entirely missing (not just blank)' {
+        '{"Title": "My Movie"}' | Set-Content -Path (Join-Path $script:OverrideDir 'metadata.json')
+
+        $result = Resolve-TitleOverride -OutputDir $script:OverrideDir -FallbackResolved $script:Fallback -Config $script:Config
+
+        $result.Matched | Should -Be $true
+        $result.FolderName | Should -Be 'My Movie'
+    }
+
+    It 'falls back to the original result when metadata.json is malformed JSON' {
+        '{ this is not valid json' | Set-Content -Path (Join-Path $script:OverrideDir 'metadata.json')
+
+        $result = Resolve-TitleOverride -OutputDir $script:OverrideDir -FallbackResolved $script:Fallback -Config $script:Config
+
+        $result | Should -Be $script:Fallback
+    }
+
+    It 'falls back to the original result when metadata.json parses to a non-object' {
+        '["not", "an", "object"]' | Set-Content -Path (Join-Path $script:OverrideDir 'metadata.json')
+
+        $result = Resolve-TitleOverride -OutputDir $script:OverrideDir -FallbackResolved $script:Fallback -Config $script:Config
+
+        $result | Should -Be $script:Fallback
+    }
+
+    It 'strips invalid filename characters from the override folder name' {
+        '{"Title": "Se7en: Redux", "Year": "1995"}' | Set-Content -Path (Join-Path $script:OverrideDir 'metadata.json')
+
+        $result = Resolve-TitleOverride -OutputDir $script:OverrideDir -FallbackResolved $script:Fallback -Config $script:Config
+
+        $result.FolderName | Should -Not -Match '[\\/:*?"<>|]'
+        $result.FolderName | Should -Be 'Se7en Redux (1995)'
+    }
+
+    It 'never throws' {
+        '{ this is not valid json' | Set-Content -Path (Join-Path $script:OverrideDir 'metadata.json')
+        { Resolve-TitleOverride -OutputDir $script:OverrideDir -FallbackResolved $script:Fallback -Config $script:Config } | Should -Not -Throw
+    }
+}

@@ -162,6 +162,27 @@ function Test-ArmTmdbAcceptance {
 
 <#
 .SYNOPSIS
+    Build a sanitized "Title (Year)" (or just "Title" when Year is blank)
+    folder name, shared by Resolve-Title and Resolve-TitleOverride.
+#>
+function ConvertTo-ArmFolderName {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string] $Title,
+
+        [AllowNull()]
+        $Year
+    )
+
+    $folderRaw = if ($Year) { "$Title ($Year)" } else { $Title }
+    return ConvertTo-ArmSafeFileName -Name $folderRaw
+}
+
+<#
+.SYNOPSIS
     Resolve a disc's display title/year via TMDb, falling back to a cleaned-label name.
 
 .DESCRIPTION
@@ -230,8 +251,7 @@ function Resolve-Title {
             try { $year = ([datetime]$top.release_date).Year } catch { $year = $null }
         }
 
-        $folderRaw = if ($year) { "$title ($year)" } else { $title }
-        $folderName = ConvertTo-ArmSafeFileName -Name $folderRaw
+        $folderName = ConvertTo-ArmFolderName -Title $title -Year $year
 
         return [pscustomobject]@{ FolderName = $folderName; Matched = $true; Title = $title; Year = $year }
 
@@ -246,5 +266,87 @@ function Resolve-Title {
             Title      = $null
             Year       = $null
         }
+    }
+}
+
+<#
+.SYNOPSIS
+    Re-read a rip's metadata.json for a user-supplied Title/Year override.
+
+.DESCRIPTION
+    Called immediately before the staging dir is renamed for the NAS move.
+    If metadata.json is missing, unreadable, malformed, not a JSON object, or
+    has a blank/whitespace-only Title, returns $FallbackResolved unchanged
+    (the original Resolve-Title result from before the rip). Otherwise builds
+    a "Title (Year)" folder name (or just "Title" if Year is blank) from the
+    override, sanitized the same way Resolve-Title sanitizes its own matches.
+
+    Never throws. Property access uses the PSObject.Properties[...] indexer
+    rather than direct dot-access so a missing key (e.g. the user deletes the
+    Year line) doesn't throw under Set-StrictMode and discard a valid Title
+    edit.
+
+.PARAMETER OutputDir
+    The rip's staging output directory (same one metadata.json was written to).
+
+.PARAMETER FallbackResolved
+    The [pscustomobject] from Resolve-Title, computed before the rip started.
+
+.PARAMETER Config
+    Configuration hashtable (used for logging only).
+
+.OUTPUTS
+    [pscustomobject] @{ FolderName; Matched; Title; Year }
+
+.EXAMPLE
+    $resolved = Resolve-TitleOverride -OutputDir $ripResult.OutputDir -FallbackResolved $ripResult.Resolved -Config $config
+#>
+function Resolve-TitleOverride {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $OutputDir,
+
+        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        [pscustomobject] $FallbackResolved,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable] $Config
+    )
+
+    try {
+        $path = Join-Path $OutputDir 'metadata.json'
+        if (-not (Test-Path -LiteralPath $path)) {
+            return $FallbackResolved
+        }
+
+        $json = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+
+        $titleProp = $json.PSObject.Properties['Title']
+        $title = if ($titleProp) { "$($titleProp.Value)" } else { '' }
+        $title = $title.Trim()
+
+        if (-not $title) {
+            return $FallbackResolved
+        }
+
+        $yearProp = $json.PSObject.Properties['Year']
+        $year = if ($yearProp) { "$($yearProp.Value)" } else { '' }
+        $year = $year.Trim()
+
+        $folderName = ConvertTo-ArmFolderName -Title $title -Year $year
+
+        return [pscustomobject]@{
+            FolderName = $folderName
+            Matched    = $true
+            Title      = $title
+            Year       = if ($year) { $year } else { $null }
+        }
+
+    } catch {
+        Write-ArmLog -Level WARN -Message "Failed to read metadata.json override in '$OutputDir': $_" -Config $Config
+        return $FallbackResolved
     }
 }
