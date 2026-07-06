@@ -96,6 +96,10 @@ function Move-ToNas {
             }
         }
 
+        # Resolve to the canonical long path so it matches Get-ChildItem's FullName
+        # output later (short 8.3 paths like RUNNER~1 would otherwise break the
+        # prefix Substring used for relative-path verification below).
+        $SourceDir = (Get-Item -Path $SourceDir).FullName
         $sourceDirName = (Get-Item -Path $SourceDir).Name
         $destDir = Join-Path $DestRoot $sourceDirName
 

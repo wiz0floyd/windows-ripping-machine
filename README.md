@@ -1,5 +1,7 @@
 # Windows-Native Automatic Ripping Machine
 
+[![CI](https://github.com/wiz0floyd/windows-ripping-machine/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/wiz0floyd/windows-ripping-machine/actions/workflows/ci.yml)
+
 A native Windows replacement for the Linux Automatic Ripping Machine: insert a disc → rips automatically → results land on your NAS, tray ejects, you're notified. Optional stage 2 upscales DVD rips using AI (Real-ESRGAN on your GPU).
 
 ## Architecture
@@ -75,6 +77,8 @@ Invoke-ScriptAnalyzer -Path src -Recurse
 ```
 
 Tests use fixtures and stubs (fake MakeMKV output, etc.) so no real disc or NAS access is needed.
+
+CI runs this same suite automatically on every push and pull request (see the badge above and `.github/workflows/ci.yml`).
 
 ## Upscale review workflow
 
