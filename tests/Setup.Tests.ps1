@@ -124,6 +124,42 @@ Describe 'New-ArmConfigFile' {
     }
 }
 
+Describe 'Test-SshSession' {
+    BeforeEach {
+        $script:origSshConnection = $env:SSH_CONNECTION
+        $script:origSshClient = $env:SSH_CLIENT
+        $script:origSshTty = $env:SSH_TTY
+        $env:SSH_CONNECTION = $null
+        $env:SSH_CLIENT = $null
+        $env:SSH_TTY = $null
+    }
+
+    AfterEach {
+        $env:SSH_CONNECTION = $script:origSshConnection
+        $env:SSH_CLIENT = $script:origSshClient
+        $env:SSH_TTY = $script:origSshTty
+    }
+
+    It 'returns false when no SSH env vars are set' {
+        Test-SshSession | Should -BeFalse
+    }
+
+    It 'returns true when SSH_CONNECTION is set' {
+        $env:SSH_CONNECTION = '10.0.0.1 1234 10.0.0.2 22'
+        Test-SshSession | Should -BeTrue
+    }
+
+    It 'returns true when SSH_CLIENT is set' {
+        $env:SSH_CLIENT = '10.0.0.1 1234 22'
+        Test-SshSession | Should -BeTrue
+    }
+
+    It 'returns true when SSH_TTY is set' {
+        $env:SSH_TTY = '/dev/pts/0'
+        Test-SshSession | Should -BeTrue
+    }
+}
+
 Describe 'Register-ArmScheduledTask / Unregister-ArmScheduledTask' {
     It 'skips registration when the task already exists' {
         Mock Get-ScheduledTask { [pscustomobject]@{ TaskName = 'wrm-watcher' } }
