@@ -9,6 +9,15 @@ BeforeAll {
     # Create temp directory for logs
     $script:TestDir = New-Item -ItemType Directory -Path (Join-Path $env:TEMP "wrm-move-test-$(New-Guid)")
     $script:LogDir = New-Item -ItemType Directory -Path (Join-Path $script:TestDir 'logs')
+
+    # Builds a minimal Move-ToNas config hashtable. Callers only need to
+    # override LogDir on the rare occasion a test wants a different one.
+    function New-TestConfig {
+        param([string] $LogDir = $script:LogDir)
+        @{
+            LogDir = $LogDir
+        }
+    }
 }
 
 AfterAll {
@@ -18,9 +27,7 @@ AfterAll {
 
 Describe 'Move-ToNas' {
     It 'successfully moves files and deletes source when verification passes' {
-        $config = @{
-            LogDir = $script:LogDir
-        }
+        $config = New-TestConfig
 
         # Create source directory with test files
         $sourceDir = Join-Path (Join-Path $env:TEMP "move-test-src-$(New-Guid)") 'TestMovie'
@@ -73,9 +80,7 @@ Describe 'Move-ToNas' {
     }
 
     It 'preserves source when robocopy fails with exit code >= 8' {
-        $config = @{
-            LogDir = $script:LogDir
-        }
+        $config = New-TestConfig
 
         # Create source directory
         $sourceDir = Join-Path (Join-Path $env:TEMP "move-test-fail-$(New-Guid)") 'TestMovie'
@@ -111,9 +116,7 @@ Describe 'Move-ToNas' {
     }
 
     It 'preserves source when verification fails (file size mismatch)' {
-        $config = @{
-            LogDir = $script:LogDir
-        }
+        $config = New-TestConfig
 
         # Create source directory with files
         $sourceDir = Join-Path (Join-Path $env:TEMP "move-test-verify-$(New-Guid)") 'TestMovie'
@@ -149,9 +152,7 @@ Describe 'Move-ToNas' {
     }
 
     It 'preserves source when destination file is missing' {
-        $config = @{
-            LogDir = $script:LogDir
-        }
+        $config = New-TestConfig
 
         # Create source with multiple files
         $sourceDir = Join-Path (Join-Path $env:TEMP "move-test-missing-$(New-Guid)") 'TestMovie'
@@ -189,9 +190,7 @@ Describe 'Move-ToNas' {
     }
 
     It 'returns error when source directory does not exist' {
-        $config = @{
-            LogDir = $script:LogDir
-        }
+        $config = New-TestConfig
 
         $result = Move-ToNas -SourceDir 'C:\nonexistent\path' -DestRoot 'C:\dest' -Config $config
 
@@ -200,9 +199,7 @@ Describe 'Move-ToNas' {
     }
 
     It 'never throws when robocopy raises an error' {
-        $config = @{
-            LogDir = $script:LogDir
-        }
+        $config = New-TestConfig
 
         # Create source directory
         $sourceDir = Join-Path (Join-Path $env:TEMP "move-test-except-$(New-Guid)") 'TestMovie'
@@ -227,9 +224,7 @@ Describe 'Move-ToNas' {
     }
 
     It 'accepts robocopy exit codes 0-7 as success' {
-        $config = @{
-            LogDir = $script:LogDir
-        }
+        $config = New-TestConfig
 
         # Create source and destination
         $sourceDir = Join-Path (Join-Path $env:TEMP "move-test-exitcode-$(New-Guid)") 'TestMovie'
@@ -278,9 +273,7 @@ Describe 'Move-ToNas' {
     }
 
     It 'creates subdirectory under DestRoot with SourceDir name' {
-        $config = @{
-            LogDir = $script:LogDir
-        }
+        $config = New-TestConfig
 
         # Create source with specific name
         $sourceDir = Join-Path (Join-Path $env:TEMP "move-test-subdir-$(New-Guid)") 'MyCustomMovie'

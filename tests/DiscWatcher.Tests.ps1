@@ -318,7 +318,7 @@ Describe 'Invoke-DiscMutexDispatch (single-flight)' {
         Mock Send-ArmNotification { }
     }
 
-    It 'skips dispatch when the named mutex is already held (by another runspace)' {
+    It 'returns $false when the named mutex is already held (by another runspace)' {
         # A named Mutex is reentrant on the *same* thread even via a different
         # Mutex object, so the holder must run in a separate runspace for this
         # test to actually exercise single-flight contention. A bare
@@ -346,8 +346,9 @@ Describe 'Invoke-DiscMutexDispatch (single-flight)' {
             Test-Path "$script:TestRoot\ready.flag" | Should -BeTrue
 
             Mock Invoke-DiscDispatch { }
-            Invoke-DiscMutexDispatch -DriveLetter 'D' -DiscType 'Data' -Config $script:Config
+            $result = Invoke-DiscMutexDispatch -DriveLetter 'D' -DiscType 'Data' -Config $script:Config
             Should -Invoke Invoke-DiscDispatch -Times 0
+            $result | Should -BeFalse
         } finally {
             New-Item -ItemType File -Path "$script:TestRoot\release.flag" -Force | Out-Null
             $null = $holderPs.EndInvoke($asyncResult)
@@ -355,10 +356,11 @@ Describe 'Invoke-DiscMutexDispatch (single-flight)' {
         }
     }
 
-    It 'dispatches and releases the mutex when free' {
+    It 'dispatches, returns $true, and releases the mutex when free' {
         Mock Invoke-DiscDispatch { }
-        Invoke-DiscMutexDispatch -DriveLetter 'D' -DiscType 'Data' -Config $script:Config
+        $result = Invoke-DiscMutexDispatch -DriveLetter 'D' -DiscType 'Data' -Config $script:Config
         Should -Invoke Invoke-DiscDispatch -Times 1
+        $result | Should -BeTrue
 
         # Mutex must be released afterward: a second immediate acquire should succeed.
         $m = New-Object System.Threading.Mutex($false, 'Global\wrm-rip')
@@ -368,6 +370,76 @@ Describe 'Invoke-DiscMutexDispatch (single-flight)' {
             $m.ReleaseMutex()
             $m.Dispose()
         }
+    }
+}
+
+Describe 'Update-ArmDiscWatcherState (loop last-state tracking)' {
+    BeforeEach {
+        $script:TestRoot = Join-Path $TestDrive (New-Guid)
+        New-Item -ItemType Directory -Force -Path $script:TestRoot | Out-Null
+        $script:Config = New-TestConfig -StagingDir (Join-Path $script:TestRoot 'staging') `
+            -NasVideoPath (Join-Path $script:TestRoot 'nas-video') `
+            -NasMusicPath (Join-Path $script:TestRoot 'nas-music') `
+            -UpscaleQueueDir (Join-Path $script:TestRoot 'queue')
+    }
+
+    It 'does NOT advance last state when dispatch is skipped due to mutex contention (disc must be retried, not dropped)' {
+        Mock Invoke-DiscMutexDispatch { return $false }
+        $lastState = @{}
+
+        Update-ArmDiscWatcherState -DriveLetter 'D' -Type 'Video' -LastState $lastState -Config $script:Config
+
+        Should -Invoke Invoke-DiscMutexDispatch -Times 1
+        $lastState.ContainsKey([char]'D') | Should -BeFalse
+    }
+
+    It 'advances last state when dispatch actually happens' {
+        Mock Invoke-DiscMutexDispatch { return $true }
+        $lastState = @{}
+
+        Update-ArmDiscWatcherState -DriveLetter 'D' -Type 'Video' -LastState $lastState -Config $script:Config
+
+        Should -Invoke Invoke-DiscMutexDispatch -Times 1
+        $lastState[[char]'D'] | Should -Be 'Video'
+    }
+
+    It 'advances last state to None without attempting dispatch' {
+        Mock Invoke-DiscMutexDispatch { return $true }
+        $lastState = @{ [char]'D' = 'Video' }
+
+        Update-ArmDiscWatcherState -DriveLetter 'D' -Type 'None' -LastState $lastState -Config $script:Config
+
+        Should -Invoke Invoke-DiscMutexDispatch -Times 0
+        $lastState[[char]'D'] | Should -Be 'None'
+    }
+
+    It 'does not re-dispatch when the type is unchanged from last state' {
+        Mock Invoke-DiscMutexDispatch { return $true }
+        $lastState = @{ [char]'D' = 'Video' }
+
+        Update-ArmDiscWatcherState -DriveLetter 'D' -Type 'Video' -LastState $lastState -Config $script:Config
+
+        Should -Invoke Invoke-DiscMutexDispatch -Times 0
+        $lastState[[char]'D'] | Should -Be 'Video'
+    }
+
+    It 'retries on the next call after a skipped dispatch once the mutex is free' {
+        $script:attempt = 0
+        Mock Invoke-DiscMutexDispatch {
+            $script:attempt++
+            return ($script:attempt -gt 1)
+        }
+        $lastState = @{}
+
+        # First poll: mutex contended, dispatch skipped, state must NOT advance.
+        Update-ArmDiscWatcherState -DriveLetter 'D' -Type 'Video' -LastState $lastState -Config $script:Config
+        $lastState.ContainsKey([char]'D') | Should -BeFalse
+
+        # Second poll (same disc still in drive, same type): mutex now free, dispatch succeeds.
+        Update-ArmDiscWatcherState -DriveLetter 'D' -Type 'Video' -LastState $lastState -Config $script:Config
+
+        Should -Invoke Invoke-DiscMutexDispatch -Times 2
+        $lastState[[char]'D'] | Should -Be 'Video'
     }
 }
 
@@ -401,5 +473,25 @@ Describe 'New-UpscaleQueueEntry' {
         $files = @(Get-ChildItem $dir -Filter '*.json')
         $files.Count | Should -Be 1
         $files[0].Name | Should -Not -Match '[:?]'
+    }
+
+    It 'uses the canonical ConvertTo-ArmSafeFileName sanitizer (removes invalid chars, collapses whitespace, not underscore-replacement)' {
+        $dir = Join-Path $TestDrive (New-Guid)
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        $config = @{ UpscaleQueueDir = $dir; LogDir = $dir }
+
+        $folderName = 'Weird:   Title? (2020)'
+        $expectedSafeName = ConvertTo-ArmSafeFileName -Name $folderName
+
+        New-UpscaleQueueEntry -MkvPath 'C:\x\movie.mkv' -DestDir 'C:\nas\movie' `
+            -FolderName $folderName -Config $config
+
+        $files = @(Get-ChildItem $dir -Filter '*.json')
+        $files.Count | Should -Be 1
+        $files[0].BaseName | Should -Be $expectedSafeName
+        # The old ad hoc sanitizer replaced invalid chars with '_' and left
+        # runs of whitespace intact; the canonical sanitizer removes invalid
+        # chars entirely and collapses whitespace, so it must not contain '_'.
+        $files[0].BaseName | Should -Not -Match '_'
     }
 }

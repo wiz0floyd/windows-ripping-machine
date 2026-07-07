@@ -47,6 +47,14 @@ function Invoke-Robocopy {
 
     Never throws; errors are returned in the result object.
 
+    Failures (robocopy failure or verification mismatch) are NOT automatically
+    retried or re-queued; this is a deliberate design choice, not an oversight.
+    The source directory is left in place, and the caller (DiscWatcher.ps1) is
+    expected to log and notify so a human can investigate and manually re-trigger
+    the move. Building a safe automatic retry/re-queue mechanism is nontrivial
+    (duplicate partial copies, backoff, re-verification), so manual intervention
+    is the accepted safer default.
+
 .PARAMETER SourceDir
     Full path to the source directory to move.
 
@@ -89,11 +97,7 @@ function Move-ToNas {
         if (-not (Test-Path -Path $SourceDir -PathType Container)) {
             $errorMsg = "Source directory not found: $SourceDir"
             Write-ArmLog -Level ERROR -Message $errorMsg -Config $Config
-            return [pscustomobject]@{
-                Success = $false
-                DestDir = $null
-                Error   = $errorMsg
-            }
+            return New-ArmResult -Success $false -Properties ([ordered]@{ DestDir = $null }) -Error $errorMsg
         }
 
         # Resolve to the canonical long path so it matches Get-ChildItem's FullName
@@ -122,11 +126,7 @@ function Move-ToNas {
         if ($robocopyExitCode -ge 8) {
             $errorMsg = "robocopy failed with exit code $robocopyExitCode"
             Write-ArmLog -Level ERROR -Message $errorMsg -Config $Config
-            return [pscustomobject]@{
-                Success = $false
-                DestDir = $null
-                Error   = $errorMsg
-            }
+            return New-ArmResult -Success $false -Properties ([ordered]@{ DestDir = $null }) -Error $errorMsg
         }
 
         Write-ArmLog -Level INFO -Message "robocopy completed with exit code $robocopyExitCode (success)" -Config $Config
@@ -158,11 +158,7 @@ function Move-ToNas {
         if ($verificationFailed) {
             $errorMsg = "Verification failed: source and destination mismatch"
             Write-ArmLog -Level ERROR -Message $errorMsg -Config $Config
-            return [pscustomobject]@{
-                Success = $false
-                DestDir = $destDir
-                Error   = $errorMsg
-            }
+            return New-ArmResult -Success $false -Properties ([ordered]@{ DestDir = $destDir }) -Error $errorMsg
         }
 
         Write-ArmLog -Level INFO -Message "Verification successful: all files match" -Config $Config
@@ -173,19 +169,11 @@ function Move-ToNas {
 
         Write-ArmLog -Level INFO -Message "Move completed successfully: $destDir" -Config $Config
 
-        return [pscustomobject]@{
-            Success = $true
-            DestDir = $destDir
-            Error   = $null
-        }
+        return New-ArmResult -Success $true -Properties ([ordered]@{ DestDir = $destDir }) -Error $null
 
     } catch {
         $errorMsg = "Exception in Move-ToNas: $_"
         Write-ArmLog -Level ERROR -Message $errorMsg -Config $Config
-        return [pscustomobject]@{
-            Success = $false
-            DestDir = $null
-            Error   = $errorMsg
-        }
+        return New-ArmResult -Success $false -Properties ([ordered]@{ DestDir = $null }) -Error $errorMsg
     }
 }

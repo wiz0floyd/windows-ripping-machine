@@ -124,39 +124,71 @@ Describe 'New-ArmConfigFile' {
     }
 }
 
-Describe 'Test-SshSession' {
+Describe 'Test-NonInteractiveSession' {
     BeforeEach {
         $script:origSshConnection = $env:SSH_CONNECTION
         $script:origSshClient = $env:SSH_CLIENT
         $script:origSshTty = $env:SSH_TTY
+        $script:origSessionName = $env:SESSIONNAME
         $env:SSH_CONNECTION = $null
         $env:SSH_CLIENT = $null
         $env:SSH_TTY = $null
+        $env:SESSIONNAME = 'Console'
+
+        # Default to "interactive" so each test only has to override the one
+        # signal it's exercising.
+        Mock Get-ArmIsUserInteractive { $true }
     }
 
     AfterEach {
         $env:SSH_CONNECTION = $script:origSshConnection
         $env:SSH_CLIENT = $script:origSshClient
         $env:SSH_TTY = $script:origSshTty
+        $env:SESSIONNAME = $script:origSessionName
     }
 
-    It 'returns false when no SSH env vars are set' {
-        Test-SshSession | Should -BeFalse
+    It 'returns false for a normal local interactive console session' {
+        Test-NonInteractiveSession | Should -BeFalse
+    }
+
+    It 'returns false for an RDP session' {
+        $env:SESSIONNAME = 'RDP-Tcp#3'
+        Test-NonInteractiveSession | Should -BeFalse
     }
 
     It 'returns true when SSH_CONNECTION is set' {
         $env:SSH_CONNECTION = '10.0.0.1 1234 10.0.0.2 22'
-        Test-SshSession | Should -BeTrue
+        Test-NonInteractiveSession | Should -BeTrue
     }
 
     It 'returns true when SSH_CLIENT is set' {
         $env:SSH_CLIENT = '10.0.0.1 1234 22'
-        Test-SshSession | Should -BeTrue
+        Test-NonInteractiveSession | Should -BeTrue
     }
 
     It 'returns true when SSH_TTY is set' {
         $env:SSH_TTY = '/dev/pts/0'
-        Test-SshSession | Should -BeTrue
+        Test-NonInteractiveSession | Should -BeTrue
+    }
+
+    It 'returns true when Get-ArmIsUserInteractive is false (service/SYSTEM context)' {
+        Mock Get-ArmIsUserInteractive { $false }
+        Test-NonInteractiveSession | Should -BeTrue
+    }
+
+    It 'returns true when SESSIONNAME is absent (typical WinRM/PSRemoting)' {
+        $env:SESSIONNAME = $null
+        Test-NonInteractiveSession | Should -BeTrue
+    }
+
+    It 'returns true when SESSIONNAME is Services-prefixed' {
+        $env:SESSIONNAME = 'Services'
+        Test-NonInteractiveSession | Should -BeTrue
+    }
+
+    It 'returns true when SESSIONNAME is RemoteControl-prefixed' {
+        $env:SESSIONNAME = 'RemoteControl'
+        Test-NonInteractiveSession | Should -BeTrue
     }
 }
 
@@ -189,6 +221,28 @@ Describe 'Register-ArmScheduledTask / Unregister-ArmScheduledTask' {
         }
     }
 
+    It 'defaults the task principal to the current env user when -RunAsUser is not supplied' {
+        Mock Get-ScheduledTask { $null }
+        Mock Register-ScheduledTask { }
+
+        Register-ArmScheduledTask -TaskName 'wrm-watcher' -ScriptPath 'C:\dev\src\DiscWatcher.ps1'
+
+        Should -Invoke Register-ScheduledTask -Times 1 -ParameterFilter {
+            $Principal.UserId -eq "$env:USERDOMAIN\$env:USERNAME"
+        }
+    }
+
+    It 'uses the explicitly supplied -RunAsUser for the task principal' {
+        Mock Get-ScheduledTask { $null }
+        Mock Register-ScheduledTask { }
+
+        Register-ArmScheduledTask -TaskName 'wrm-watcher' -ScriptPath 'C:\dev\src\DiscWatcher.ps1' -RunAsUser 'CONTOSO\originaluser'
+
+        Should -Invoke Register-ScheduledTask -Times 1 -ParameterFilter {
+            $Principal.UserId -eq 'CONTOSO\originaluser'
+        }
+    }
+
     It 'unregisters an existing task' {
         Mock Get-ScheduledTask { [pscustomobject]@{ TaskName = 'wrm-watcher' } }
         Mock Unregister-ScheduledTask { }
@@ -205,5 +259,24 @@ Describe 'Register-ArmScheduledTask / Unregister-ArmScheduledTask' {
         Unregister-ArmScheduledTask -TaskName 'wrm-nonexistent'
 
         Should -Invoke Unregister-ScheduledTask -Times 0
+    }
+}
+
+Describe 'Invoke-ArmElevatedRelaunch' {
+    It 'does not throw when the elevated child exits 0' {
+        Mock Start-Process { [pscustomobject]@{ ExitCode = 0 } }
+
+        { Invoke-ArmElevatedRelaunch -ArgumentList @('-NoProfile', '-File', 'C:\dev\setup.ps1') } | Should -Not -Throw
+
+        Should -Invoke Start-Process -Times 1 -ParameterFilter {
+            $FilePath -eq 'pwsh.exe' -and $Verb -eq 'RunAs' -and $Wait -eq $true -and $PassThru -eq $true
+        }
+    }
+
+    It 'throws a clear, actionable error when the elevated child exits non-zero' {
+        Mock Start-Process { [pscustomobject]@{ ExitCode = 1 } }
+
+        { Invoke-ArmElevatedRelaunch -ArgumentList @('-NoProfile', '-File', 'C:\dev\setup.ps1') } |
+            Should -Throw -ExpectedMessage '*exit code 1*'
     }
 }

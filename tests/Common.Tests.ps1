@@ -276,6 +276,89 @@ exit 0
         $pathArgLine = $result.StdOut | Where-Object { $_ -like 'Arg1:*' }
         $pathArgLine | Should -Match ([regex]::Escape($testPath))
     }
+
+    It 'strips trailing CR from CRLF-terminated stdout/stderr lines (regression)' {
+        # Regression test: native Windows console tools (makemkvcon/ffmpeg) typically
+        # emit CRLF line endings. Splitting only on "`n" leaves a trailing "`r" on
+        # every line, which corrupts downstream string comparisons.
+
+        $stubContent = @'
+[Console]::Out.Write("stdout line1`r`nstdout line2`r`n")
+[Console]::Error.Write("stderr line1`r`nstderr line2`r`n")
+exit 0
+'@
+        Set-Content (Join-Path $script:TestStubDir 'stub-makemkvcon.ps1') -Value $stubContent
+
+        $config = @{
+            Simulate = $true
+            LogDir = $script:LogDir
+            StubDir = $script:TestStubDir
+        }
+
+        $result = Invoke-ArmTool -Name makemkvcon -Arguments @('-test') -Config $config
+
+        $result.StdOut | Should -HaveCount 2
+        $result.StdErr | Should -HaveCount 2
+
+        foreach ($line in $result.StdOut) {
+            $line | Should -Not -Match "`r$"
+        }
+        foreach ($line in $result.StdErr) {
+            $line | Should -Not -Match "`r$"
+        }
+    }
+}
+
+Describe 'New-ArmResult' {
+    It 'builds a success result with extra properties in supplied order' {
+        $result = New-ArmResult -Success $true -Properties ([ordered]@{ OutputDir = 'C:\out'; Artist = 'Artist'; Album = 'Album' })
+
+        $result.Success | Should -Be $true
+        $result.OutputDir | Should -Be 'C:\out'
+        $result.Artist | Should -Be 'Artist'
+        $result.Album | Should -Be 'Album'
+        $result.Error | Should -BeNullOrEmpty
+
+        $propNames = $result.psobject.Properties.Name
+        $propNames | Should -Be @('Success', 'OutputDir', 'Artist', 'Album', 'Error')
+    }
+
+    It 'builds a failure result with an Error message' {
+        $result = New-ArmResult -Success $false -Error 'Something failed' -Properties ([ordered]@{ DestDir = $null })
+
+        $result.Success | Should -Be $false
+        $result.DestDir | Should -BeNullOrEmpty
+        $result.Error | Should -Be 'Something failed'
+    }
+
+    It 'defaults to no extra properties when -Properties is omitted' {
+        $result = New-ArmResult -Success $true
+
+        $propNames = $result.psobject.Properties.Name
+        $propNames | Should -Be @('Success', 'Error')
+    }
+}
+
+Describe 'ConvertTo-ArmSafeFileName' {
+    It 'removes invalid file name characters' {
+        $result = ConvertTo-ArmSafeFileName -Name 'My: Movie / Title?'
+        $result | Should -Not -Match '[:\/\?]'
+    }
+
+    It 'collapses runs of whitespace into a single space' {
+        $result = ConvertTo-ArmSafeFileName -Name 'Too    many   spaces'
+        $result | Should -Be 'Too many spaces'
+    }
+
+    It 'trims leading and trailing whitespace' {
+        $result = ConvertTo-ArmSafeFileName -Name '  Padded Name  '
+        $result | Should -Be 'Padded Name'
+    }
+
+    It 'handles an empty string without throwing' {
+        { ConvertTo-ArmSafeFileName -Name '' } | Should -Not -Throw
+        ConvertTo-ArmSafeFileName -Name '' | Should -Be ''
+    }
 }
 
 Describe 'Get-DiscType' {

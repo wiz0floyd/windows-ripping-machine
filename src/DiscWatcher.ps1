@@ -184,7 +184,7 @@ function New-UpscaleQueueEntry {
         $null = New-Item -ItemType Directory -Force -Path $queueDir
     }
 
-    $safeName = ($FolderName -replace '[\\/:*?"<>|]', '_')
+    $safeName = ConvertTo-ArmSafeFileName -Name $FolderName
     $queuePath = Join-Path $queueDir "$safeName.json"
 
     $entry = @{ Source = $MkvPath; DestDir = $DestDir }
@@ -393,9 +393,14 @@ function Invoke-DiscDispatch {
 
 .PARAMETER Config
     Configuration hashtable.
+
+.OUTPUTS
+    [bool] $true if the mutex was acquired and dispatch was attempted; $false if
+    another rip was already in progress and dispatch was skipped.
 #>
 function Invoke-DiscMutexDispatch {
     [CmdletBinding()]
+    [OutputType([bool])]
     param(
         [Parameter(Mandatory = $true)]
         [char] $DriveLetter,
@@ -414,15 +419,73 @@ function Invoke-DiscMutexDispatch {
         $acquired = $mutex.WaitOne(0)
         if (-not $acquired) {
             Write-ArmLog -Level WARN -Message 'Another rip is already in progress (mutex held); skipping.' -Config $Config
-            return
+            return $false
         }
         Invoke-DiscDispatch -DriveLetter $DriveLetter -DiscType $DiscType -Config $Config
+        return $true
     } finally {
         if ($acquired) {
             $mutex.ReleaseMutex()
         }
         $mutex.Dispose()
     }
+}
+
+<#
+.SYNOPSIS
+    Advance the disc-watcher's last-seen-type state for a drive, dispatching
+    through the single-flight mutex when the disc type has changed.
+
+.DESCRIPTION
+    Centralizes the logic shared by the WMI-event branch and the poll-fallback
+    branch of Start-DiscWatcherLoop. When the observed type differs from the
+    last-known state for the drive, attempts a dispatch via
+    Invoke-DiscMutexDispatch. If the mutex was held elsewhere (another rip in
+    progress), the dispatch is skipped and $LastState is deliberately left
+    unchanged so the same disc is retried on the next iteration instead of
+    being silently dropped. In every other case (type unchanged, or type is
+    'None', or dispatch was actually attempted) $LastState is advanced to the
+    observed type.
+
+.PARAMETER DriveLetter
+    Drive letter being observed.
+
+.PARAMETER Type
+    Disc type currently observed for the drive (as returned by Get-DiscType).
+
+.PARAMETER LastState
+    Hashtable of drive letter -> last-observed disc type, mutated in place.
+
+.PARAMETER Config
+    Configuration hashtable.
+#>
+function Update-ArmDiscWatcherState {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [char] $DriveLetter,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Video', 'AudioCD', 'Data', 'None')]
+        [string] $Type,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable] $LastState,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable] $Config
+    )
+
+    if ($Type -ne 'None' -and $LastState[$DriveLetter] -ne $Type) {
+        $dispatched = Invoke-DiscMutexDispatch -DriveLetter $DriveLetter -DiscType $Type -Config $Config
+        if (-not $dispatched) {
+            # Mutex contention: leave $LastState as-is so this disc is retried
+            # on the next iteration instead of being dropped forever.
+            return
+        }
+    }
+
+    $LastState[$DriveLetter] = $Type
 }
 
 <#
@@ -469,19 +532,13 @@ function Start-DiscWatcherLoop {
                 if ($driveName) {
                     $driveLetter = [char] ($driveName.ToString().TrimEnd(':'))
                     $type = Get-DiscType -DriveLetter $driveLetter
-                    if ($type -ne 'None' -and $lastState[$driveLetter] -ne $type) {
-                        Invoke-DiscMutexDispatch -DriveLetter $driveLetter -DiscType $type -Config $Config
-                    }
-                    $lastState[$driveLetter] = $type
+                    Update-ArmDiscWatcherState -DriveLetter $driveLetter -Type $type -LastState $lastState -Config $Config
                 }
             }
 
             foreach ($drive in Get-OpticalDriveLetters) {
                 $type = Get-DiscType -DriveLetter $drive
-                if ($type -ne 'None' -and $lastState[$drive] -ne $type) {
-                    Invoke-DiscMutexDispatch -DriveLetter $drive -DiscType $type -Config $Config
-                }
-                $lastState[$drive] = $type
+                Update-ArmDiscWatcherState -DriveLetter $drive -Type $type -LastState $lastState -Config $Config
             }
         }
     } finally {

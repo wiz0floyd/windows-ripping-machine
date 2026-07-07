@@ -40,7 +40,7 @@ function Invoke-AudioRip {
     [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateScript({ $_ -match '^[A-Z]$' })]
+        [ValidateScript({ $_ -match '^[A-Za-z]$' })]
         [char] $DriveLetter,
 
         [Parameter(Mandatory = $true)]
@@ -54,7 +54,7 @@ function Invoke-AudioRip {
         $stagingDir = Join-Path $stagingBase $ripGuid
 
         # Create staging directory
-        $null = New-Item -ItemType Directory -Path $stagingDir -Force -ErrorAction SilentlyContinue
+        $null = New-Item -ItemType Directory -Path $stagingDir -Force
 
         Write-ArmLog -Level INFO -Message "Starting audio rip from drive $($DriveLetter): to $stagingDir" -Config $Config
 
@@ -72,13 +72,7 @@ function Invoke-AudioRip {
         if ($toolResult.ExitCode -ne 0) {
             $errorMsg = "freaccmd failed with exit code $($toolResult.ExitCode)"
             Write-ArmLog -Level ERROR -Message $errorMsg -Config $Config
-            return [pscustomobject]@{
-                Success   = $false
-                OutputDir = $null
-                Artist    = $null
-                Album     = $null
-                Error     = $errorMsg
-            }
+            return New-ArmResult -Success $false -Properties ([ordered]@{ OutputDir = $null; Artist = $null; Album = $null }) -ErrorMessage $errorMsg
         }
 
         Write-ArmLog -Level INFO -Message "freaccmd completed successfully" -Config $Config
@@ -89,13 +83,7 @@ function Invoke-AudioRip {
         if ($albumDirs.Count -eq 0) {
             $errorMsg = "No album directory found in $stagingDir"
             Write-ArmLog -Level ERROR -Message $errorMsg -Config $Config
-            return [pscustomobject]@{
-                Success   = $false
-                OutputDir = $stagingDir
-                Artist    = 'Unknown Artist'
-                Album     = "Unknown Album $(Get-Date -Format 'yyyy-MM-dd')"
-                Error     = $errorMsg
-            }
+            return New-ArmResult -Success $false -Properties ([ordered]@{ OutputDir = $stagingDir; Artist = 'Unknown Artist'; Album = "Unknown Album $(Get-Date -Format 'yyyy-MM-dd')" }) -ErrorMessage $errorMsg
         }
 
         $albumDir = $albumDirs[0]
@@ -121,23 +109,11 @@ function Invoke-AudioRip {
 
         Write-ArmLog -Level INFO -Message "Audio rip complete: $artist - $album" -Config $Config
 
-        return [pscustomobject]@{
-            Success   = $true
-            OutputDir = $outputDir
-            Artist    = $artist
-            Album     = $album
-            Error     = $null
-        }
+        return New-ArmResult -Success $true -Properties ([ordered]@{ OutputDir = $outputDir; Artist = $artist; Album = $album }) -ErrorMessage $null
 
     } catch {
         $errorMsg = "Exception in Invoke-AudioRip: $_"
         Write-ArmLog -Level ERROR -Message $errorMsg -Config $Config
-        return [pscustomobject]@{
-            Success   = $false
-            OutputDir = $null
-            Artist    = 'Unknown Artist'
-            Album     = "Unknown Album $(Get-Date -Format 'yyyy-MM-dd')"
-            Error     = $errorMsg
-        }
+        return New-ArmResult -Success $false -Properties ([ordered]@{ OutputDir = $null; Artist = 'Unknown Artist'; Album = "Unknown Album $(Get-Date -Format 'yyyy-MM-dd')" }) -ErrorMessage $errorMsg
     }
 }
