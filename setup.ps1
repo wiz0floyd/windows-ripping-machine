@@ -241,6 +241,27 @@ function Register-ArmScheduledTask {
 
 <#
 .SYNOPSIS
+    Detect whether the current process is attached to an SSH session.
+
+.DESCRIPTION
+    UAC's consent prompt requires an interactive window station/desktop.
+    An SSH session's process has neither, so Start-Process -Verb RunAs
+    cannot show the prompt and will hang or fail silently. Detecting
+    this lets setup.ps1 fail fast with an actionable fix instead.
+
+.OUTPUTS
+    [bool] $true if any of the standard OpenSSH session env vars are set.
+#>
+function Test-SshSession {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param()
+
+    return [bool]($env:SSH_CONNECTION -or $env:SSH_CLIENT -or $env:SSH_TTY)
+}
+
+<#
+.SYNOPSIS
     Remove a scheduled task if present (idempotent).
 
 .PARAMETER TaskName
@@ -269,6 +290,18 @@ function Unregister-ArmScheduledTask {
 if ($MyInvocation.InvocationName -ne '.') {
     $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        if (Test-SshSession) {
+            throw @'
+Not running elevated, and this is an SSH session: UAC cannot show its consent
+prompt over SSH (no interactive desktop attached), so self-elevation via
+"Run as Administrator" would hang or fail silently.
+
+setup.ps1 registers Scheduled Tasks and installs software -- a one-time,
+one-off action -- so it isn't worth loosening UAC just to run it over SSH.
+Run it instead from a local console or RDP session on this machine, in an
+Administrator (Run as Administrator) pwsh window.
+'@
+        }
         Write-Host 'Registering scheduled tasks requires elevation; relaunching as Administrator...'
         $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
         foreach ($key in $PSBoundParameters.Keys) {
