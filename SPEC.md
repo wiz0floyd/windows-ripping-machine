@@ -89,8 +89,9 @@ wrm/
 ```powershell
 Get-ArmConfig [-Path <string>] -> [hashtable]
 #  Loads config/config.psd1; falls back to config.example.psd1 with a WARN log.
-#  Validates required keys + types; throws on missing NasVideoPath/NasMusicPath
-#  unless Simulate. Expands relative paths.
+#  Checks presence/truthiness of NasVideoPath/NasMusicPath (throws if missing
+#  or blank) unless Simulate; no type validation is performed on any key.
+#  Expands relative paths.
 
 Write-ArmLog -Level <INFO|WARN|ERROR> -Message <string> [-Config <hashtable>]
 #  Timestamped line to console AND $Config.LogDir\wrm-<yyyyMMdd>.log.
@@ -113,21 +114,28 @@ Get-DiscType -DriveLetter <char> -> 'AudioCD'|'Video'|'Data'|'None'
 ```powershell
 # Rip-VideoDisc.ps1
 Invoke-VideoRip -DriveLetter <char> -Config <hashtable> -> [pscustomobject]
-#  @{ Success; DiscLabel; DiscType('DVD'|'BD'); OutputDir; TitleCount; Error }
+#  @{ Success; DiscLabel; DiscType('DVD'|'BD'); OutputDir; TitleCount; Error; Resolved }
 #  1. `makemkvcon -r info disc:9999` output → map drive letter to makemkvcon index
 #     (DRV: lines), read disc label + type.
-#  2. `makemkvcon -r --minlength=$($c.MinTitleLengthSec) mkv disc:<i> all <staging>\<label>\`
+#  2. As soon as the disc label is known (before the long rip runs), calls
+#     Resolve-Title and stores the result on `Resolved`; also writes it to a
+#     hand-editable `metadata.json` in OutputDir via Set-ArmMetadataFile (skips
+#     the write if metadata.json already exists, so a retried rip of the same
+#     staging dir never clobbers a prior user edit). `Resolved` is consumed by
+#     Resolve-TitleOverride just before the NAS-move rename.
+#  3. `makemkvcon -r --minlength=$($c.MinTitleLengthSec) mkv disc:<i> all <staging>\<label>\`
 #     (or main title only when !RipAllTitles: pick longest TINFO duration).
-#  3. Parse robot output: MSG codes, PRGV progress (log every ~10%), TINFO/CINFO.
-#  4. Detect expired/absent key (MSG 5021/"registration key" text) → Success=$false,
+#  4. Parse robot output: MSG codes, PRGV progress (log every ~10%), TINFO/CINFO.
+#  5. Detect expired/absent key (MSG 5021/"registration key" text) → Success=$false,
 #     Error='MAKEMKV_KEY_EXPIRED' (watcher notifies specially).
 
 # Rip-AudioCd.ps1
 Invoke-AudioRip -DriveLetter <char> -Config <hashtable> -> [pscustomobject]
 #  @{ Success; OutputDir; Artist; Album; Error }
-#  freaccmd <drive> -e flac -o "<staging>\audio\<guid>\<artist> - <album>\..." with
-#  CDDB/MusicBrainz metadata enabled; parse resulting tags/dir for Artist/Album;
-#  fallback names 'Unknown Artist'/'Unknown Album <yyyy-MM-dd>'.
+#  freaccmd <drive> -e flac -o "<staging>\audio\<guid>\<artist> - <album>\..." (no
+#  explicit CDDB/MusicBrainz flags are passed — this relies on freaccmd's own
+#  configured defaults); parse resulting tags/dir for Artist/Album; fallback
+#  names 'Unknown Artist'/'Unknown Album <yyyy-MM-dd>'.
 
 # Resolve-Title.ps1
 Resolve-Title -DiscLabel <string> -Config <hashtable> -> [pscustomobject]
@@ -136,15 +144,40 @@ Resolve-Title -DiscLabel <string> -Config <hashtable> -> [pscustomobject]
 #  region/studio noise (SPECIAL EDITION, WS, 16X9, PAL, NTSC...); title-case.
 #  If TmdbApiKey: GET api.themoviedb.org/3/search/movie?query=<clean>. Accept top hit
 #  when exactly 1 result OR top popularity ≥ 2× second. FolderName "Title (Year)"
-#  (invalid filename chars stripped). No key/no match/HTTP error →
-#  FolderName "<CLEANLABEL>_<yyyy-MM-dd>", Matched=$false. Never throws.
+#  (or just "Title" when Year is blank), sanitized via the single canonical
+#  ConvertTo-ArmSafeFileName (Common.ps1): invalid Windows filename characters
+#  (per [System.IO.Path]::GetInvalidFileNameChars()) are stripped (not replaced),
+#  then whitespace is collapsed and the result trimmed. This same rule is used
+#  consistently by DiscWatcher.ps1, Rip-VideoDisc.ps1, and Resolve-Title.ps1.
+#  No key/no match/HTTP error → FolderName "<CLEANLABEL>_<yyyy-MM-dd>",
+#  Matched=$false. Never throws.
+#
+#  Set-ArmMetadataFile -OutputDir <string> -Title <string> -Year <string> -Config <hashtable>
+#  Writes a hand-editable metadata.json ({Title;Year}) into a rip's staging
+#  OutputDir once the disc label is resolved (called from Invoke-VideoRip).
+#  Skips the write if metadata.json already exists. Never throws (logs WARN).
+#
+#  Resolve-TitleOverride -OutputDir <string> -FallbackResolved <pscustomobject>
+#                        -Config <hashtable> -> [pscustomobject]
+#  @{ FolderName; Matched; Title; Year }
+#  Called by DiscWatcher.ps1 (Invoke-VideoDispatch) immediately before the
+#  staging dir is renamed for the NAS move. Re-reads metadata.json in
+#  OutputDir; if present with a non-blank Title, builds "Title (Year)" from
+#  the user-edited values (same sanitization as Resolve-Title). If
+#  metadata.json is missing/unreadable/malformed or Title is blank, returns
+#  FallbackResolved (the original Resolve-Title result from before the rip)
+#  unchanged. Never throws. This lets a user pause between rip-start and
+#  NAS-move to hand-edit metadata.json and correct the auto-resolved title/year.
 
 # Move-ToNas.ps1
 Move-ToNas -SourceDir <string> -DestRoot <string> -Config <hashtable> -> [pscustomobject]
 #  @{ Success; DestDir; Error }
 #  robocopy <src> <dest> /E /Z /NP /R:3 /W:10; exit codes 0-7 = success, ≥8 = failure.
 #  Verify: every source file exists at dest with equal Length. Delete source dir
-#  ONLY after verification passes.
+#  ONLY after verification passes. Failures (robocopy failure or verification
+#  mismatch) are NOT automatically retried or re-queued by design; the source
+#  dir is preserved and the caller (DiscWatcher.ps1) logs/notifies for manual
+#  re-trigger.
 
 # Send-Notification.ps1
 Send-ArmNotification -Title <string> -Message <string> -Level <Info|Error>
@@ -177,8 +210,10 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #  used by tests). Register-WmiEvent Win32_VolumeChangeEvent EventType 2 + 30s poll
 #  fallback (compare Get-DiscType per optical drive). Single-flight lock via named
 #  mutex 'wrm-rip'. Dispatch:
-#    Video  → Invoke-VideoRip → Resolve-Title → rename staging dir → Move-ToNas
-#             (NasVideoPath) → if DVD && UpscaleDvds: copy main mkv path into
+#    Video  → Invoke-VideoRip (captures Resolve-Title result on .Resolved before
+#             the rip runs) → Resolve-TitleOverride (re-reads metadata.json for
+#             a user Title/Year edit, else falls back to .Resolved) → rename
+#             staging dir → Move-ToNas (NasVideoPath) → if DVD && UpscaleDvds: copy main mkv path into
 #             UpscaleQueueDir queue file (<name>.json: {Source;DestDir}) → eject+notify
 #    AudioCD→ Invoke-AudioRip → Move-ToNas (NasMusicPath) → eject+notify
 #    Data   → log WARN + notify, no action.
@@ -199,6 +234,20 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #  with -NonInteractive; copies example). Register hidden Scheduled Tasks
 #  'wrm-watcher' and 'wrm-upscaler' (at logon, current user,
 #  pwsh -WindowStyle Hidden -File <entrypoint>). -Uninstall removes tasks.
+#  Requires Administrator: registering Scheduled Tasks needs elevation, so the
+#  entry point checks WindowsPrincipal role membership and, if not elevated,
+#  relaunches itself via `Start-Process -Verb RunAs` (UAC consent prompt).
+#  Test-NonInteractiveSession detects sessions where UAC cannot show that
+#  prompt (SSH_CONNECTION/SSH_CLIENT/SSH_TTY env vars, [Environment]::
+#  UserInteractive=$false, or $env:SESSIONNAME absent/'Services'/
+#  'RemoteControl'-prefixed) and, when not already elevated, throws an
+#  actionable error immediately instead of hanging/failing silently on
+#  Start-Process -Verb RunAs. -RunAsUser <string> ("DOMAIN\User"): internal/
+#  advanced param used to register the scheduled tasks' principal as the
+#  original pre-elevation user rather than whichever account UAC elevated to;
+#  the entry point captures $env:USERDOMAIN\$env:USERNAME before relaunching
+#  elevated and passes it through automatically, so end users normally never
+#  need to set this themselves.
 ```
 
 ## Testing requirements

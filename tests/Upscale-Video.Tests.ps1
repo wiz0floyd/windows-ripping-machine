@@ -213,6 +213,40 @@ Describe 'Invoke-Upscale' {
         $result.OutputFile | Should -BeNullOrEmpty
     }
 
+    It 'removes a partial output file left behind when the mux step fails' {
+        Mock Invoke-ArmTool {
+            param($Name, $Arguments, $Config, $TimeoutSec)
+
+            if ($Name -eq 'ffmpeg' -and ($Arguments -join ' ') -match 'idet') {
+                return [pscustomobject]@{
+                    ExitCode = 0
+                    StdOut   = @()
+                    StdErr   = Get-FixtureLines 'ffmpeg-idet-progressive.txt'
+                }
+            }
+
+            $outFile = $Arguments[$Arguments.Count - 1]
+
+            # The mux step is the one writing into $OutputDir; simulate ffmpeg dying
+            # partway through by leaving a truncated file at the expected output path
+            # and returning a non-zero exit code.
+            if ((Split-Path -Parent $outFile) -eq $script:OutputDir) {
+                Set-Content -LiteralPath $outFile -Value 'partial truncated bytes'
+                return [pscustomobject]@{ ExitCode = 1; StdOut = @(); StdErr = @('mux crashed') }
+            }
+
+            Set-Content -LiteralPath $outFile -Value 'fake bytes'
+            return [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @() }
+        }
+
+        $expectedOutputFile = Join-Path $script:OutputDir 'movie [AI upscale 1080p].mkv'
+
+        $result = Invoke-Upscale -InputFile $script:InputFile -OutputDir $script:OutputDir -Config $script:Config
+
+        $result.Success | Should -Be $false
+        Test-Path -LiteralPath $expectedOutputFile | Should -Be $false
+    }
+
     It 'never throws even when Invoke-ArmTool throws' {
         Mock Invoke-ArmTool { throw 'catastrophic failure' }
 

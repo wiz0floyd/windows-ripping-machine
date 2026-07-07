@@ -5,7 +5,8 @@ param(
     [string] $NasVideoPath,
     [string] $NasMusicPath,
     [string] $TmdbApiKey,
-    [string] $HaWebhookUrl
+    [string] $HaWebhookUrl,
+    [string] $RunAsUser
 )
 
 Set-StrictMode -Version Latest
@@ -206,6 +207,15 @@ function New-ArmConfigFile {
 
 .PARAMETER ScriptPath
     Full path to the pwsh entry-point script to run.
+
+.PARAMETER RunAsUser
+    The "DOMAIN\User" the task's principal should run as. Defaults to the
+    current process's user, which is only correct when this function runs
+    un-elevated or in a session that was never relaunched for elevation. When
+    setup.ps1 relaunches itself elevated (Start-Process -Verb RunAs), the
+    elevated child's $env:USERNAME may be a different (admin) account than the
+    user who invoked setup.ps1, so the entry point captures the original
+    identity before relaunching and passes it through explicitly here.
 #>
 function Register-ArmScheduledTask {
     [CmdletBinding()]
@@ -214,7 +224,9 @@ function Register-ArmScheduledTask {
         [string] $TaskName,
 
         [Parameter(Mandatory = $true)]
-        [string] $ScriptPath
+        [string] $ScriptPath,
+
+        [string] $RunAsUser = "$env:USERDOMAIN\$env:USERNAME"
     )
 
     $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -226,7 +238,7 @@ function Register-ArmScheduledTask {
     $action = New-ScheduledTaskAction -Execute 'pwsh.exe' `
         -Argument "-WindowStyle Hidden -File `"$ScriptPath`""
     $trigger = New-ScheduledTaskTrigger -AtLogOn
-    $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive
+    $principal = New-ScheduledTaskPrincipal -UserId $RunAsUser -LogonType Interactive
     $settings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 
     try {
@@ -241,23 +253,68 @@ function Register-ArmScheduledTask {
 
 <#
 .SYNOPSIS
-    Detect whether the current process is attached to an SSH session.
-
-.DESCRIPTION
-    UAC's consent prompt requires an interactive window station/desktop.
-    An SSH session's process has neither, so Start-Process -Verb RunAs
-    cannot show the prompt and will hang or fail silently. Detecting
-    this lets setup.ps1 fail fast with an actionable fix instead.
+    Thin wrapper around [Environment]::UserInteractive so it can be mocked
+    in tests.
 
 .OUTPUTS
-    [bool] $true if any of the standard OpenSSH session env vars are set.
+    [bool] The value of [Environment]::UserInteractive.
 #>
-function Test-SshSession {
+function Get-ArmIsUserInteractive {
     [CmdletBinding()]
     [OutputType([bool])]
     param()
 
-    return [bool]($env:SSH_CONNECTION -or $env:SSH_CLIENT -or $env:SSH_TTY)
+    return [Environment]::UserInteractive
+}
+
+<#
+.SYNOPSIS
+    Detect whether the current process lacks an interactive desktop for
+    UAC's consent prompt.
+
+.DESCRIPTION
+    UAC's consent prompt requires an interactive window station/desktop.
+    SSH sessions, WinRM/PSRemoting sessions, PsExec without -i, and
+    service/SYSTEM contexts all lack one, so Start-Process -Verb RunAs
+    cannot show the prompt and will hang or fail silently. Detecting this
+    lets setup.ps1 fail fast with an actionable fix instead.
+
+    Combines three signals, any of which is treated as non-interactive:
+      - The standard OpenSSH session env vars (SSH_CONNECTION/SSH_CLIENT/
+        SSH_TTY).
+      - [Environment]::UserInteractive being false (services and other
+        non-interactive process contexts).
+      - $env:SESSIONNAME: 'Console' (local interactive logon) and
+        'RDP-Tcp#N'-style (RDP) are treated as interactive; absent, or
+        'Services'/'RemoteControl'-prefixed, indicates a WinRM/PSRemoting
+        or service session.
+
+.OUTPUTS
+    [bool] $true if any of the above signals indicate a non-interactive
+    session.
+#>
+function Test-NonInteractiveSession {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param()
+
+    if ($env:SSH_CONNECTION -or $env:SSH_CLIENT -or $env:SSH_TTY) {
+        return $true
+    }
+
+    if (-not (Get-ArmIsUserInteractive)) {
+        return $true
+    }
+
+    $sessionName = $env:SESSIONNAME
+    if ([string]::IsNullOrEmpty($sessionName)) {
+        return $true
+    }
+    if ($sessionName -match '^(Services|RemoteControl)') {
+        return $true
+    }
+
+    return $false
 }
 
 <#
@@ -284,20 +341,52 @@ function Unregister-ArmScheduledTask {
     Write-Host "Removed scheduled task '$TaskName'."
 }
 
+<#
+.SYNOPSIS
+    Relaunch setup.ps1 elevated via Start-Process -Verb RunAs, and throw if
+    the elevated child exits non-zero.
+
+.DESCRIPTION
+    Start-Process without -PassThru discards the child process's exit code,
+    so a failure in the elevated child (e.g. Register-ArmScheduledTask
+    throwing) would otherwise be silently swallowed and the original,
+    un-elevated caller would return/exit as if everything succeeded. This
+    function captures the exit code and throws an actionable error when it's
+    non-zero, so the caller's own uncaught-throw/exit behavior surfaces the
+    failure.
+
+.PARAMETER ArgumentList
+    Arguments to pass to the relaunched pwsh.exe (e.g. -File, bound
+    parameters, etc.).
+#>
+function Invoke-ArmElevatedRelaunch {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]] $ArgumentList
+    )
+
+    $proc = Start-Process -FilePath 'pwsh.exe' -ArgumentList $ArgumentList -Verb RunAs -Wait -PassThru
+    if ($proc.ExitCode -ne 0) {
+        throw "Elevated setup.ps1 relaunch failed with exit code $($proc.ExitCode). Re-run setup.ps1 from an Administrator pwsh session to see the underlying error directly."
+    }
+}
+
 # --- Thin entry point --------------------------------------------------------
 # Guarded so the file can be dot-sourced by tests (functions only) without
 # installing software, writing config, or registering scheduled tasks.
 if ($MyInvocation.InvocationName -ne '.') {
     $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        if (Test-SshSession) {
+        if (Test-NonInteractiveSession) {
             throw @'
-Not running elevated, and this is an SSH session: UAC cannot show its consent
-prompt over SSH (no interactive desktop attached), so self-elevation via
-"Run as Administrator" would hang or fail silently.
+Not running elevated, and this session appears non-interactive (SSH, WinRM/
+PSRemoting, PsExec without -i, or a service/SYSTEM context): UAC cannot show
+its consent prompt without an interactive desktop attached, so self-elevation
+via "Run as Administrator" would hang or fail silently.
 
 setup.ps1 registers Scheduled Tasks and installs software -- a one-time,
-one-off action -- so it isn't worth loosening UAC just to run it over SSH.
+one-off action -- so it isn't worth loosening UAC just to run it non-interactively.
 Run it instead from a local console or RDP session on this machine, in an
 Administrator (Run as Administrator) pwsh window.
 '@
@@ -313,13 +402,21 @@ Administrator (Run as Administrator) pwsh window.
                 $argList += "`"$value`""
             }
         }
-        Start-Process -FilePath 'pwsh.exe' -ArgumentList $argList -Verb RunAs -Wait
+        if ($PSBoundParameters.Keys -notcontains 'RunAsUser') {
+            # Capture the ORIGINAL (pre-elevation) identity so the elevated
+            # child registers the scheduled task for the actual day-to-day
+            # user, not whatever admin account UAC elevates to.
+            $argList += '-RunAsUser'
+            $argList += "`"$env:USERDOMAIN\$env:USERNAME`""
+        }
+        Invoke-ArmElevatedRelaunch -ArgumentList $argList
         return
     }
 
     $repoRoot = $PSScriptRoot
     $watcherPath = Join-Path $repoRoot 'src' 'DiscWatcher.ps1'
     $upscalerPath = Join-Path $repoRoot 'src' 'Upscale-Worker.ps1'
+    $effectiveRunAsUser = if ($RunAsUser) { $RunAsUser } else { "$env:USERDOMAIN\$env:USERNAME" }
 
     if ($Uninstall) {
         Unregister-ArmScheduledTask -TaskName 'wrm-watcher'
@@ -352,8 +449,8 @@ Administrator (Run as Administrator) pwsh window.
             -TmdbApiKey $TmdbApiKey -HaWebhookUrl $HaWebhookUrl
     }
 
-    Register-ArmScheduledTask -TaskName 'wrm-watcher' -ScriptPath $watcherPath
-    Register-ArmScheduledTask -TaskName 'wrm-upscaler' -ScriptPath $upscalerPath
+    Register-ArmScheduledTask -TaskName 'wrm-watcher' -ScriptPath $watcherPath -RunAsUser $effectiveRunAsUser
+    Register-ArmScheduledTask -TaskName 'wrm-upscaler' -ScriptPath $upscalerPath -RunAsUser $effectiveRunAsUser
 
     Write-Host ''
     Write-Host 'Setup complete.'

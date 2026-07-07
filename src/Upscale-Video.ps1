@@ -170,6 +170,8 @@ function Invoke-Upscale {
     $tempDir = $null
     $preprocessedFile = $null
     $upscaledFile = $null
+    $outputFile = $null
+    $success = $false
 
     try {
         $interlaceType = Get-InterlaceType -InputFile $InputFile -Config $Config
@@ -250,20 +252,11 @@ function Invoke-Upscale {
             throw "ffmpeg mux failed with exit code $($muxResult.ExitCode)"
         }
 
-        return [pscustomobject]@{
-            Success       = $true
-            OutputFile    = $outputFile
-            InterlaceType = $interlaceType
-            Error         = $null
-        }
+        $success = $true
+        return New-ArmResult -Success $true -Properties ([ordered]@{ OutputFile = $outputFile; InterlaceType = $interlaceType }) -Error $null
     } catch {
         Write-ArmLog -Level ERROR -Message "Invoke-Upscale failed for $InputFile : $_" -Config $Config
-        return [pscustomobject]@{
-            Success       = $false
-            OutputFile    = $null
-            InterlaceType = $interlaceType
-            Error         = "$_"
-        }
+        return New-ArmResult -Success $false -Properties ([ordered]@{ OutputFile = $null; InterlaceType = $interlaceType }) -Error "$_"
     } finally {
         foreach ($f in @($preprocessedFile, $upscaledFile)) {
             if ($f -and (Test-Path -LiteralPath $f)) {
@@ -272,6 +265,9 @@ function Invoke-Upscale {
         }
         if ($tempDir -and (Test-Path -LiteralPath $tempDir)) {
             Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        if (-not $success -and $outputFile -and (Test-Path -LiteralPath $outputFile)) {
+            Remove-Item -LiteralPath $outputFile -Force -ErrorAction SilentlyContinue
         }
     }
 }

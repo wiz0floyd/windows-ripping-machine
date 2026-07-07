@@ -355,7 +355,7 @@ function Invoke-VideoRip {
 
         $discLabel = $driveInfo.Label
         $discType = $driveInfo.DiscType
-        $safeLabel = ($discLabel -replace '[\\/:*?"<>|]', '_')
+        $safeLabel = ConvertTo-ArmSafeFileName -Name $discLabel
         $outputDir = Join-Path $Config.StagingDir $safeLabel
 
         if (-not (Test-Path $outputDir)) {

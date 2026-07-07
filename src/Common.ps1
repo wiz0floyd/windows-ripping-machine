@@ -253,8 +253,8 @@ function Invoke-ArmTool {
         $stdErrText = $stdErrTask.Result
 
         $exitCode = $proc.ExitCode
-        $stdout = @($stdOutText -split "`n" | Where-Object { $_ })
-        $stderr = @($stdErrText -split "`n" | Where-Object { $_ })
+        $stdout = @($stdOutText -split "`r`n|`n" | ForEach-Object { $_.TrimEnd("`r") } | Where-Object { $_ })
+        $stderr = @($stdErrText -split "`r`n|`n" | ForEach-Object { $_.TrimEnd("`r") } | Where-Object { $_ })
 
         # Log stdout lines
         foreach ($line in $stdout) {
@@ -341,4 +341,93 @@ function Get-DiscType {
         Write-ArmLog -Level WARN -Message "Error checking disc type on $($DriveLetter): $_" -Config @{}
         return 'None'
     }
+}
+
+<#
+.SYNOPSIS
+    Build a standardized pipeline-step result object.
+
+.DESCRIPTION
+    Shared constructor for the [pscustomobject] result shape used across
+    Rip-AudioCd.ps1, Move-ToNas.ps1, and Upscale-Video.ps1 (and similar
+    scripts). Always includes Success first and Error last; any additional
+    properties (OutputDir, Artist, Album, DestDir, OutputFile,
+    InterlaceType, etc.) are inserted in between, in the order supplied via
+    -Properties, so each call site can reproduce its existing output shape.
+
+.PARAMETER Success
+    Whether the operation succeeded.
+
+.PARAMETER Properties
+    Extra properties to include between Success and Error. Pass an
+    [ordered]@{} (or [System.Collections.Specialized.OrderedDictionary])
+    so the resulting property order matches insertion order; a plain
+    @{} hashtable does not guarantee ordering in PowerShell.
+
+.PARAMETER ErrorMessage
+    Error message, if any. Omit or pass $null/empty on success. Populates
+    the resulting object's 'Error' property. Aliased to -Error for callers
+    (the parameter itself cannot be named $Error; that shadows PowerShell's
+    automatic $Error variable).
+
+.OUTPUTS
+    [pscustomobject] with Success, the supplied extra properties, and Error.
+
+.EXAMPLE
+    New-ArmResult -Success $true -Properties ([ordered]@{ OutputDir = $dir; Artist = $artist; Album = $album })
+    New-ArmResult -Success $false -Error 'Rip failed' -Properties ([ordered]@{ OutputDir = $null; Artist = $null; Album = $null })
+#>
+function New-ArmResult {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Pure object constructor; despite the New- verb it does not change system state.')]
+    param(
+        [Parameter(Mandatory = $true)]
+        [bool] $Success,
+
+        [System.Collections.Specialized.OrderedDictionary] $Properties = [ordered]@{},
+
+        [Alias('Error')]
+        [string] $ErrorMessage
+    )
+
+    $obj = [ordered]@{ Success = $Success }
+    foreach ($key in $Properties.Keys) {
+        $obj[$key] = $Properties[$key]
+    }
+    $obj['Error'] = $ErrorMessage
+
+    return [pscustomobject]$obj
+}
+
+<#
+.SYNOPSIS
+    Sanitize a string into a filesystem-safe file name.
+
+.DESCRIPTION
+    Removes characters invalid in Windows file names (per
+    [System.IO.Path]::GetInvalidFileNameChars()), collapses runs of
+    whitespace into a single space, and trims leading/trailing whitespace.
+
+.PARAMETER Name
+    Candidate file name (may be empty).
+
+.OUTPUTS
+    [string] Sanitized file name.
+
+.EXAMPLE
+    ConvertTo-ArmSafeFileName -Name 'My: Movie / Title?'
+#>
+function ConvertTo-ArmSafeFileName {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string] $Name
+    )
+    $invalid = [System.IO.Path]::GetInvalidFileNameChars() -join ''
+    $pattern = "[$([regex]::Escape($invalid))]"
+    return (($Name -replace $pattern, '') -replace '\s+', ' ').Trim()
 }

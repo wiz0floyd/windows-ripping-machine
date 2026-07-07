@@ -9,7 +9,7 @@ A native Windows replacement for the Linux Automatic Ripping Machine: insert a d
 - **DiscWatcher** (hidden Scheduled Task): runs at logon, watches optical drives via WMI events.
   - **Video discs** (DVD/Blu-ray): passes through `makemkvcon` → metadata lookup (TMDb) → staged rip copies to NAS video share.
   - **Audio CDs**: through `freaccmd` → FLAC with MusicBrainz tags → NAS music share.
-  - **Data discs**: logged as unsupported.
+  - **Data discs**: logged as a warning and you get a notification ("Data Disc Detected"); no rip is attempted.
 - **Upscale-Worker** (optional, separate task): processes queued DVD rips with ffmpeg deinterlacing (IVTC or bwdif) → AI upscaling (video2x Real-ESRGAN ncnn/Vulkan) on the GPU → high-bitrate x265 encode → sample-first review gate or automatic.
 - All work respects the logged-in user's NAS SMB credentials and audio stack (nothing touches Windows audio).
 
@@ -24,6 +24,12 @@ A native Windows replacement for the Linux Automatic Ripping Machine: insert a d
    - Prompts for NAS UNC paths (`\\nas\media\import\movies`, etc.), optional TMDb/HA webhook URLs.
    - Creates staging directories, log folder.
    - Registers hidden Scheduled Tasks to start at logon.
+   - **Requires Administrator.** Registering Scheduled Tasks needs elevation, so `setup.ps1`
+     self-elevates via a UAC "Run as Administrator" prompt if it isn't already running elevated.
+     Run it from a local console or RDP session so that prompt can be shown.
+   - If run over SSH/WinRM or another non-interactive/remote session (where UAC has no desktop
+     to prompt on), `setup.ps1` fails fast with guidance instead of hanging — re-run it from an
+     elevated local/RDP pwsh session instead.
 
 2. **Manual step (Upscale stage only):** Download and install [Video2X 6.x](https://github.com/k4yt3x/video2x/releases) from GitHub (CLI installer; adds `video2x.exe` to PATH). Targets Video2X 6.4+ (verify flags match your release).
 
@@ -46,6 +52,16 @@ A native Windows replacement for the Linux Automatic Ripping Machine: insert a d
 ### Normal operation
 - Insert a disc → DiscWatcher detects it → logs progress to `C:\rips\logs\wrm-<date>.log` → files appear on NAS → toast/HA notification.
 - Results folder: `\\nas\media\import\movies\Title (Year)\` or `\\nas\media\import\music\Artist\Album\`.
+
+### Correcting a video title/year before the NAS move
+As soon as a video disc's label is resolved (before the long rip even starts), a
+`metadata.json` file is written into the rip's staging directory with the auto-resolved
+`Title`/`Year` (blank if TMDb didn't find a confident match). While the rip is running you
+can open that file and hand-edit `Title` and/or `Year`; right before the finished rip is
+renamed and moved to the NAS, your edited values are used instead of the original guess (if
+you leave `Title` blank or don't touch the file, the original auto-resolved result — or the
+label+date fallback — is used as-is). This is useful when TMDb picks the wrong movie or no
+match was found from the disc label alone.
 
 ### Upscale a DVD (if `UpscaleDvds=true` in config)
 - When a DVD rip completes, a sample (2 min) is auto-generated if `AutoUpscale=false` (default).

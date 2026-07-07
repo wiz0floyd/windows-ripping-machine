@@ -4,7 +4,7 @@ Thanks for your interest in improving the Windows Ripping Machine.
 
 ## Development setup
 
-1. Clone the repo and run `.\setup.ps1` to install dependencies (`makemkvcon`, `freaccmd`, `ffmpeg` via winget) and register the scheduled tasks. See `README.md` for full setup steps.
+1. Clone the repo and run `.\setup.ps1` to install dependencies (`makemkvcon`, `freaccmd`, `ffmpeg` via winget) and register the scheduled tasks. See `README.md` for full setup steps. `setup.ps1` needs Administrator rights (it self-elevates via UAC) and will fail fast with guidance rather than hang if run from a non-interactive/remote session (e.g. SSH) — run it from a local console or RDP session instead.
 2. Install test tooling:
    ```powershell
    Install-Module Pester -Scope CurrentUser -Force -MinimumVersion 5.0

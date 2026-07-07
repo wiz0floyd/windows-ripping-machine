@@ -13,6 +13,65 @@ BeforeAll {
     $script:ExpiredKeyLines = @(Get-Content -Path (Join-Path $script:FixturesDir 'makemkvcon-mkv-expired-key.txt'))
 
     $script:TestDir = New-Item -ItemType Directory -Path (Join-Path $env:TEMP "wrm-rip-test-$(New-Guid)")
+
+    # Builds a minimal Invoke-VideoRip config hashtable. Callers only need to
+    # override the handful of keys that vary between tests.
+    function New-TestConfig {
+        param(
+            [string] $StagingDir,
+            [string] $LogDir = (Join-Path $script:TestDir 'logs'),
+            [bool] $RipAllTitles = $true
+        )
+        @{
+            Simulate          = $true
+            StagingDir        = $StagingDir
+            MinTitleLengthSec = 600
+            RipAllTitles      = $RipAllTitles
+            TmdbApiKey        = ''
+            LogDir            = $LogDir
+        }
+    }
+
+    # Builds the conditional Invoke-ArmTool mock scriptblock shared by most
+    # Invoke-VideoRip tests: it answers the disc-scan ('disc:9999'), title-info
+    # ('info'), and mkv-rip calls in sequence, creating the requested fake mkv
+    # files for the rip call. Pass -OnRip (param($outDir, $Arguments)) to run
+    # extra assertions/side effects (e.g. capturing $Arguments into a
+    # $script:-scoped variable) right before the fake mkv files are created.
+    # Note: -OnRip must be used for any such side effect rather than baking it
+    # into this helper directly -- GetNewClosure() below gives the returned
+    # scriptblock its own private copy of script scope, so a `$script:foo = ...`
+    # written directly inside it would not be visible to the calling It block.
+    # A caller-supplied -OnRip scriptblock is unaffected (it keeps its own,
+    # un-closured, lexical scope) and so can safely set $script: variables.
+    function New-VideoRipMock {
+        param(
+            [object[]] $DriveInfoLines = $script:InfoLines,
+            [object[]] $TitleInfoLines = $script:DiscInfoLines,
+            [int] $TitleInfoExitCode = 0,
+            [object[]] $RipLines = $script:RipLines,
+            [string[]] $MkvFileNames = @('title_t00.mkv', 'title_t01.mkv'),
+            [scriptblock] $OnRip
+        )
+
+        return {
+            param($Name, $Arguments, $Config, $TimeoutSec)
+
+            if ($Arguments -contains 'disc:9999') {
+                return [pscustomobject]@{ ExitCode = 0; StdOut = $DriveInfoLines; StdErr = @() }
+            }
+            if ($Arguments -contains 'info') {
+                $infoStdErr = if ($TitleInfoExitCode -ne 0) { @('boom') } else { @() }
+                return [pscustomobject]@{ ExitCode = $TitleInfoExitCode; StdOut = $TitleInfoLines; StdErr = $infoStdErr }
+            }
+            $outDir = $Arguments[-1]
+            if ($OnRip) { & $OnRip $outDir $Arguments }
+            foreach ($name in $MkvFileNames) {
+                Set-Content -Path (Join-Path $outDir $name) -Value 'fake'
+            }
+            return [pscustomobject]@{ ExitCode = 0; StdOut = $RipLines; StdErr = @() }
+        }.GetNewClosure()
+    }
 }
 
 AfterAll {
@@ -98,31 +157,11 @@ Describe 'Test-MakeMkvExpiredKey' {
 Describe 'Invoke-VideoRip' {
     BeforeEach {
         $script:OutDir = Join-Path $script:TestDir "case-$(New-Guid)"
-        $config = @{
-            Simulate          = $true
-            StagingDir        = $script:OutDir
-            MinTitleLengthSec = 600
-            RipAllTitles      = $true
-            TmdbApiKey        = ''
-            LogDir            = Join-Path $script:TestDir 'logs'
-        }
-        $script:Config = $config
+        $script:Config = New-TestConfig -StagingDir $script:OutDir
     }
 
     It 'rips successfully and returns disc metadata + title count' {
-        Mock Invoke-ArmTool {
-            if ($Arguments -contains 'disc:9999') {
-                return [pscustomobject]@{ ExitCode = 0; StdOut = $script:InfoLines; StdErr = @() }
-            }
-            if ($Arguments -contains 'info') {
-                return [pscustomobject]@{ ExitCode = 0; StdOut = $script:DiscInfoLines; StdErr = @() }
-            }
-            # mkv rip: create the fake output files ourselves (mirrors stub behavior)
-            $outDir = $Arguments[-1]
-            Set-Content -Path (Join-Path $outDir 'title_t00.mkv') -Value 'fake'
-            Set-Content -Path (Join-Path $outDir 'title_t01.mkv') -Value 'fake'
-            return [pscustomobject]@{ ExitCode = 0; StdOut = $script:RipLines; StdErr = @() }
-        }
+        Mock Invoke-ArmTool (New-VideoRipMock)
 
         $result = Invoke-VideoRip -DriveLetter 'D' -Config $script:Config
 
@@ -134,20 +173,29 @@ Describe 'Invoke-VideoRip' {
         $result.OutputDir | Should -Be (Join-Path $script:OutDir 'STAR_WARS_ANH')
     }
 
+    It 'sanitizes a disc label with invalid filename characters using the canonical sanitizer (removes, not underscores; collapses whitespace)' {
+        $rawLabelLines = @(
+            'MSG:1005,0,1,"Using direct disc access mode","%1",""',
+            'DRV:0,2,999,12,"BD-ROM PIONEER BD-RW  BDR-209M 1.10","MY:  MOVIE / TITLE?","D:"',
+            'DRV:1,256,999,0,"","",""',
+            'MSG:5010,0,1,"Operation successfully completed","%1",""'
+        )
+
+        Mock Invoke-ArmTool (New-VideoRipMock -DriveInfoLines $rawLabelLines -MkvFileNames @('title_t00.mkv'))
+
+        $result = Invoke-VideoRip -DriveLetter 'D' -Config $script:Config
+
+        $result.Success | Should -Be $true
+        $result.DiscLabel | Should -Be 'MY:  MOVIE / TITLE?'
+        $result.OutputDir | Should -Be (Join-Path $script:OutDir 'MY MOVIE TITLE')
+    }
+
     It 'writes metadata.json into the output dir and returns a Resolved result before the rip completes' {
-        Mock Invoke-ArmTool {
-            if ($Arguments -contains 'disc:9999') {
-                return [pscustomobject]@{ ExitCode = 0; StdOut = $script:InfoLines; StdErr = @() }
-            }
-            if ($Arguments -contains 'info') {
-                return [pscustomobject]@{ ExitCode = 0; StdOut = $script:DiscInfoLines; StdErr = @() }
-            }
-            $outDir = $Arguments[-1]
-            # metadata.json must already exist by the time the long rip runs.
-            Test-Path (Join-Path $outDir 'metadata.json') | Should -Be $true
-            Set-Content -Path (Join-Path $outDir 'title_t00.mkv') -Value 'fake'
-            return [pscustomobject]@{ ExitCode = 0; StdOut = $script:RipLines; StdErr = @() }
-        }
+        # metadata.json must already exist by the time the long rip runs.
+        Mock Invoke-ArmTool (New-VideoRipMock -MkvFileNames @('title_t00.mkv') -OnRip {
+                param($outDir)
+                Test-Path (Join-Path $outDir 'metadata.json') | Should -Be $true
+            })
 
         $result = Invoke-VideoRip -DriveLetter 'D' -Config $script:Config
 
@@ -165,17 +213,7 @@ Describe 'Invoke-VideoRip' {
         $null = New-Item -ItemType Directory -Force -Path $preExistingOutDir
         '{"Title": "User Edited Title", "Year": "2024"}' | Set-Content -Path (Join-Path $preExistingOutDir 'metadata.json')
 
-        Mock Invoke-ArmTool {
-            if ($Arguments -contains 'disc:9999') {
-                return [pscustomobject]@{ ExitCode = 0; StdOut = $script:InfoLines; StdErr = @() }
-            }
-            if ($Arguments -contains 'info') {
-                return [pscustomobject]@{ ExitCode = 0; StdOut = $script:DiscInfoLines; StdErr = @() }
-            }
-            $outDir = $Arguments[-1]
-            Set-Content -Path (Join-Path $outDir 'title_t00.mkv') -Value 'fake'
-            return [pscustomobject]@{ ExitCode = 0; StdOut = $script:RipLines; StdErr = @() }
-        }
+        Mock Invoke-ArmTool (New-VideoRipMock -MkvFileNames @('title_t00.mkv'))
 
         $result = Invoke-VideoRip -DriveLetter 'D' -Config $script:Config
 
@@ -186,19 +224,11 @@ Describe 'Invoke-VideoRip' {
     }
 
     It 'creates the output directory before ripping (real makemkvcon requires it to exist)' {
-        Mock Invoke-ArmTool {
-            if ($Arguments -contains 'disc:9999') {
-                return [pscustomobject]@{ ExitCode = 0; StdOut = $script:InfoLines; StdErr = @() }
-            }
-            if ($Arguments -contains 'info') {
-                return [pscustomobject]@{ ExitCode = 0; StdOut = $script:DiscInfoLines; StdErr = @() }
-            }
-            # Assert the directory already exists by the time the mkv rip runs.
-            $outDir = $Arguments[-1]
-            Test-Path $outDir | Should -Be $true
-            Set-Content -Path (Join-Path $outDir 'title_t00.mkv') -Value 'fake'
-            return [pscustomobject]@{ ExitCode = 0; StdOut = $script:RipLines; StdErr = @() }
-        }
+        # Assert the directory already exists by the time the mkv rip runs.
+        Mock Invoke-ArmTool (New-VideoRipMock -MkvFileNames @('title_t00.mkv') -OnRip {
+                param($outDir)
+                Test-Path $outDir | Should -Be $true
+            })
 
         $result = Invoke-VideoRip -DriveLetter 'D' -Config $script:Config
         Test-Path $result.OutputDir | Should -Be $true
@@ -206,20 +236,11 @@ Describe 'Invoke-VideoRip' {
 
     It 'selects only the longest title when RipAllTitles is $false' {
         $script:Config.RipAllTitles = $false
-        $capturedArgs = $null
 
-        Mock Invoke-ArmTool {
-            if ($Arguments -contains 'disc:9999') {
-                return [pscustomobject]@{ ExitCode = 0; StdOut = $script:InfoLines; StdErr = @() }
-            }
-            if ($Arguments -contains 'info') {
-                return [pscustomobject]@{ ExitCode = 0; StdOut = $script:DiscInfoLines; StdErr = @() }
-            }
-            $script:capturedArgs = $Arguments
-            $outDir = $Arguments[-1]
-            Set-Content -Path (Join-Path $outDir 'title_t00.mkv') -Value 'fake'
-            return [pscustomobject]@{ ExitCode = 0; StdOut = $script:RipLines; StdErr = @() }
-        }
+        Mock Invoke-ArmTool (New-VideoRipMock -MkvFileNames @('title_t00.mkv') -OnRip {
+                param($outDir, $Arguments)
+                $script:capturedArgs = $Arguments
+            })
 
         $null = Invoke-VideoRip -DriveLetter 'D' -Config $script:Config
 
@@ -229,20 +250,11 @@ Describe 'Invoke-VideoRip' {
 
     It 'falls back to title 0 when the disc-specific info call fails' {
         $script:Config.RipAllTitles = $false
-        $capturedArgs = $null
 
-        Mock Invoke-ArmTool {
-            if ($Arguments -contains 'disc:9999') {
-                return [pscustomobject]@{ ExitCode = 0; StdOut = $script:InfoLines; StdErr = @() }
-            }
-            if ($Arguments -contains 'info') {
-                return [pscustomobject]@{ ExitCode = 1; StdOut = @(); StdErr = @('boom') }
-            }
-            $script:capturedArgs = $Arguments
-            $outDir = $Arguments[-1]
-            Set-Content -Path (Join-Path $outDir 'title_t00.mkv') -Value 'fake'
-            return [pscustomobject]@{ ExitCode = 0; StdOut = $script:RipLines; StdErr = @() }
-        }
+        Mock Invoke-ArmTool (New-VideoRipMock -TitleInfoExitCode 1 -MkvFileNames @('title_t00.mkv') -OnRip {
+                param($outDir, $Arguments)
+                $script:capturedArgs = $Arguments
+            })
 
         $null = Invoke-VideoRip -DriveLetter 'D' -Config $script:Config
 
@@ -288,15 +300,7 @@ Describe 'Invoke-VideoRip' {
     }
 
     It 'fails gracefully when the rip produces no mkv files' {
-        Mock Invoke-ArmTool {
-            if ($Arguments -contains 'disc:9999') {
-                return [pscustomobject]@{ ExitCode = 0; StdOut = $script:InfoLines; StdErr = @() }
-            }
-            if ($Arguments -contains 'info') {
-                return [pscustomobject]@{ ExitCode = 0; StdOut = $script:DiscInfoLines; StdErr = @() }
-            }
-            return [pscustomobject]@{ ExitCode = 0; StdOut = $script:RipLines; StdErr = @() }
-        }
+        Mock Invoke-ArmTool (New-VideoRipMock -MkvFileNames @())
 
         $result = Invoke-VideoRip -DriveLetter 'D' -Config $script:Config
 
@@ -315,14 +319,7 @@ Describe 'Invoke-VideoRip' {
 Describe 'Invoke-VideoRip (Simulate end-to-end via stub)' {
     It 'produces real mkv files through stub-makemkvcon.ps1' {
         $outDir = Join-Path $script:TestDir "stub-case-$(New-Guid)"
-        $config = @{
-            Simulate          = $true
-            StagingDir        = $outDir
-            MinTitleLengthSec = 600
-            RipAllTitles      = $true
-            TmdbApiKey        = ''
-            LogDir            = Join-Path $script:TestDir 'logs'
-        }
+        $config = New-TestConfig -StagingDir $outDir
 
         $result = Invoke-VideoRip -DriveLetter 'D' -Config $config
 

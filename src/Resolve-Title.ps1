@@ -3,24 +3,6 @@ $ErrorActionPreference = 'Stop'
 
 <#
 .SYNOPSIS
-    Strip characters that are invalid in a Windows file/folder name.
-#>
-function ConvertTo-ArmSafeFileName {
-    [CmdletBinding()]
-    [OutputType([string])]
-    param(
-        [Parameter(Mandatory = $true)]
-        [AllowEmptyString()]
-        [string] $Name
-    )
-
-    $invalid = [System.IO.Path]::GetInvalidFileNameChars() -join ''
-    $pattern = "[$([regex]::Escape($invalid))]"
-    return (($Name -replace $pattern, '') -replace '\s+', ' ').Trim()
-}
-
-<#
-.SYNOPSIS
     Clean a raw optical disc volume label into a search-friendly title string.
 
 .DESCRIPTION
@@ -257,8 +239,7 @@ function Resolve-Title {
 
     } catch {
         Write-ArmLog -Level WARN -Message "Resolve-Title failed for '$DiscLabel': $_" -Config $Config
-        $safeLabel = ($DiscLabel -replace '[\\/:*?"<>|_.]', ' ') -replace '\s+', ' '
-        $safeLabel = $safeLabel.Trim()
+        $safeLabel = ConvertTo-ArmSafeFileName -Name $DiscLabel
         if (-not $safeLabel) { $safeLabel = 'Unknown Title' }
         return [pscustomobject]@{
             FolderName = "$($safeLabel)_$(Get-Date -Format 'yyyy-MM-dd')"
