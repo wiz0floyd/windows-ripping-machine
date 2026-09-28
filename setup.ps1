@@ -93,7 +93,7 @@ function Show-Video2xManualStep {
     Create the staging/queue/log directories used by the pipeline, if missing.
 
 .PARAMETER Paths
-    Hashtable with keys StagingDir, UpscaleQueueDir, LogDir.
+    Hashtable with keys StagingDir, UpscaleQueueDir, LogDir, StateDir.
 #>
 function Initialize-ArmDirectories {
     [CmdletBinding()]
@@ -102,7 +102,7 @@ function Initialize-ArmDirectories {
         [hashtable] $Paths
     )
 
-    foreach ($key in @('StagingDir', 'UpscaleQueueDir', 'LogDir')) {
+    foreach ($key in @('StagingDir', 'UpscaleQueueDir', 'LogDir', 'StateDir')) {
         $path = $Paths[$key]
         if (-not $path) {
             continue
@@ -438,6 +438,7 @@ Administrator (Run as Administrator) pwsh window.
         StagingDir      = $example.StagingDir
         UpscaleQueueDir = $example.UpscaleQueueDir
         LogDir          = $example.LogDir
+        StateDir        = $example.StateDir
     }
 
     $configOutputPath = Join-Path $repoRoot 'config' 'config.psd1'

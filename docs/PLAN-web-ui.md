@@ -27,7 +27,9 @@ entry point** (`src/WebUi.ps1`) run as its own Scheduled Task.
   `http://localhost:18765/` starts OK; `http://+:18766/` fails `Access is denied`.
   So localhost needs no setup changes; LAN would need `netsh http add urlacl` +
   firewall rule from (already elevated) `setup.ps1`.
-- **Bind:** `http://localhost:<WebUiPort>/` only. **[ASSUMPTION — open question 1]**
+- **Bind:** `http://localhost:<WebUiPort>/` only. **Decided 2026-09-28** (open
+  question 1): the user confirmed localhost-only, since discs must be loaded
+  physically at the machine anyway and RDP covers the rare remote check.
 - **Testability:** listener loop is a thin shell; routing + handlers are pure functions
   `Invoke-ArmWebRequest -Method -Path -Body -Config -> @{Status;ContentType;Body}`,
   unit-tested in Pester without sockets (same pattern as the other thin entry points).
@@ -221,16 +223,19 @@ the PR description per README "Acceptance checklist (manual)".
 
 - Renaming a folder **after** it reached the NAS (would also need to rewrite the
   `Source`/`DestDir` of any upscale queue entry pointing at it). **Open question 2.**
-- LAN / phone access (urlacl + firewall + real auth). **Open question 1.**
 - Streaming the sample clip in-browser; live progress % for rips (would need
   `PRGV` parsing to push into the job record — easy follow-up after S1).
 - Editing audio CD tags.
 
+## Out of scope (decided)
+
+- LAN / phone access (urlacl + firewall rule + real auth). Resolved 2026-09-28:
+  the user confirmed localhost-only (they load discs physically; RDP covers
+  remote checks). Revisit only if that changes.
+
 ## Open questions (asked one at a time)
 
-1. Localhost-only, or reachable from other devices on the LAN (e.g. a phone)?
-   Localhost keeps S2/S3 as scoped above; LAN adds a urlacl + firewall rule in
-   `setup.ps1` and a real auth mechanism (shared token) to S2.
+1. ~~Localhost-only or LAN?~~ Resolved: localhost-only (see above).
 2. Should "update metadata" also cover already-moved rips (rename on the NAS),
    or only in-flight rips as planned?
 
