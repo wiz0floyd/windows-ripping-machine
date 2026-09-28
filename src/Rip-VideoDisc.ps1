@@ -303,6 +303,11 @@ function Set-ArmMetadataFile {
 .PARAMETER Config
     Configuration hashtable (StagingDir, MinTitleLengthSec, RipAllTitles, etc.).
 
+.PARAMETER JobId
+    Optional job-state ID (JobState.ps1). When set, the job is moved to
+    State=Ripping with StagingDir/Title/DiscLabel/DiscType as soon as the
+    staging dir and resolved title are known.
+
 .OUTPUTS
     [pscustomobject] @{ Success; DiscLabel; DiscType; OutputDir; TitleCount; Error; Resolved }
     `Resolved` is the [pscustomobject] returned by Resolve-Title, computed as
@@ -321,7 +326,9 @@ function Invoke-VideoRip {
         [char] $DriveLetter,
 
         [Parameter(Mandatory = $true)]
-        [hashtable] $Config
+        [hashtable] $Config,
+
+        [string] $JobId
     )
 
     $discLabel = $null
@@ -362,6 +369,18 @@ function Invoke-VideoRip {
 
         $resolved = Resolve-Title -DiscLabel $discLabel -Config $Config
         Set-ArmMetadataFile -OutputDir $outputDir -Title $resolved.Title -Year $resolved.Year -Config $Config
+
+        # The only point where the staging dir is known while the rip is still
+        # running - the web UI needs it to show/edit metadata.json mid-rip.
+        if ($JobId) {
+            $null = Update-ArmJob -JobId $JobId -Properties @{
+                State      = 'Ripping'
+                StagingDir = $outputDir
+                Title      = $resolved.FolderName
+                DiscLabel  = $discLabel
+                DiscType   = $discType
+            } -Config $Config
+        }
 
         $ripArgs = @('-r', "--minlength=$($Config.MinTitleLengthSec)", 'mkv', "disc:$($driveInfo.Index)")
         if ($Config.RipAllTitles) {

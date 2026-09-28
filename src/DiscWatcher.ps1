@@ -12,6 +12,7 @@ $ErrorActionPreference = 'Stop'
 $script:ArmModuleRoot = $PSScriptRoot
 foreach ($module in @(
         'Common.ps1',
+        'JobState.ps1',
         'Rip-VideoDisc.ps1',
         'Rip-AudioCd.ps1',
         'Resolve-Title.ps1',
@@ -162,6 +163,12 @@ function Invoke-DiscEject {
 
 .PARAMETER Config
     Configuration hashtable (for UpscaleQueueDir and logging).
+
+.DESCRIPTION
+    Writes <UpscaleQueueDir>\<FolderName>.json as {Source;DestDir;JobId} and
+    creates the matching Upscale job record (State=Queued). JobId is $null in
+    the queue file when job state is unavailable; Upscale-Worker then creates
+    the job on first touch.
 #>
 function New-UpscaleQueueEntry {
     [CmdletBinding()]
@@ -187,8 +194,15 @@ function New-UpscaleQueueEntry {
     $safeName = ConvertTo-ArmSafeFileName -Name $FolderName
     $queuePath = Join-Path $queueDir "$safeName.json"
 
-    $entry = @{ Source = $MkvPath; DestDir = $DestDir }
-    $entry | ConvertTo-Json | Set-Content -Path $queuePath -Encoding utf8
+    $jobId = New-ArmJob -Kind Upscale -Properties @{
+        State     = 'Queued'
+        Title     = $FolderName
+        DestDir   = $DestDir
+        QueueFile = $queuePath
+    } -Config $Config
+
+    $entry = [ordered]@{ Source = $MkvPath; DestDir = $DestDir; JobId = $jobId }
+    $entry | ConvertTo-Json | Set-Content -LiteralPath $queuePath -Encoding utf8
 
     Write-ArmLog -Level INFO -Message "Queued upscale job: $queuePath" -Config $Config
 }
@@ -197,6 +211,10 @@ function New-UpscaleQueueEntry {
 .SYNOPSIS
     Dispatch handling for a Video disc: rip, resolve title, move to NAS, queue
     upscale (DVD only), eject, notify.
+
+.PARAMETER JobId
+    Optional Rip job ID (JobState.ps1); advanced through Moving -> Complete,
+    or set to Failed with Error on any failure path.
 #>
 function Invoke-VideoDispatch {
     [CmdletBinding()]
@@ -205,12 +223,19 @@ function Invoke-VideoDispatch {
         [char] $DriveLetter,
 
         [Parameter(Mandatory = $true)]
-        [hashtable] $Config
+        [hashtable] $Config,
+
+        [string] $JobId
     )
 
-    $ripResult = Invoke-VideoRip -DriveLetter $DriveLetter -Config $Config
+    $ripParams = @{ DriveLetter = $DriveLetter; Config = $Config }
+    if ($JobId) {
+        $ripParams.JobId = $JobId
+    }
+    $ripResult = Invoke-VideoRip @ripParams
 
     if (-not $ripResult.Success) {
+        $null = Update-ArmJob -JobId $JobId -Properties @{ State = 'Failed'; Error = $ripResult.Error } -Config $Config
         if ($ripResult.Error -eq 'MAKEMKV_KEY_EXPIRED') {
             Write-ArmLog -Level ERROR -Message 'MakeMKV registration key expired or missing.' -Config $Config
             Send-ArmNotification -Title 'MakeMKV Key Expired' `
@@ -239,9 +264,12 @@ function Invoke-VideoDispatch {
     }
     $actualFolderName = Split-Path -Leaf $renamedDir
 
+    $null = Update-ArmJob -JobId $JobId -Properties @{ State = 'Moving'; Title = $actualFolderName; StagingDir = $renamedDir } -Config $Config
+
     $moveResult = Move-ToNas -SourceDir $renamedDir -DestRoot $Config.NasVideoPath -Config $Config
 
     if (-not $moveResult.Success) {
+        $null = Update-ArmJob -JobId $JobId -Properties @{ State = 'Failed'; Error = "Move to NAS failed: $($moveResult.Error)" } -Config $Config
         Write-ArmLog -Level ERROR -Message "Move to NAS failed: $($moveResult.Error)" -Config $Config
         Send-ArmNotification -Title 'Move to NAS Failed' `
             -Message "Failed to move '$actualFolderName' to NAS: $($moveResult.Error). Staging preserved." `
@@ -264,6 +292,8 @@ function Invoke-VideoDispatch {
         }
     }
 
+    $null = Update-ArmJob -JobId $JobId -Properties @{ State = 'Complete'; DestDir = $moveResult.DestDir } -Config $Config
+
     Invoke-DiscEject -DriveLetter $DriveLetter -Config $Config
     Send-ArmNotification -Title 'Rip Complete' `
         -Message "$actualFolderName ripped and moved to NAS." -Level Info -Config $Config
@@ -272,6 +302,9 @@ function Invoke-VideoDispatch {
 <#
 .SYNOPSIS
     Dispatch handling for an Audio CD: rip, move to NAS, eject, notify.
+
+.PARAMETER JobId
+    Optional Rip job ID (JobState.ps1); status only (Ripping/Moving/Complete/Failed).
 #>
 function Invoke-AudioDispatch {
     [CmdletBinding()]
@@ -280,27 +313,43 @@ function Invoke-AudioDispatch {
         [char] $DriveLetter,
 
         [Parameter(Mandatory = $true)]
-        [hashtable] $Config
+        [hashtable] $Config,
+
+        [string] $JobId
     )
 
-    $ripResult = Invoke-AudioRip -DriveLetter $DriveLetter -Config $Config
+    $ripParams = @{ DriveLetter = $DriveLetter; Config = $Config }
+    if ($JobId) {
+        $ripParams.JobId = $JobId
+    }
+    $ripResult = Invoke-AudioRip @ripParams
 
     if (-not $ripResult.Success) {
+        $null = Update-ArmJob -JobId $JobId -Properties @{ State = 'Failed'; Error = $ripResult.Error } -Config $Config
         Write-ArmLog -Level ERROR -Message "Audio rip failed: $($ripResult.Error)" -Config $Config
         Send-ArmNotification -Title 'Audio Rip Failed' `
             -Message "Rip failed: $($ripResult.Error). Staging preserved." -Level Error -Config $Config
         return
     }
 
+    $null = Update-ArmJob -JobId $JobId -Properties @{
+        State      = 'Moving'
+        Title      = "$($ripResult.Artist) - $($ripResult.Album)"
+        StagingDir = $ripResult.OutputDir
+    } -Config $Config
+
     $moveResult = Move-ToNas -SourceDir $ripResult.OutputDir -DestRoot $Config.NasMusicPath -Config $Config
 
     if (-not $moveResult.Success) {
+        $null = Update-ArmJob -JobId $JobId -Properties @{ State = 'Failed'; Error = "Move to NAS failed: $($moveResult.Error)" } -Config $Config
         Write-ArmLog -Level ERROR -Message "Move to NAS failed: $($moveResult.Error)" -Config $Config
         Send-ArmNotification -Title 'Move to NAS Failed' `
             -Message "Failed to move '$($ripResult.Artist) - $($ripResult.Album)' to NAS: $($moveResult.Error). Staging preserved." `
             -Level Error -Config $Config
         return
     }
+
+    $null = Update-ArmJob -JobId $JobId -Properties @{ State = 'Complete'; DestDir = $moveResult.DestDir } -Config $Config
 
     Invoke-DiscEject -DriveLetter $DriveLetter -Config $Config
     Send-ArmNotification -Title 'Rip Complete' `
@@ -321,6 +370,9 @@ function Invoke-AudioDispatch {
     Any unexpected exception during dispatch is caught, logged as ERROR, and
     reported via Send-ArmNotification -Level Error; staging is always preserved
     on failure (no destructive cleanup happens on an error path).
+
+    Video and AudioCD discs get a Rip job record (JobState.ps1, State=Detected)
+    that the dispatch functions advance; an unhandled exception marks it Failed.
 
 .PARAMETER DriveLetter
     Drive letter of the disc to process.
@@ -346,15 +398,20 @@ function Invoke-DiscDispatch {
         [hashtable] $Config
     )
 
+    $jobId = $null
     try {
+        if ($DiscType -in @('Video', 'AudioCD')) {
+            $jobId = New-ArmJob -Kind Rip -Properties @{ State = 'Detected'; Drive = "$DriveLetter`:"; DiscType = $DiscType } -Config $Config
+        }
+
         switch ($DiscType) {
             'Video' {
                 Write-ArmLog -Level INFO -Message "Video disc detected on $DriveLetter`:" -Config $Config
-                Invoke-VideoDispatch -DriveLetter $DriveLetter -Config $Config
+                Invoke-VideoDispatch -DriveLetter $DriveLetter -Config $Config -JobId $jobId
             }
             'AudioCD' {
                 Write-ArmLog -Level INFO -Message "Audio CD detected on $DriveLetter`:" -Config $Config
-                Invoke-AudioDispatch -DriveLetter $DriveLetter -Config $Config
+                Invoke-AudioDispatch -DriveLetter $DriveLetter -Config $Config -JobId $jobId
             }
             'Data' {
                 Write-ArmLog -Level WARN -Message "Data disc detected on $DriveLetter`: (no action taken)" -Config $Config
@@ -368,6 +425,7 @@ function Invoke-DiscDispatch {
         }
     } catch {
         Write-ArmLog -Level ERROR -Message "Unhandled error dispatching disc on $DriveLetter`: $_" -Config $Config
+        $null = Update-ArmJob -JobId $jobId -Properties @{ State = 'Failed'; Error = "$_" } -Config $Config
         try {
             Send-ArmNotification -Title 'wrm Error' `
                 -Message "Unhandled error processing disc on $DriveLetter`: $_. Staging preserved." `

@@ -5,6 +5,7 @@ BeforeAll {
     # Import modules under test
     . (Join-Path $PSScriptRoot '..' 'src' 'Rip-AudioCd.ps1')
     . (Join-Path $PSScriptRoot '..' 'src' 'Common.ps1')
+    . (Join-Path $PSScriptRoot '..' 'src' 'JobState.ps1')
 
     # Create temp directories
     $script:TestDir = New-Item -ItemType Directory -Path (Join-Path $env:TEMP "wrm-audio-test-$(New-Guid)")
@@ -90,6 +91,25 @@ Describe 'Invoke-AudioRip' {
         $result.Album | Should -Be 'The Wall'
         $result.OutputDir | Should -Not -BeNullOrEmpty
         $result.Error | Should -BeNullOrEmpty
+    }
+
+    It 'with -JobId, marks the job Ripping with the staging dir before freaccmd runs' {
+        $config = New-TestConfig
+        $config.StateDir = Join-Path $script:TestDir "state-$(New-Guid)"
+        $script:AudioJobId = New-ArmJob -Kind Rip -Properties @{ Drive = 'D:' } -Config $config
+        $script:AudioConfig = $config
+        $script:AudioJobDuringRip = $null
+
+        Mock Invoke-ArmTool (New-MockAudioRip -AlbumDirName 'Pink Floyd - The Wall' -OnInvoke {
+                $script:AudioJobDuringRip = Get-ArmJob -JobId $script:AudioJobId -Config $script:AudioConfig
+            })
+
+        $result = Invoke-AudioRip -DriveLetter 'D' -Config $config -JobId $script:AudioJobId
+
+        $result.Success | Should -BeTrue
+        $script:AudioJobDuringRip.State | Should -Be 'Ripping'
+        $script:AudioJobDuringRip.DiscType | Should -Be 'AudioCD'
+        Split-Path -Parent $result.OutputDir | Should -Be $script:AudioJobDuringRip.StagingDir
     }
 
     It 'extracts artist and album from directory name with spaces' {
