@@ -80,6 +80,17 @@ Describe 'Get-ArmConfig' {
         # StagingDir should be absolute (from example it starts with C:\)
         [System.IO.Path]::IsPathRooted($config.StagingDir) | Should -Be $true
     }
+
+    It 'leaves a bare tool name (no path separator) unexpanded so it resolves via PATH' {
+        $examplePath = Join-Path $PSScriptRoot '..' 'config' 'config.example.psd1'
+        $configPath = Join-Path $script:ConfigDir 'config.psd1'
+        Copy-Item $examplePath -Destination $configPath
+
+        $config = Get-ArmConfig -Path $configPath
+
+        # config.example.psd1 documents FfmpegPath = 'ffmpeg' (bare, PATH-resolved)
+        $config.FfmpegPath | Should -Be 'ffmpeg'
+    }
 }
 
 Describe 'Write-ArmLog' {
@@ -222,6 +233,19 @@ exit 0
         # Should return an error object with exit code -1, not throw
         $result = Invoke-ArmTool -Name ffmpeg -Arguments @('-version') -Config $config
         $result.ExitCode | Should -Be -1
+    }
+
+    It 'resolves a bare tool name via PATH in real mode' {
+        # pwsh is guaranteed to be on PATH for these tests to be running at all;
+        # use it as a stand-in bare tool name to verify PATH resolution works.
+        $config = @{
+            Simulate = $false
+            FfmpegPath = 'pwsh'
+            LogDir = $script:LogDir
+        }
+
+        $result = Invoke-ArmTool -Name ffmpeg -Arguments @('-NoProfile', '-Command', 'exit 0') -Config $config
+        $result.ExitCode | Should -Be 0
     }
 
     It 'returns structured output object' {

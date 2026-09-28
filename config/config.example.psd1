@@ -20,8 +20,8 @@
     UpscaleDvds       = $false
     AutoUpscale       = $false         # $false => stop after -SampleOnly clip, notify for review
     UpscaleActiveHours= @('23:00','08:00')
-    UpscaleModel      = 'realesr-generalv3'
-    UpscaleScale      = 3
+    UpscaleModel      = 'realesrgan-plus'      # video2x 6.4 RealESRGAN models: realesr-animevideov3, realesrgan-plus-anime, realesrgan-plus
+    UpscaleScale      = 4                      # realesrgan-plus/-anime only ship x4 models; use realesr-animevideov3 for x2/x3
     UpscaleCrf        = 16
     # --- Test/dev ---
     Simulate          = $false         # route Invoke-ArmTool to tests/stubs/

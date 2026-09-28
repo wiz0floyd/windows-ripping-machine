@@ -73,11 +73,16 @@ function Get-ArmConfig {
         }
     }
 
-    # Expand relative paths to absolute
+    # Expand relative paths to absolute. Bare tool names (no path separator, e.g.
+    # FfmpegPath = 'ffmpeg') are left untouched so Invoke-ArmTool/Test-Path can
+    # resolve them via PATH instead of joining them onto the repo root.
     $pathKeys = @('StagingDir', 'UpscaleQueueDir', 'LogDir', 'MakeMkvConPath', 'FreacCmdPath', 'FfmpegPath', 'Video2xPath')
     foreach ($key in $pathKeys) {
         if ($config.ContainsKey($key) -and $config[$key] -and -not [System.IO.Path]::IsPathRooted($config[$key])) {
-            $config[$key] = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) $config[$key]
+            $hasSeparator = $config[$key] -match '[\\/]'
+            if ($hasSeparator) {
+                $config[$key] = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) $config[$key]
+            }
         }
     }
 
@@ -212,8 +217,18 @@ function Invoke-ArmTool {
             if (-not $filePath) {
                 throw "No path configured for $Name"
             }
-            if (-not (Test-Path $filePath)) {
-                throw "Tool not found: $filePath"
+            if ($filePath -match '[\\/]') {
+                # Explicit path (relative or absolute) - must exist on disk
+                if (-not (Test-Path $filePath)) {
+                    throw "Tool not found: $filePath"
+                }
+            } else {
+                # Bare tool name - resolve via PATH
+                $resolved = Get-Command -Name $filePath -CommandType Application -ErrorAction SilentlyContinue
+                if (-not $resolved) {
+                    throw "Tool not found on PATH: $filePath"
+                }
+                $filePath = $resolved.Source
             }
             $argumentList = $Arguments
         }
