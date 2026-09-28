@@ -237,13 +237,14 @@ function Invoke-VideoDispatch {
     } catch {
         Write-ArmLog -Level WARN -Message "Failed to rename staging dir to '$($resolved.FolderName)': $_" -Config $Config
     }
+    $actualFolderName = Split-Path -Leaf $renamedDir
 
     $moveResult = Move-ToNas -SourceDir $renamedDir -DestRoot $Config.NasVideoPath -Config $Config
 
     if (-not $moveResult.Success) {
         Write-ArmLog -Level ERROR -Message "Move to NAS failed: $($moveResult.Error)" -Config $Config
         Send-ArmNotification -Title 'Move to NAS Failed' `
-            -Message "Failed to move '$($resolved.FolderName)' to NAS: $($moveResult.Error). Staging preserved." `
+            -Message "Failed to move '$actualFolderName' to NAS: $($moveResult.Error). Staging preserved." `
             -Level Error -Config $Config
         return
     }
@@ -254,7 +255,7 @@ function Invoke-VideoDispatch {
                 Sort-Object -Property Length -Descending | Select-Object -First 1
             if ($mainMkv) {
                 New-UpscaleQueueEntry -MkvPath $mainMkv.FullName -DestDir $moveResult.DestDir `
-                    -FolderName $resolved.FolderName -Config $Config
+                    -FolderName $actualFolderName -Config $Config
             } else {
                 Write-ArmLog -Level WARN -Message "UpscaleDvds set but no .mkv found under $($moveResult.DestDir)" -Config $Config
             }
@@ -265,7 +266,7 @@ function Invoke-VideoDispatch {
 
     Invoke-DiscEject -DriveLetter $DriveLetter -Config $Config
     Send-ArmNotification -Title 'Rip Complete' `
-        -Message "$($resolved.FolderName) ripped and moved to NAS." -Level Info -Config $Config
+        -Message "$actualFolderName ripped and moved to NAS." -Level Info -Config $Config
 }
 
 <#
@@ -526,6 +527,7 @@ function Start-DiscWatcherLoop {
     try {
         while ($true) {
             $evt = Wait-Event -SourceIdentifier $sourceId -Timeout 30 -ErrorAction SilentlyContinue
+            $driveHandledByEvent = $null
             if ($evt) {
                 Remove-Event -SourceIdentifier $sourceId -ErrorAction SilentlyContinue
                 $driveName = $evt.SourceEventArgs.NewEvent.DriveName
@@ -533,10 +535,14 @@ function Start-DiscWatcherLoop {
                     $driveLetter = [char] ($driveName.ToString().TrimEnd(':'))
                     $type = Get-DiscType -DriveLetter $driveLetter
                     Update-ArmDiscWatcherState -DriveLetter $driveLetter -Type $type -LastState $lastState -Config $Config
+                    $driveHandledByEvent = $driveLetter
                 }
             }
 
             foreach ($drive in Get-OpticalDriveLetters) {
+                if ($drive -eq $driveHandledByEvent) {
+                    continue
+                }
                 $type = Get-DiscType -DriveLetter $drive
                 Update-ArmDiscWatcherState -DriveLetter $drive -Type $type -LastState $lastState -Config $Config
             }

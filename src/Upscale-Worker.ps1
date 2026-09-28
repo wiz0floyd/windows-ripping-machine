@@ -43,8 +43,13 @@ function Test-ArmActiveWindow {
     }
 
     $now = Get-Date
-    $start = [datetime]::ParseExact($window[0], 'HH:mm', $null)
-    $end = [datetime]::ParseExact($window[1], 'HH:mm', $null)
+    try {
+        $start = [datetime]::ParseExact($window[0], 'HH:mm', $null)
+        $end = [datetime]::ParseExact($window[1], 'HH:mm', $null)
+    } catch {
+        Write-ArmLog -Level WARN -Message "Invalid UpscaleActiveHours '$($window -join ', ')' (expected 'HH:mm'): $_; treating as always in-window" -Config $Config
+        return $true
+    }
 
     $nowTod = $now.TimeOfDay
     $startTod = $start.TimeOfDay
@@ -103,7 +108,9 @@ function Invoke-ArmUpscaleQueueItem {
             throw "Queue item source not found: $source"
         }
 
-        if (-not $Config.AutoUpscale) {
+        $approved = $item.PSObject.Properties.Name -contains 'SampleGenerated' -and $item.SampleGenerated
+
+        if (-not $Config.AutoUpscale -and -not $approved) {
             $result = Invoke-Upscale -InputFile $source -OutputDir (Split-Path -Parent $QueueFile) -Config $Config -SampleOnly
 
             if (-not $result.Success) {
@@ -113,6 +120,11 @@ function Invoke-ArmUpscaleQueueItem {
             Send-ArmNotification -Title 'Upscale sample ready' `
                 -Message "Sample clip ready for review: $($result.OutputFile)" `
                 -Level Info -Config $Config
+
+            # Mark approval state in the item content (not just the filename) so that
+            # renaming back to .json is distinguishable from a never-sampled item.
+            $item | Add-Member -MemberType NoteProperty -Name SampleGenerated -Value $true -Force
+            $item | ConvertTo-Json | Set-Content -LiteralPath $QueueFile -Encoding utf8
 
             $reviewPath = [System.IO.Path]::ChangeExtension($QueueFile, '.awaiting-review')
             Move-Item -LiteralPath $QueueFile -Destination $reviewPath -Force

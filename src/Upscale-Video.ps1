@@ -201,6 +201,12 @@ function Invoke-Upscale {
             throw "ffmpeg preprocess failed with exit code $($preResult.ExitCode)"
         }
 
+        # realesrgan-plus/-anime only ship x4 weights under video2x 6.4 (see SPEC.md);
+        # catch the mismatch here with a clear error instead of an opaque video2x CLI failure.
+        if ($Config.UpscaleModel -in @('realesrgan-plus', 'realesrgan-plus-anime') -and [int]$Config.UpscaleScale -ne 4) {
+            throw "UpscaleModel '$($Config.UpscaleModel)' only supports UpscaleScale=4, but UpscaleScale=$($Config.UpscaleScale) was configured"
+        }
+
         # --- (c) AI upscale via video2x (CLI flags per Video2X 6.4: -p/--processor,
         # -s/--scaling-factor, and the realesrgan-specific --realesrgan-model) ---
         $upscaledFile = Join-Path $tempDir 'upscaled.mkv'

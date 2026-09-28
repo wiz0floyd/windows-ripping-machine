@@ -94,7 +94,7 @@ function Invoke-AudioRip {
         $artist = 'Unknown Artist'
         $album = "Unknown Album $(Get-Date -Format 'yyyy-MM-dd')"
 
-        if ($dirName -match '^(.+?)\s*-\s*(.+)$') {
+        if ($dirName -match '^(.+?)\s+-\s+(.+)$') {
             $artist = $matches[1].Trim()
             $album = $matches[2].Trim()
         } else {
