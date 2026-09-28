@@ -331,15 +331,13 @@ function Invoke-VideoRip {
     $resolved = $null
 
     function ConvertTo-RipResult([bool]$Success, [string]$ErrorMessage) {
-        [pscustomobject]@{
-            Success    = $Success
+        New-ArmResult -Success $Success -Properties ([ordered]@{
             DiscLabel  = $discLabel
             DiscType   = $discType
             OutputDir  = $outputDir
             TitleCount = $titleCount
-            Error      = $ErrorMessage
             Resolved   = $resolved
-        }
+        }) -ErrorMessage $ErrorMessage
     }
 
     try {

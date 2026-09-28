@@ -81,7 +81,7 @@ function Get-ArmConfig {
         if ($config.ContainsKey($key) -and $config[$key] -and -not [System.IO.Path]::IsPathRooted($config[$key])) {
             $hasSeparator = $config[$key] -match '[\\/]'
             if ($hasSeparator) {
-                $config[$key] = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) $config[$key]
+                $config[$key] = Join-Path (Split-Path -Parent $PSScriptRoot) $config[$key]
             }
         }
     }
