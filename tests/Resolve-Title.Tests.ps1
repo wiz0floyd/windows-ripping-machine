@@ -148,6 +148,59 @@ Describe 'Resolve-Title' {
         { Resolve-Title -DiscLabel 'ANYTHING' -Config $script:Config } | Should -Not -Throw
     }
 
+    It 'retries with a truncated query when the full query returns zero results, down to a single word' {
+        Mock Invoke-RestMethod {
+            param($Uri)
+            if ($Uri -match [regex]::Escape('query=Stardust Ps Ac')) {
+                return [pscustomobject]@{ results = @() }
+            }
+            if ($Uri -match [regex]::Escape('query=Stardust Ps')) {
+                return [pscustomobject]@{ results = @() }
+            }
+            return [pscustomobject]@{
+                results = @(
+                    [pscustomobject]@{ title = 'Stardust'; release_date = '2007-08-10'; popularity = 12.6 },
+                    [pscustomobject]@{ title = 'Stardust Memories'; release_date = '1980-09-26'; popularity = 3.83 }
+                )
+            }
+        }
+
+        $result = Resolve-Title -DiscLabel 'STARDUST_PS_AC' -Config $script:Config
+
+        $result.Matched | Should -Be $true
+        $result.Title | Should -Be 'Stardust'
+        $result.Year | Should -Be 2007
+        $result.FolderName | Should -Be 'Stardust (2007)'
+        Should -Invoke Invoke-RestMethod -Times 3 -Exactly
+    }
+
+    It 'does not retry when results are non-zero but ambiguous' {
+        Mock Invoke-RestMethod {
+            return [pscustomobject]@{
+                results = @(
+                    [pscustomobject]@{ title = 'Alpha One'; release_date = '2001-01-01'; popularity = 10.0 },
+                    [pscustomobject]@{ title = 'Alpha Two'; release_date = '2005-01-01'; popularity = 8.0 }
+                )
+            }
+        }
+
+        $result = Resolve-Title -DiscLabel 'ALPHA ONE JUNK' -Config $script:Config
+
+        $result.Matched | Should -Be $false
+        Should -Invoke Invoke-RestMethod -Times 1 -Exactly
+    }
+
+    It 'stops truncating at a single word and falls back to label+date if still no results' {
+        Mock Invoke-RestMethod { return [pscustomobject]@{ results = @() } }
+
+        $result = Resolve-Title -DiscLabel 'TOTALLY UNKNOWN JUNK LABEL' -Config $script:Config
+
+        $result.Matched | Should -Be $false
+        $result.FolderName | Should -Match '^Totally Unknown Junk Label_\d{4}-\d{2}-\d{2}$'
+        # 1 initial + 3 truncations = 4 calls, last query is a single word
+        Should -Invoke Invoke-RestMethod -Times 4 -Exactly
+    }
+
     It 'matches a disc label carrying an audio codec suffix (e.g. CASTAWAY_DTS)' {
         Mock Invoke-RestMethod {
             return [pscustomobject]@{

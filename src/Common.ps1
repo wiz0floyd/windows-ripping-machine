@@ -130,7 +130,7 @@ function Write-ArmLog {
     Write-Host -Object $logLine
 
     # Attempt file logging
-    if ($Config -and $Config.LogDir) {
+    if ($Config -and $Config.ContainsKey('LogDir') -and $Config.LogDir) {
         try {
             $logDir = $Config.LogDir
             if (-not (Test-Path $logDir)) {

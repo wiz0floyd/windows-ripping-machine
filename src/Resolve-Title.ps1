@@ -170,9 +170,14 @@ function ConvertTo-ArmFolderName {
 .DESCRIPTION
     Cleans the raw disc label (separators, disc/season tokens, edition/region/
     format noise), then, if `$Config.TmdbApiKey` is set, searches
-    `/3/search/movie`. The top hit is accepted when it is the only result or its
-    popularity is at least 2x the runner-up's. On acceptance, returns folder name
-    "Title (Year)" (invalid filename characters stripped).
+    `/3/search/movie`. If the full cleaned label returns zero results (leftover
+    disc-authoring junk the noise-token list doesn't know about), retries with
+    the last word dropped, up to 3 times or down to a single remaining word;
+    ambiguous (non-zero but rejected) results do not trigger a retry, since
+    dropping tokens only broadens an already-ambiguous field. The top hit from
+    whichever query returned results is accepted when it is the only result or
+    its popularity is at least 2x the runner-up's. On acceptance, returns
+    folder name "Title (Year)" (invalid filename characters stripped).
 
     When no API key is configured, TMDb returns no acceptable match, or the HTTP
     call fails, falls back to "<CLEANLABEL>_<yyyy-MM-dd>" with `Matched = $false`.
@@ -211,17 +216,40 @@ function Resolve-Title {
         $fallbackName = "$($fallbackBase)_$(Get-Date -Format 'yyyy-MM-dd')"
 
         if (-not $Config.TmdbApiKey) {
+            Write-ArmLog -Level WARN -Message "No TmdbApiKey configured; using label+date naming for '$titleCaseLabel'" -Config $Config
             return [pscustomobject]@{ FolderName = $fallbackName; Matched = $false; Title = $null; Year = $null }
         }
 
-        try {
-            $response = Invoke-ArmTmdbSearch -Query $titleCaseLabel -ApiKey $Config.TmdbApiKey
-        } catch {
-            Write-ArmLog -Level WARN -Message "TMDb lookup failed for '$titleCaseLabel': $_" -Config $Config
-            return [pscustomobject]@{ FolderName = $fallbackName; Matched = $false; Title = $null; Year = $null }
+        # Query TMDb with the full cleaned label; if that returns zero results (not
+        # ambiguous results - those go straight to the fallback below, since dropping
+        # tokens only broadens an already-ambiguous field), retry with the last word
+        # dropped, up to $maxTruncations times or down to a single remaining word.
+        # Leftover disc-authoring tokens the noise list doesn't know about (e.g. an
+        # unexplained "PS AC" suffix) are the main thing this recovers from.
+        $maxTruncations = 3
+        $queryTokens = @($titleCaseLabel -split '\s+' | Where-Object { $_ })
+        $truncations = 0
+        $results = @()
+        $queryUsed = $titleCaseLabel
+
+        while ($true) {
+            $queryUsed = ($queryTokens -join ' ')
+            try {
+                $response = Invoke-ArmTmdbSearch -Query $queryUsed -ApiKey $Config.TmdbApiKey
+            } catch {
+                Write-ArmLog -Level WARN -Message "TMDb lookup failed for '$queryUsed': $_" -Config $Config
+                return [pscustomobject]@{ FolderName = $fallbackName; Matched = $false; Title = $null; Year = $null }
+            }
+
+            $results = @($response.results)
+            if ($results.Count -gt 0) { break }
+            if ($truncations -ge $maxTruncations -or $queryTokens.Count -le 1) { break }
+
+            $truncations++
+            $queryTokens = $queryTokens[0..($queryTokens.Count - 2)]
+            Write-ArmLog -Level WARN -Message "No TMDb results for '$queryUsed'; retrying with truncated query '$($queryTokens -join ' ')' (attempt $truncations/$maxTruncations)" -Config $Config
         }
 
-        $results = @($response.results)
         if ($results.Count -eq 0 -or -not (Test-ArmTmdbAcceptance -Results $results)) {
             return [pscustomobject]@{ FolderName = $fallbackName; Matched = $false; Title = $null; Year = $null }
         }
@@ -231,6 +259,10 @@ function Resolve-Title {
         $year = $null
         if ($top.release_date) {
             try { $year = ([datetime]$top.release_date).Year } catch { $year = $null }
+        }
+
+        if ($queryUsed -ne $titleCaseLabel) {
+            Write-ArmLog -Level WARN -Message "Matched '$title' via truncated query '$queryUsed' (original label '$titleCaseLabel')" -Config $Config
         }
 
         $folderName = ConvertTo-ArmFolderName -Title $title -Year $year

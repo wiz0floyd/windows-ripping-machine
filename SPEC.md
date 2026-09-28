@@ -142,8 +142,10 @@ Resolve-Title -DiscLabel <string> -Config <hashtable> -> [pscustomobject]
 #  @{ FolderName; Matched=[bool]; Title; Year }
 #  Clean label: '_'/'.'→space; strip tokens (DISC|DISK|D)\s*\d, SEASON \d, edition/
 #  region/studio noise (SPECIAL EDITION, WS, 16X9, PAL, NTSC...); title-case.
-#  If TmdbApiKey: GET api.themoviedb.org/3/search/movie?query=<clean>. Accept top hit
-#  when exactly 1 result OR top popularity ≥ 2× second. FolderName "Title (Year)"
+#  If TmdbApiKey: GET api.themoviedb.org/3/search/movie?query=<clean>. Zero results
+#  (not ambiguous ones) retry with the last word dropped, up to 3x or down to 1
+#  word. Accept top hit from whichever query returned results when exactly 1
+#  result OR top popularity ≥ 2× second. FolderName "Title (Year)"
 #  (or just "Title" when Year is blank), sanitized via the single canonical
 #  ConvertTo-ArmSafeFileName (Common.ps1): invalid Windows filename characters
 #  (per [System.IO.Path]::GetInvalidFileNameChars()) are stripped (not replaced),
