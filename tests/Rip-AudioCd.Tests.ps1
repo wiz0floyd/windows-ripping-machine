@@ -6,6 +6,7 @@ BeforeAll {
     . (Join-Path $PSScriptRoot '..' 'src' 'Rip-AudioCd.ps1')
     . (Join-Path $PSScriptRoot '..' 'src' 'Common.ps1')
     . (Join-Path $PSScriptRoot '..' 'src' 'JobState.ps1')
+    . (Join-Path $PSScriptRoot 'TestHelpers.ps1')
 
     # Create temp directories
     $script:TestDir = New-Item -ItemType Directory -Path (Join-Path $env:TEMP "wrm-audio-test-$(New-Guid)")
@@ -109,7 +110,7 @@ Describe 'Invoke-AudioRip' {
         $result.Success | Should -BeTrue
         $script:AudioJobDuringRip.State | Should -Be 'Ripping'
         $script:AudioJobDuringRip.DiscType | Should -Be 'AudioCD'
-        Split-Path -Parent $result.OutputDir | Should -Be $script:AudioJobDuringRip.StagingDir
+        ConvertTo-ArmLongPath (Split-Path -Parent $result.OutputDir) | Should -Be (ConvertTo-ArmLongPath $script:AudioJobDuringRip.StagingDir)
     }
 
     It 'extracts artist and album from directory name with spaces' {
