@@ -11,19 +11,30 @@ Thanks for your interest in improving the Windows Ripping Machine.
    Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
    ```
 3. Use **PowerShell 7+ (`pwsh`)**, not Windows PowerShell 5.1 (`powershell.exe`). This repo relies on multi-segment `Join-Path` and Pester 5, both of which break under 5.1.
+4. For the web UI browser tests only: **Node.js 20+** (CI uses 24). The ripping machine itself never needs Node.
+   ```powershell
+   cd tests/browser
+   npm ci
+   npx playwright install chromium
+   ```
 
 ## Project layout
 
 - `src/` — PowerShell modules (DiscWatcher, rip pipelines, Upscale-Worker, NAS transfer, TMDb naming).
 - `tests/` — Pester tests with fixtures and simulate-mode stubs; no real disc or NAS access required.
+- `tests/browser/` — Playwright specs for the web UI (`src/WebUi.ps1`); they start their own server on `http://localhost:18765/` against a temp config.
 - `config/` — user configuration (`config.psd1`), not checked in with real values.
 - `SPEC.md` — module contracts; `docs/PLAN.md` — architecture rationale.
 
 ## Running tests
 
 ```powershell
-Invoke-Pester -Path tests
+# CI-equivalent (tests/manual makes live TMDb/LLM calls and is excluded)
+$c = New-PesterConfiguration; $c.Run.Path = 'tests'; $c.Run.ExcludePath = '*\manual\*'; Invoke-Pester -Configuration $c
 Invoke-ScriptAnalyzer -Path src -Recurse
+
+# Web UI browser tests
+cd tests/browser; npx playwright test
 ```
 
 All simulate-mode tests must pass before submitting a change. If your change touches a physical-media workflow (disc detection, ripping, NAS transfer, upscale), also work through the manual acceptance checklist in `README.md` and note the results in your PR description — these steps can't be automated.

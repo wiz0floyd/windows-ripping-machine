@@ -11,6 +11,7 @@ A native Windows replacement for the Linux Automatic Ripping Machine: insert a d
   - **Audio CDs**: through `freaccmd` → FLAC with MusicBrainz tags → NAS music share.
   - **Data discs**: logged as a warning and you get a notification ("Data Disc Detected"); no rip is attempted.
 - **Upscale-Worker** (optional, separate task): processes queued DVD rips with ffmpeg deinterlacing (IVTC or bwdif) → AI upscaling (video2x Real-ESRGAN ncnn/Vulkan) on the GPU → high-bitrate x265 encode → sample-first review gate or automatic.
+- **Web UI** (separate task `wrm-webui`): a status page at `http://localhost:8765/` on this machine — see [Web UI](#web-ui).
 - All work respects the logged-in user's NAS SMB credentials and audio stack (nothing touches Windows audio).
 
 ## Setup
@@ -69,12 +70,30 @@ match was found from the disc label alone.
 - Or set `AutoUpscale=true` to skip the review gate and upscale everything automatically.
 - Result: `Title (Year) [AI upscale 1080p].mkv` alongside the original.
 
+### Web UI
+Open `http://localhost:8765/` on the ripping machine (or over RDP). The page shows:
+- **Active rip** — the disc being ripped right now: state (Detected → Ripping → Moving),
+  drive, disc label, resolved title, and staging directory.
+- **Rip history** — finished rips with their NAS destination, or the error if one failed.
+- **Upscale queue** — every upscale job and its state (Queued, Sampling, AwaitingReview,
+  Upscaling, Complete, Failed), with the sample path while it awaits review.
+- **Today's log** — the last 200 lines of `wrm-<date>.log`.
+
+It refreshes itself every 5 seconds. The page is read-only for now; approve/retry/cancel and
+title editing still work through the files described above and below.
+
+It listens on `localhost` only (not reachable from other devices), started at logon by the
+`wrm-webui` Scheduled Task. Change the port with `WebUiPort`, or set `WebUiEnabled = $false`
+to turn it off. Use `http://localhost:<port>/` exactly: `127.0.0.1` is rejected with
+`400 Invalid Hostname`.
+
 ### Configuration
 Edit `config\config.psd1` (created at setup):
 - `NasVideoPath`, `NasMusicPath` — UNC paths to your NAS shares.
 - `TmdbApiKey` — optional; without it, folder names use disc label + date.
 - `HaWebhookUrl` — optional Home Assistant webhook for notifications.
 - `UpscaleDvds`, `AutoUpscale`, `UpscaleActiveHours` — upscale behavior.
+- `WebUiEnabled`, `WebUiPort` — the local status page.
 
 Full options are documented in `SPEC.md`.
 
@@ -93,6 +112,15 @@ Invoke-ScriptAnalyzer -Path src -Recurse
 ```
 
 Tests use fixtures and stubs (fake MakeMKV output, etc.) so no real disc or NAS access is needed.
+
+Web UI browser tests use Playwright and need Node.js 20+ (test-only):
+
+```powershell
+cd tests/browser
+npm ci
+npx playwright install chromium
+npx playwright test
+```
 
 CI runs this same suite automatically on every push and pull request (see the badge above and `.github/workflows/ci.yml`).
 

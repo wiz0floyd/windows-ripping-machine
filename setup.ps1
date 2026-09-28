@@ -253,6 +253,32 @@ function Register-ArmScheduledTask {
 
 <#
 .SYNOPSIS
+    The wrm scheduled tasks (name + entry-point script) that setup registers and
+    -Uninstall removes, in registration order.
+
+.PARAMETER RepoRoot
+    Repository root (the directory containing src\).
+
+.OUTPUTS
+    [hashtable[]] @{ TaskName; ScriptPath }
+#>
+function Get-ArmScheduledTaskList {
+    [CmdletBinding()]
+    [OutputType([hashtable[]])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $RepoRoot
+    )
+
+    return @(
+        @{ TaskName = 'wrm-watcher'; ScriptPath = Join-Path $RepoRoot 'src' 'DiscWatcher.ps1' }
+        @{ TaskName = 'wrm-upscaler'; ScriptPath = Join-Path $RepoRoot 'src' 'Upscale-Worker.ps1' }
+        @{ TaskName = 'wrm-webui'; ScriptPath = Join-Path $RepoRoot 'src' 'WebUi.ps1' }
+    )
+}
+
+<#
+.SYNOPSIS
     Thin wrapper around [Environment]::UserInteractive so it can be mocked
     in tests.
 
@@ -414,13 +440,13 @@ Administrator (Run as Administrator) pwsh window.
     }
 
     $repoRoot = $PSScriptRoot
-    $watcherPath = Join-Path $repoRoot 'src' 'DiscWatcher.ps1'
-    $upscalerPath = Join-Path $repoRoot 'src' 'Upscale-Worker.ps1'
+    $tasks = Get-ArmScheduledTaskList -RepoRoot $repoRoot
     $effectiveRunAsUser = if ($RunAsUser) { $RunAsUser } else { "$env:USERDOMAIN\$env:USERNAME" }
 
     if ($Uninstall) {
-        Unregister-ArmScheduledTask -TaskName 'wrm-watcher'
-        Unregister-ArmScheduledTask -TaskName 'wrm-upscaler'
+        foreach ($task in $tasks) {
+            Unregister-ArmScheduledTask -TaskName $task.TaskName
+        }
         Write-Host 'wrm scheduled tasks removed.'
         return
     }
@@ -450,9 +476,17 @@ Administrator (Run as Administrator) pwsh window.
             -TmdbApiKey $TmdbApiKey -HaWebhookUrl $HaWebhookUrl
     }
 
-    Register-ArmScheduledTask -TaskName 'wrm-watcher' -ScriptPath $watcherPath -RunAsUser $effectiveRunAsUser
-    Register-ArmScheduledTask -TaskName 'wrm-upscaler' -ScriptPath $upscalerPath -RunAsUser $effectiveRunAsUser
+    foreach ($task in $tasks) {
+        Register-ArmScheduledTask -TaskName $task.TaskName -ScriptPath $task.ScriptPath -RunAsUser $effectiveRunAsUser
+    }
+
+    $webUiPort = if ($example.ContainsKey('WebUiPort')) { $example.WebUiPort } else { 8765 }
+    if (Test-Path -Path $configOutputPath) {
+        $installed = Import-PowerShellDataFile -Path $configOutputPath
+        if ($installed.ContainsKey('WebUiPort') -and $installed.WebUiPort) { $webUiPort = $installed.WebUiPort }
+    }
 
     Write-Host ''
     Write-Host 'Setup complete.'
+    Write-Host "Web UI (after next logon, or start the 'wrm-webui' task now): http://localhost:$webUiPort/"
 }
