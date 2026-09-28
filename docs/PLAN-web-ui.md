@@ -3,7 +3,8 @@
 Issue: #15 (title only, no body). This plan fills the gaps with stated assumptions;
 items marked **[ASSUMPTION]** need confirmation before the dependent story starts.
 
-**Verifiability tier: V2 overall** (S1 is V1; S2–S4 need a human browser check).
+**Verifiability tier: V2 overall.** Browser behavior (S2–S4) is automated with
+Playwright, so S1–S3 are V1. S4 stays V2 only for its real-disc acceptance step.
 
 ## Why this isn't "just add a page"
 
@@ -38,6 +39,26 @@ entry point** (`src/WebUi.ps1`) run as its own Scheduled Task.
   concurrently. Writers never throw (log WARN), matching the pipeline's
   no-throw contract. Job IDs are generated (`yyyyMMdd-HHmmss-<6 hex>`), never
   derived from user input.
+- **Browser tests: Playwright** (`@playwright/test`, Chromium only) in
+  `tests/browser/` with its own `package.json`, `playwright.config.ts`, and
+  `*.spec.ts`. Pester only collects `*.Tests.ps1`, so the two suites don't collide.
+  - Playwright's `webServer` launches `pwsh -File src/WebUi.ps1 -Simulate -ConfigPath
+    <temp config>` on a fixed test port (`18765`), with `StateDir`, `StagingDir`,
+    `UpscaleQueueDir`, `LogDir` and the NAS paths all under a per-run temp root.
+  - `tests/browser/fixtures/seed.ps1` dot-sources `src/JobState.ps1` and writes job
+    records plus matching queue/staging files, so specs seed state through the real
+    library rather than hand-written JSON. Specs call it via `child_process`.
+  - Specs that cross into the pipeline (approve → worker completes; metadata edit →
+    NAS folder name) shell out to `DiscWatcher.ps1` / `Upscale-Worker.ps1 -Simulate
+    -Once` against the same temp config.
+  - Localhost only, no external network, which is consistent with the repo's
+    "no network in tests" rule.
+  - `.gitignore`: `tests/browser/node_modules/`, `test-results/`, `playwright-report/`.
+  - CI: a new `browser` job on `windows-latest`: `actions/setup-node`,
+    `npm ci`, `npx playwright install --with-deps chromium`, `npx playwright test`;
+    upload `playwright-report/` as an artifact on failure.
+  - CONTRIBUTING.md: add Node 20+ as a dev prerequisite (runtime stays
+    PowerShell-only; Node is test-only).
 - **Actions resolve by job ID only** against files the server enumerated itself —
   no request ever carries a filesystem path (prevents path traversal).
 
@@ -95,7 +116,7 @@ with `State=Complete` and correct `DestDir`; after `Upscale-Worker.ps1 -Simulate
 **Done when:** `Invoke-Pester -Path tests` green, `Invoke-ScriptAnalyzer -Path src
 -Recurse` zero errors, simulated E2E produces the job records above.
 
-### S2 — Read-only status UI (V2)
+### S2 — Read-only status UI (V1, Playwright)
 
 - `src/WebUi.ps1` entry point: `[-ConfigPath] [-Simulate] [-Once]`; `-Once` serves
   one request then exits (for tests). Library portion: `Invoke-ArmWebRequest` and
@@ -114,11 +135,22 @@ of a `<script>` title, log tail bounds. `Setup.Tests.ps1` asserts the new task.
 One socket-level smoke test: start `WebUi.ps1 -Once` on a random port,
 `Invoke-WebRequest /api/jobs`, assert 200.
 
-**Done when:** tests green + manual: run `DiscWatcher.ps1 -Simulate -Once` and
-`WebUi.ps1 -Simulate`, open `http://localhost:8765/`, see the simulated rip as
-Complete and the upscale job as AwaitingReview; user confirms.
+S2 also lands the Playwright scaffolding (config, seed script, CI job).
+`tests/browser/dashboard.spec.ts`:
+- The seeded Ripping, Complete and Failed rips each render with the right state
+  badge; Queued and AwaitingReview upscale jobs appear in the queue table.
+- A job whose title is `<img src=x onerror=alert(1)>` renders as literal text: no
+  `dialog` event fires and there's no `img` element in the card.
+- Polling: update a job via `seed.ps1` and the card changes state within 10s,
+  with no page reload.
+- Log panel shows the tail of the seeded log file.
+- Empty state: no jobs → "No rips yet" message, no JS console errors
+  (`page.on('console')` asserts zero `error` entries on every spec).
 
-### S3 — Upscale job actions (V2)
+**Done when:** Pester + `npx playwright test` green locally and in CI, and
+ScriptAnalyzer reports zero errors.
+
+### S3 — Upscale job actions (V1, Playwright)
 
 - `POST /api/jobs/<id>/approve`: only when state is `AwaitingReview`; renames
   `.awaiting-review → .json`, state → `Queued`.
@@ -139,8 +171,18 @@ Complete and the upscale job as AwaitingReview; user confirms.
 Tests: each action's valid-state and invalid-state (409) paths, unknown ID (404),
 missing header (403), filesystem rename verified in `TestDrive:`.
 
-**Done when:** tests green + manual: approve a simulated sample in the browser, then
-`Upscale-Worker.ps1 -Simulate -Once` completes it; user confirms.
+`tests/browser/upscale-actions.spec.ts`:
+- Approve: seed AwaitingReview → click Approve → badge shows Queued, the
+  `.awaiting-review` file is gone and `.json` exists → run `Upscale-Worker.ps1
+  -Simulate -Once` → the card shows Complete and the upscaled mkv exists in DestDir.
+- Retry: seed Failed → click Retry → Queued, `.failed` renamed to `.json`.
+- Cancel: seed Queued → click Cancel → confirm dialog accepted → Cancelled,
+  queue file deleted.
+- Buttons only render for valid states. With a job seeded as Upscaling, there
+  are no action buttons, and a forced `request.post` returns 409.
+- A POST from `page.request` without `X-WRM-Action` returns 403.
+
+**Done when:** Pester + Playwright green locally and in CI.
 
 ### S4 — Manual metadata edit during a rip (V2)
 
@@ -158,8 +200,22 @@ missing header (403), filesystem rename verified in `TestDrive:`.
 Tests: edit accepted while Ripping, 409 when Moving/Complete, validation errors,
 `-Force` overwrite behavior, E2E: pre-seed an edit and assert the NAS folder name.
 
-**Done when:** tests green + manual: during a real DVD rip, change the title in the
-UI and confirm the NAS folder uses it; user confirms.
+`tests/browser/metadata-edit.spec.ts`:
+- Seed a Ripping job whose `StagingDir` contains stub mkvs and `metadata.json`.
+  The form is prefilled from it; typing a new title updates the folder-name
+  preview (including stripping of `:` and other invalid characters).
+- Save → `metadata.json` on disk holds the new Title/Year. Then drive the rest
+  of the pipeline (`Resolve-TitleOverride` → rename → `Move-ToNas` against the
+  temp NAS root, via a small `finish-rip.ps1` fixture that dot-sources
+  `DiscWatcher.ps1`). Assert the NAS folder is `New Title (1999)`.
+- Validation: blank title / `99` as year shows inline errors, and nothing is
+  written.
+- Seed the job as Moving: the form is read-only and a forced POST returns 409.
+
+**Done when:** Pester + Playwright green in CI, **plus** the V2 real-disc step:
+during a real DVD rip, change the title in the UI and confirm the NAS folder
+uses it. This can't be automated (physical media), so record the result in
+the PR description per README "Acceptance checklist (manual)".
 
 ## Deferred / out of scope
 
@@ -180,9 +236,9 @@ UI and confirm the NAS folder uses it; user confirms.
 
 ## Verification plan (summary)
 
-| Story | Automated (V1) | Human (V2) |
-|---|---|---|
-| S1 | Pester unit + simulated E2E job records; ScriptAnalyzer | — |
-| S2 | Routing/escaping unit tests; socket smoke test; Setup task test | Browser shows simulated jobs |
-| S3 | Action state-machine tests incl. 403/404/409 | Approve in browser → worker completes |
-| S4 | Edit/409/validation tests; E2E folder-name assertion | Real rip renamed via UI |
+| Story | Pester (V1) | Playwright (V1) | Human (V2) |
+|---|---|---|---|
+| S1 | Unit + simulated E2E job records; ScriptAnalyzer | — | — |
+| S2 | Routing/escaping units; socket smoke; Setup task | `dashboard.spec.ts`: render, XSS, polling, empty state | — |
+| S3 | Action state machine incl. 403/404/409 | `upscale-actions.spec.ts`: approve→worker completes, retry, cancel, 409/403 | — |
+| S4 | Edit/409/validation units; `-Force` overwrite | `metadata-edit.spec.ts`: edit → NAS folder name | Real DVD rip renamed via UI |
