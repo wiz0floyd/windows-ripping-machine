@@ -17,7 +17,7 @@ runs natively on Windows in the logged-in user's session.
 
 - PowerShell 7+. Every script: `Set-StrictMode -Version Latest`; `$ErrorActionPreference = 'Stop'`.
 - `src/*.ps1` are dot-sourceable function libraries (no top-level side effects).
-  Entry points (`DiscWatcher.ps1`, `Upscale-Worker.ps1`, `setup.ps1`) may execute.
+  Entry points (`DiscWatcher.ps1`, `Upscale-Worker.ps1`, `WebUi.ps1`, `setup.ps1`) may execute.
 - Functions: approved verbs, comment-based help, typed params.
 - Never call external executables directly — always via `Invoke-ArmTool` (below) so
   simulation can intercept.
@@ -42,12 +42,15 @@ wrm/
 │   ├── Send-Notification.ps1    # Send-ArmNotification
 │   ├── Upscale-Video.ps1        # Get-InterlaceType, Invoke-Upscale
 │   ├── DiscWatcher.ps1          # entry point (event loop)
-│   └── Upscale-Worker.ps1       # entry point (queue loop)
+│   ├── Upscale-Worker.ps1       # entry point (queue loop)
+│   ├── WebUi.ps1                # entry point (localhost status page; Invoke-ArmWebRequest)
+│   └── webui/                   # app.js, app.css served by WebUi.ps1
 ├── setup.ps1
 ├── tests/
 │   ├── *.Tests.ps1              # Pester 5, one per src module
 │   ├── stubs/                   # stub-makemkvcon.ps1, stub-freaccmd.ps1, stub-video2x.ps1
-│   └── fixtures/                # makemkvcon robot output, TMDb JSON, ffmpeg idet output samples
+│   ├── fixtures/                # makemkvcon robot output, TMDb JSON, ffmpeg idet output samples
+│   └── browser/                 # Playwright specs for the web UI (Node, test-only)
 ├── .gitignore                   # config/config.psd1, logs/, *.log
 └── README.md
 ```
@@ -81,6 +84,9 @@ wrm/
     UpscaleModel      = 'realesrgan-plus'      # video2x 6.4 RealESRGAN models: realesr-animevideov3, realesrgan-plus-anime, realesrgan-plus
     UpscaleScale      = 4                      # realesrgan-plus/-anime only ship x4 models; use realesr-animevideov3 for x2/x3
     UpscaleCrf        = 16
+    # --- Web UI (http://localhost:<WebUiPort>/, this machine only) ---
+    WebUiEnabled      = $true          # $false => WebUi.ps1 exits immediately
+    WebUiPort         = 8765
     # --- Job history ---
     JobHistoryDays    = 30             # prune Complete/Failed/Cancelled job records older than this
     # --- Test/dev ---
@@ -310,14 +316,50 @@ Remove-ArmStaleJobs -Config <hashtable> -> [int] removed
 #  Never throws: missing/blank StateDir (logged WARN once), unwritable dir,
 #  or corrupt records → WARN + no-op ($null / $false / nothing / 0).
 
+# WebUi.ps1 (entry point)
+#  Param: [-ConfigPath] [-Simulate] [-Once] (-Once: serve one request then exit —
+#  used by tests). System.Net.HttpListener on http://localhost:<WebUiPort>/ only
+#  (default 8765; no elevation/urlacl needed). HTTP.sys matches that prefix on the
+#  Host header, so 127.0.0.1 / other host names get 400 Invalid Hostname (this also
+#  defeats DNS rebinding). WebUiEnabled=$false → log INFO and exit. Both keys are
+#  read with ContainsKey fallbacks. One failing request → 500, the loop carries on.
+Invoke-ArmWebRequest -Method <string> -Path <string> [-Query <hashtable>] [-Body <string>]
+                     [-Headers <hashtable>] -Config <hashtable> -> [hashtable]
+#  @{ Status; ContentType; Body; Headers }. Pure (no sockets); the listener loop
+#  only translates HttpListenerContext to/from it. Routes live in an ordered table
+#  added with Register-ArmWebRoute -Method <GET|POST> -Pattern <regex> -Handler
+#  <scriptblock>; the pattern is anchored (^...$) against the URL path, named groups
+#  arrive as $Request.Params, and the handler gets one hashtable
+#  @{ Method; Path; Query; Body; Headers; Params; Config }. No path match → 404;
+#  path matches another method → 405 + Allow; handler throws → 500 (logged ERROR,
+#  exception text not returned). Errors are JSON {Error}.
+#  Routes:
+#    GET /                  dashboard HTML: active rip (Detected/Ripping/Moving),
+#                           rip history, upscale queue, last 200 log lines.
+#                           Every dynamic string is [WebUtility]::HtmlEncode'd.
+#    GET /app.js, /app.css  fixed static files from src/webui (no request data in paths).
+#                           app.js polls /api/jobs + /api/log every 5 s and renders with
+#                           textContent only.
+#    GET /api/jobs[?kind=Rip|Upscale]   JSON array (always an array), newest first;
+#                           each job has every JobState field, Created/Updated/History[].At
+#                           as ISO 8601 round-trip strings. Unknown kind → 400.
+#    GET /api/jobs/<id>     one job; malformed or unknown id → 404.
+#    GET /api/log[?lines=N] {Lines:[...]} = last N lines of today's wrm-<yyyyMMdd>.log
+#                           (default 200, clamped 1..1000, non-integer → 400; missing
+#                           file → []). Read with FileShare.ReadWrite; never written.
+#  Every response: Cache-Control no-store, X-Content-Type-Options nosniff, and
+#  Content-Security-Policy default-src 'self' (no inline script/style).
+
 # setup.ps1
 #  Idempotent. winget install GuinpinSoft.MakeMKV, enzo1982.freac, Gyan.FFmpeg
 #  (skip present); print manual step for Video2X (GitHub release). Create dirs
 #  (StagingDir, UpscaleQueueDir, LogDir, StateDir).
 #  Prompt for NAS paths/TMDb key/HA URL → write config/config.psd1 (skip prompts
 #  with -NonInteractive; copies example). Register hidden Scheduled Tasks
-#  'wrm-watcher' and 'wrm-upscaler' (at logon, current user,
-#  pwsh -WindowStyle Hidden -File <entrypoint>). -Uninstall removes tasks.
+#  'wrm-watcher', 'wrm-upscaler' and 'wrm-webui' (at logon, current user,
+#  pwsh -WindowStyle Hidden -File <entrypoint>; the list comes from
+#  Get-ArmScheduledTaskList -RepoRoot -> @{TaskName;ScriptPath}[]) and print the
+#  web UI URL. -Uninstall removes the same tasks.
 #  Requires Administrator: registering Scheduled Tasks needs elevation, so the
 #  entry point checks WindowsPrincipal role membership and, if not elevated,
 #  relaunches itself via `Start-Process -Verb RunAs` (UAC consent prompt).
@@ -348,4 +390,11 @@ Remove-ArmStaleJobs -Config <hashtable> -> [int] removed
 - End-to-end: `DiscWatcher.ps1 -Simulate -Once` with a fixture "disc" must produce a
   named folder under a temp NAS root; same for audio; `Upscale-Worker.ps1 -Simulate
   -Once` must consume a queue file. These run in `tests/EndToEnd.Tests.ps1`.
+- Web UI: routing/rendering is unit-tested through Invoke-ArmWebRequest in
+  `tests/WebUi.Tests.ps1` (plus one socket smoke test of `WebUi.ps1 -Once`).
+  Browser behavior is tested with Playwright in `tests/browser/` (Chromium; Node is
+  test-only): `playwright.config.ts` launches `WebUi.ps1 -Simulate` on
+  http://localhost:18765/ against a per-run temp config, and specs seed state via
+  `fixtures/seed.ps1`, which writes through the real `src/JobState.ps1`. Every spec
+  fails on any browser console error.
 ```

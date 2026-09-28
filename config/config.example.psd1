@@ -29,6 +29,9 @@
     UpscaleModel      = 'realesrgan-plus'      # video2x 6.4 RealESRGAN models: realesr-animevideov3, realesrgan-plus-anime, realesrgan-plus
     UpscaleScale      = 4                      # realesrgan-plus/-anime only ship x4 models; use realesr-animevideov3 for x2/x3
     UpscaleCrf        = 16
+    # --- Web UI (http://localhost:<WebUiPort>/, this machine only) ---
+    WebUiEnabled      = $true          # $false => the wrm-webui task exits immediately
+    WebUiPort         = 8765
     # --- Job history ---
     JobHistoryDays    = 30             # finished (Complete/Failed/Cancelled) job records older than this are pruned
     # --- Test/dev ---

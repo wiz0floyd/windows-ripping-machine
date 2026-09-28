@@ -262,6 +262,23 @@ Describe 'Register-ArmScheduledTask / Unregister-ArmScheduledTask' {
     }
 }
 
+Describe 'Get-ArmScheduledTaskList' {
+    It 'lists the watcher, upscaler and web UI tasks with their entry points' {
+        $tasks = Get-ArmScheduledTaskList -RepoRoot 'C:\dev\wrm'
+        $tasks.TaskName | Should -Be @('wrm-watcher', 'wrm-upscaler', 'wrm-webui')
+        $tasks.ScriptPath | Should -Be @(
+            (Join-Path 'C:\dev\wrm' 'src' 'DiscWatcher.ps1'),
+            (Join-Path 'C:\dev\wrm' 'src' 'Upscale-Worker.ps1'),
+            (Join-Path 'C:\dev\wrm' 'src' 'WebUi.ps1'))
+    }
+
+    It 'points every task at an entry point that exists in this repo' {
+        foreach ($task in Get-ArmScheduledTaskList -RepoRoot (Join-Path $PSScriptRoot '..')) {
+            Test-Path -LiteralPath $task.ScriptPath -PathType Leaf | Should -BeTrue -Because $task.TaskName
+        }
+    }
+}
+
 Describe 'Invoke-ArmElevatedRelaunch' {
     It 'does not throw when the elevated child exits 0' {
         Mock Start-Process { [pscustomobject]@{ ExitCode = 0 } }

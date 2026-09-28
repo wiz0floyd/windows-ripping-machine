@@ -5,3 +5,8 @@ logs/
 testResults.xml
 CLAUDE.md
 .claude/
+
+# Playwright (tests/browser)
+tests/browser/node_modules/
+tests/browser/test-results/
+tests/browser/playwright-report/
