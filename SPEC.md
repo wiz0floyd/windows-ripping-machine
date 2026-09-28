@@ -154,6 +154,36 @@ Resolve-Title -DiscLabel <string> -Config <hashtable> -> [pscustomobject]
 #  No key/no match/HTTP error → FolderName "<CLEANLABEL>_<yyyy-MM-dd>",
 #  Matched=$false. Never throws.
 #
+#  LLM validation (opt-in, movies only): when $Config.LlmDisambiguationEnabled
+#  is $true, EVERY non-empty TMDb result set - not just ambiguous ones - is
+#  additionally checked by calling
+#  Invoke-ArmLlmDisambiguation -DiscLabel <string> -Candidates <array>
+#                               -Config <hashtable> -> [pscustomobject] @{ SelectedIndex }
+#  POSTs {model;temperature=0;messages} to "$($Config.LlmEndpoint)/chat/completions"
+#  (OpenAI-compatible; e.g. llama.cpp at http://127.0.0.1:8080/v1) with the disc
+#  label and the candidate list (index/title/year/popularity/overview, sorted by
+#  popularity descending; index = position in that array, not a TMDb ID).
+#  Expects a bare JSON reply {"index": N} or {"index": null}. SelectedIndex is
+#  validated as an in-range integer index into the real candidate array before
+#  use - the model can never introduce a title TMDb didn't return.
+#
+#  The LLM has final say whenever it returns a valid index, whether or not
+#  Test-ArmTmdbAcceptance had already accepted the top hit: this catches TMDb's
+#  popularity heuristic confidently picking the wrong entry (e.g. a bare
+#  franchise label like "TOY_STORY" matching a hyped upcoming sequel over the
+#  original) in addition to the original "too close to call" ambiguous case.
+#  When the LLM is unavailable, times out, returns malformed/non-JSON output, an
+#  out-of-range/non-integer index, or an explicit "none" answer,
+#  Invoke-ArmLlmDisambiguation catches it internally, logs WARN, and returns
+#  SelectedIndex=$null (never throws) - Resolve-Title then degrades to exactly
+#  what TMDb alone would have produced: the top hit if Test-ArmTmdbAcceptance
+#  accepted it, or "<CLEANLABEL>_<yyyy-MM-dd>"/Matched=$false if not. Config
+#  keys: LlmDisambiguationEnabled (default $false), LlmEndpoint, LlmModel,
+#  LlmTimeoutSec (default 15s). Does not change Resolve-Title's signature or
+#  output shape. Each path is logged (INFO when the LLM confirms TMDb's pick,
+#  WARN when it overrides TMDb, disambiguates an ambiguous set, or declines) so
+#  the match path stays auditable, same as the truncation-retry log.
+#
 #  Set-ArmMetadataFile -OutputDir <string> -Title <string> -Year <string> -Config <hashtable>
 #  Writes a hand-editable metadata.json ({Title;Year}) into a rip's staging
 #  OutputDir once the disc label is resolved (called from Invoke-VideoRip).

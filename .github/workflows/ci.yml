@@ -40,6 +40,9 @@ jobs:
           Import-Module Pester -RequiredVersion $env:PESTER_VERSION
           $config = New-PesterConfiguration
           $config.Run.Path = 'tests'
+          # tests/manual makes real network/LLM calls (issue #13's live regression
+          # suite) and must never run in CI - see tests/manual/*.Tests.ps1 header.
+          $config.Run.ExcludePath = '*\manual\*'
           $config.Run.Exit = $true
           $config.Output.Verbosity = 'Detailed'
           Invoke-Pester -Configuration $config

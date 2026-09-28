@@ -144,6 +144,127 @@ function Test-ArmTmdbAcceptance {
 
 <#
 .SYNOPSIS
+    Ask a local OpenAI-compatible LLM to disambiguate a set of TMDb candidates
+    that were too close in popularity for Test-ArmTmdbAcceptance to accept.
+
+.DESCRIPTION
+    POSTs disc label + candidate list (title/year/overview/popularity) to
+    "$($Config.LlmEndpoint)/chat/completions" and asks for a JSON object
+    `{"index": N}` (N = position in $Candidates) or `{"index": null}` when
+    none of the candidates plausibly match.
+
+    Never throws. Any failure (HTTP error/timeout, malformed response, no
+    JSON object in the reply, an out-of-range or non-integer index) is caught
+    and logged at WARN, returning SelectedIndex = $null so the caller falls
+    back to today's date-naming behavior. This validates the model's answer
+    against the real candidate list - the model can only pick a position in
+    the array it was given, never invent a title/ID of its own.
+
+.PARAMETER DiscLabel
+    Title-cased, cleaned disc label used as the disambiguation query context.
+
+.PARAMETER Candidates
+    Array of TMDb result objects (title/release_date/popularity), in the
+    order they should be presented/indexed.
+
+.PARAMETER Config
+    Configuration hashtable (LlmEndpoint, LlmModel, LlmTimeoutSec).
+
+.OUTPUTS
+    [pscustomobject] @{ SelectedIndex = [int]$null or a valid index into $Candidates }
+
+.EXAMPLE
+    $llmResult = Invoke-ArmLlmDisambiguation -DiscLabel 'Alpha' -Candidates $sorted -Config $config
+#>
+function Invoke-ArmLlmDisambiguation {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $DiscLabel,
+
+        [Parameter(Mandatory = $true)]
+        [array] $Candidates,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable] $Config
+    )
+
+    try {
+        $candidateLines = for ($i = 0; $i -lt $Candidates.Count; $i++) {
+            $c = $Candidates[$i]
+            $year = $null
+            if ($c.release_date) {
+                try { $year = ([datetime]$c.release_date).Year } catch { $year = $null }
+            }
+            $overviewProp = $c.PSObject.Properties['overview']
+            [pscustomobject]@{
+                index      = $i
+                title      = $c.title
+                year       = $year
+                popularity = $c.popularity
+                overview   = if ($overviewProp) { $overviewProp.Value } else { $null }
+            }
+        }
+
+        $prompt = @"
+Disc label: "$DiscLabel"
+
+Candidate movies (JSON array, "index" is the only valid identifier to answer with):
+$($candidateLines | ConvertTo-Json -Compress)
+
+Pick the single candidate that best matches the disc label. Respond with ONLY a
+JSON object: {"index": <candidate index>} or {"index": null} if none plausibly match.
+"@
+
+        $body = @{
+            model       = $Config.LlmModel
+            temperature = 0
+            messages    = @(
+                @{ role = 'system'; content = 'You disambiguate movie titles from a fixed candidate list. Reply with only a JSON object.' }
+                @{ role = 'user'; content = $prompt }
+            )
+        } | ConvertTo-Json -Depth 6
+
+        $timeoutSec = if ($Config.ContainsKey('LlmTimeoutSec') -and $Config.LlmTimeoutSec) { $Config.LlmTimeoutSec } else { 15 }
+        $uri = "$($Config.LlmEndpoint.TrimEnd('/'))/chat/completions"
+
+        $response = Invoke-RestMethod -Uri $uri -Method Post -ContentType 'application/json' -Body $body -TimeoutSec $timeoutSec
+
+        $content = $response.choices[0].message.content
+        if (-not $content) {
+            throw 'LLM response had no message content'
+        }
+
+        $jsonMatch = [regex]::Match($content, '(?s)\{.*\}')
+        if (-not $jsonMatch.Success) {
+            throw "LLM response contained no JSON object: $content"
+        }
+
+        $parsed = $jsonMatch.Value | ConvertFrom-Json
+        $indexProp = $parsed.PSObject.Properties['index']
+        if (-not $indexProp -or $null -eq $indexProp.Value) {
+            return [pscustomobject]@{ SelectedIndex = $null }
+        }
+
+        $index = 0
+        if (-not [int]::TryParse("$($indexProp.Value)", [ref]$index)) {
+            throw "LLM returned a non-integer index: $($indexProp.Value)"
+        }
+        if ($index -lt 0 -or $index -ge $Candidates.Count) {
+            throw "LLM returned an out-of-range index: $index (candidate count $($Candidates.Count))"
+        }
+
+        return [pscustomobject]@{ SelectedIndex = $index }
+
+    } catch {
+        Write-ArmLog -Level WARN -Message "LLM disambiguation failed/declined for '$DiscLabel': $_" -Config $Config
+        return [pscustomobject]@{ SelectedIndex = $null }
+    }
+}
+
+<#
+.SYNOPSIS
     Build a sanitized "Title (Year)" (or just "Title" when Year is blank)
     folder name, shared by Resolve-Title and Resolve-TitleOverride.
 #>
@@ -179,6 +300,21 @@ function ConvertTo-ArmFolderName {
     its popularity is at least 2x the runner-up's. On acceptance, returns
     folder name "Title (Year)" (invalid filename characters stripped).
 
+    When `$Config.LlmDisambiguationEnabled` is set, every non-empty TMDb result
+    set (not just ambiguous ones) is additionally validated by a local
+    OpenAI-compatible LLM (`Invoke-ArmLlmDisambiguation`, POSTing to
+    `$Config.LlmEndpoint`) with the disc label and the candidate list
+    (title/year/overview/popularity). The model's answer is validated as an
+    index into the real candidate array - it can never introduce a title TMDb
+    didn't return - and, when it gives one, always wins: this catches cases
+    where TMDb's popularity-based acceptance is confidently wrong (e.g. a bare
+    franchise label like "TOY_STORY" matching a hyped upcoming sequel instead of
+    the original) as well as the original "too close to call" ambiguous case.
+    When the LLM is unavailable, times out, or declines, behavior degrades to
+    exactly what TMDb alone would have produced: the top hit if TMDb's own
+    accept rule was satisfied, or date-naming fallback if not. Off by default,
+    so existing installs are unaffected.
+
     When no API key is configured, TMDb returns no acceptable match, or the HTTP
     call fails, falls back to "<CLEANLABEL>_<yyyy-MM-dd>" with `Matched = $false`.
     Never throws.
@@ -187,7 +323,8 @@ function ConvertTo-ArmFolderName {
     Raw disc volume label (e.g., "STAR_WARS_ANH_DISC1").
 
 .PARAMETER Config
-    Configuration hashtable (TmdbApiKey).
+    Configuration hashtable (TmdbApiKey, LlmDisambiguationEnabled, LlmEndpoint,
+    LlmModel, LlmTimeoutSec).
 
 .OUTPUTS
     [pscustomobject] @{ FolderName; Matched; Title; Year }
@@ -250,11 +387,54 @@ function Resolve-Title {
             Write-ArmLog -Level WARN -Message "No TMDb results for '$queryUsed'; retrying with truncated query '$($queryTokens -join ' ')' (attempt $truncations/$maxTruncations)" -Config $Config
         }
 
-        if ($results.Count -eq 0 -or -not (Test-ArmTmdbAcceptance -Results $results)) {
+        if ($results.Count -eq 0) {
             return [pscustomobject]@{ FolderName = $fallbackName; Matched = $false; Title = $null; Year = $null }
         }
 
-        $top = ($results | Sort-Object -Property popularity -Descending)[0]
+        $sortedResults = $results | Sort-Object -Property popularity -Descending
+        $accepted = Test-ArmTmdbAcceptance -Results $results
+
+        # When enabled, the LLM validates every non-empty result set - not just
+        # ambiguous ones - since a confidently-"accepted" top hit can still be
+        # wrong (e.g. TMDb popularity favors a hyped recent sequel over the
+        # original for a bare franchise label like "TOY_STORY"). The LLM's
+        # answer wins whenever it gives one, valid or not it never invents a
+        # title outside $sortedResults (see Invoke-ArmLlmDisambiguation). If it
+        # declines/is unavailable, behavior degrades to exactly what TMDb alone
+        # would have produced (accept top hit, or fall back if TMDb rejected it).
+        if ($Config.ContainsKey('LlmDisambiguationEnabled') -and $Config.LlmDisambiguationEnabled) {
+            $llmResult = Invoke-ArmLlmDisambiguation -DiscLabel $titleCaseLabel -Candidates $sortedResults -Config $Config
+
+            if ($null -ne $llmResult.SelectedIndex) {
+                $chosen = $sortedResults[$llmResult.SelectedIndex]
+                $llmTitle = $chosen.title
+                $llmYear = $null
+                if ($chosen.release_date) {
+                    try { $llmYear = ([datetime]$chosen.release_date).Year } catch { $llmYear = $null }
+                }
+
+                if ($accepted -and $llmResult.SelectedIndex -eq 0) {
+                    Write-ArmLog -Level INFO -Message "Matched '$llmTitle' via TMDb, confirmed by LLM validation ('$titleCaseLabel')" -Config $Config
+                } elseif ($accepted) {
+                    Write-ArmLog -Level WARN -Message "LLM validation overrode TMDb's top hit for '$titleCaseLabel': TMDb picked '$($sortedResults[0].title)', LLM picked '$llmTitle'" -Config $Config
+                } else {
+                    Write-ArmLog -Level WARN -Message "Matched '$llmTitle' via LLM disambiguation for ambiguous TMDb results ('$titleCaseLabel')" -Config $Config
+                }
+
+                $llmFolderName = ConvertTo-ArmFolderName -Title $llmTitle -Year $llmYear
+                return [pscustomobject]@{ FolderName = $llmFolderName; Matched = $true; Title = $llmTitle; Year = $llmYear }
+            }
+
+            if (-not $accepted) {
+                Write-ArmLog -Level WARN -Message "LLM disambiguation declined/unavailable for '$titleCaseLabel'; using label+date naming" -Config $Config
+                return [pscustomobject]@{ FolderName = $fallbackName; Matched = $false; Title = $null; Year = $null }
+            }
+            Write-ArmLog -Level WARN -Message "LLM validation declined/unavailable for '$titleCaseLabel'; using TMDb's top hit" -Config $Config
+        } elseif (-not $accepted) {
+            return [pscustomobject]@{ FolderName = $fallbackName; Matched = $false; Title = $null; Year = $null }
+        }
+
+        $top = $sortedResults[0]
         $title = $top.title
         $year = $null
         if ($top.release_date) {

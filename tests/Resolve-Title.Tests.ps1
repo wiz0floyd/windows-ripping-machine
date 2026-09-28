@@ -73,6 +73,84 @@ Describe 'Test-ArmTmdbAcceptance' {
     }
 }
 
+Describe 'Invoke-ArmLlmDisambiguation' {
+    BeforeEach {
+        $script:LlmConfig = @{
+            LogDir      = $script:Config.LogDir
+            LlmEndpoint = 'http://127.0.0.1:8080/v1'
+            LlmModel    = 'qwen3.5-9b'
+        }
+        $script:Candidates = @(
+            [pscustomobject]@{ title = 'Alpha'; release_date = '2001-01-01'; popularity = 10.0; overview = 'first' },
+            [pscustomobject]@{ title = 'Alpha 2'; release_date = '2005-01-01'; popularity = 8.0; overview = 'second' }
+        )
+    }
+
+    It 'returns the chosen index when the model replies with a valid index' {
+        Mock Invoke-RestMethod {
+            return [pscustomobject]@{
+                choices = @([pscustomobject]@{ message = [pscustomobject]@{ content = '{"index": 1}' } })
+            }
+        } -ParameterFilter { $Uri -like '*chat/completions*' }
+
+        $result = Invoke-ArmLlmDisambiguation -DiscLabel 'Alpha' -Candidates $script:Candidates -Config $script:LlmConfig
+
+        $result.SelectedIndex | Should -Be 1
+    }
+
+    It 'returns $null when the model declines with {"index": null}' {
+        Mock Invoke-RestMethod {
+            return [pscustomobject]@{
+                choices = @([pscustomobject]@{ message = [pscustomobject]@{ content = '{"index": null}' } })
+            }
+        }
+
+        $result = Invoke-ArmLlmDisambiguation -DiscLabel 'Alpha' -Candidates $script:Candidates -Config $script:LlmConfig
+
+        $result.SelectedIndex | Should -Be $null
+    }
+
+    It 'returns $null and does not throw when the HTTP call fails' {
+        Mock Invoke-RestMethod { throw 'connection refused' }
+
+        { $script:Result = Invoke-ArmLlmDisambiguation -DiscLabel 'Alpha' -Candidates $script:Candidates -Config $script:LlmConfig } | Should -Not -Throw
+        $script:Result.SelectedIndex | Should -Be $null
+    }
+
+    It 'returns $null and does not throw when the response has no parseable JSON' {
+        Mock Invoke-RestMethod {
+            return [pscustomobject]@{
+                choices = @([pscustomobject]@{ message = [pscustomobject]@{ content = 'sorry, I cannot help with that' } })
+            }
+        }
+
+        { $script:Result = Invoke-ArmLlmDisambiguation -DiscLabel 'Alpha' -Candidates $script:Candidates -Config $script:LlmConfig } | Should -Not -Throw
+        $script:Result.SelectedIndex | Should -Be $null
+    }
+
+    It 'returns $null and does not throw when the model returns an out-of-range index' {
+        Mock Invoke-RestMethod {
+            return [pscustomobject]@{
+                choices = @([pscustomobject]@{ message = [pscustomobject]@{ content = '{"index": 99}' } })
+            }
+        }
+
+        { $script:Result = Invoke-ArmLlmDisambiguation -DiscLabel 'Alpha' -Candidates $script:Candidates -Config $script:LlmConfig } | Should -Not -Throw
+        $script:Result.SelectedIndex | Should -Be $null
+    }
+
+    It 'returns $null and does not throw when the model returns a non-integer index' {
+        Mock Invoke-RestMethod {
+            return [pscustomobject]@{
+                choices = @([pscustomobject]@{ message = [pscustomobject]@{ content = '{"index": "first one"}' } })
+            }
+        }
+
+        { $script:Result = Invoke-ArmLlmDisambiguation -DiscLabel 'Alpha' -Candidates $script:Candidates -Config $script:LlmConfig } | Should -Not -Throw
+        $script:Result.SelectedIndex | Should -Be $null
+    }
+}
+
 Describe 'Resolve-Title' {
     It 'falls back to label+date naming when no TMDb API key is configured' {
         $config = @{ TmdbApiKey = '' }
@@ -107,6 +185,137 @@ Describe 'Resolve-Title' {
 
         $result.Matched | Should -Be $false
         $result.FolderName | Should -Match '^Alpha_\d{4}-\d{2}-\d{2}$'
+    }
+
+    It 'uses the LLM pick when results are ambiguous and LlmDisambiguationEnabled is true' {
+        $llmConfig = $script:Config + @{ LlmDisambiguationEnabled = $true; LlmEndpoint = 'http://127.0.0.1:8080/v1'; LlmModel = 'qwen3.5-9b' }
+
+        Mock Invoke-RestMethod {
+            param($Uri)
+            if ($Uri -like '*chat/completions*') {
+                return [pscustomobject]@{
+                    choices = @([pscustomobject]@{ message = [pscustomobject]@{ content = '{"index": 1}' } })
+                }
+            }
+            return [pscustomobject]@{
+                results = @(
+                    [pscustomobject]@{ title = 'Alpha'; release_date = '2001-01-01'; popularity = 10.0 },
+                    [pscustomobject]@{ title = 'Alpha 2'; release_date = '2005-01-01'; popularity = 8.0 }
+                )
+            }
+        }
+
+        $result = Resolve-Title -DiscLabel 'ALPHA' -Config $llmConfig
+
+        $result.Matched | Should -Be $true
+        $result.Title | Should -Be 'Alpha 2'
+        $result.Year | Should -Be 2005
+        $result.FolderName | Should -Be 'Alpha 2 (2005)'
+    }
+
+    It 'falls back to label+date naming when the LLM declines an ambiguous match' {
+        $llmConfig = $script:Config + @{ LlmDisambiguationEnabled = $true; LlmEndpoint = 'http://127.0.0.1:8080/v1'; LlmModel = 'qwen3.5-9b' }
+
+        Mock Invoke-RestMethod {
+            param($Uri)
+            if ($Uri -like '*chat/completions*') {
+                return [pscustomobject]@{
+                    choices = @([pscustomobject]@{ message = [pscustomobject]@{ content = '{"index": null}' } })
+                }
+            }
+            return [pscustomobject]@{
+                results = @(
+                    [pscustomobject]@{ title = 'Alpha'; release_date = '2001-01-01'; popularity = 10.0 },
+                    [pscustomobject]@{ title = 'Alpha 2'; release_date = '2005-01-01'; popularity = 8.0 }
+                )
+            }
+        }
+
+        $result = Resolve-Title -DiscLabel 'ALPHA' -Config $llmConfig
+
+        $result.Matched | Should -Be $false
+        $result.FolderName | Should -Match '^Alpha_\d{4}-\d{2}-\d{2}$'
+    }
+
+    It 'lets the LLM override an already-accepted TMDb top hit (recency-bias case)' {
+        $llmConfig = $script:Config + @{ LlmDisambiguationEnabled = $true; LlmEndpoint = 'http://127.0.0.1:8080/v1'; LlmModel = 'qwen3.5-9b' }
+
+        Mock Invoke-RestMethod {
+            param($Uri)
+            if ($Uri -like '*chat/completions*') {
+                # Candidates sorted by popularity desc: [0]=Toy Story 5 (hyped/recent), [1]=Toy Story (1995, original)
+                return [pscustomobject]@{
+                    choices = @([pscustomobject]@{ message = [pscustomobject]@{ content = '{"index": 1}' } })
+                }
+            }
+            return [pscustomobject]@{
+                results = @(
+                    [pscustomobject]@{ title = 'Toy Story 5'; release_date = '2026-06-19'; popularity = 400.0 },
+                    [pscustomobject]@{ title = 'Toy Story'; release_date = '1995-11-22'; popularity = 90.0 }
+                )
+            }
+        }
+
+        # TMDb's own acceptance rule would have accepted "Toy Story 5" outright (400 >= 2*90).
+        Test-ArmTmdbAcceptance -Results @(
+            [pscustomobject]@{ popularity = 400.0 }, [pscustomobject]@{ popularity = 90.0 }
+        ) | Should -Be $true
+
+        $result = Resolve-Title -DiscLabel 'TOY_STORY' -Config $llmConfig
+
+        $result.Matched | Should -Be $true
+        $result.Title | Should -Be 'Toy Story'
+        $result.Year | Should -Be 1995
+        $result.FolderName | Should -Be 'Toy Story (1995)'
+    }
+
+    It 'confirms an already-accepted TMDb top hit when the LLM agrees' {
+        $llmConfig = $script:Config + @{ LlmDisambiguationEnabled = $true; LlmEndpoint = 'http://127.0.0.1:8080/v1'; LlmModel = 'qwen3.5-9b' }
+
+        Mock Invoke-RestMethod {
+            param($Uri)
+            if ($Uri -like '*chat/completions*') {
+                return [pscustomobject]@{
+                    choices = @([pscustomobject]@{ message = [pscustomobject]@{ content = '{"index": 0}' } })
+                }
+            }
+            return $script:TmdbMatchJson
+        }
+
+        $result = Resolve-Title -DiscLabel 'STAR_WARS_ANH' -Config $llmConfig
+
+        $result.Matched | Should -Be $true
+        $result.Title | Should -Be 'Star Wars'
+        $result.Year | Should -Be 1977
+    }
+
+    It 'uses TMDb''s own top hit when the LLM declines to validate an already-accepted match' {
+        $llmConfig = $script:Config + @{ LlmDisambiguationEnabled = $true; LlmEndpoint = 'http://127.0.0.1:8080/v1'; LlmModel = 'qwen3.5-9b' }
+
+        Mock Invoke-RestMethod {
+            param($Uri)
+            if ($Uri -like '*chat/completions*') {
+                throw 'connection refused'
+            }
+            return $script:TmdbMatchJson
+        }
+
+        $result = Resolve-Title -DiscLabel 'STAR_WARS_ANH' -Config $llmConfig
+
+        $result.Matched | Should -Be $true
+        $result.Title | Should -Be 'Star Wars'
+        $result.Year | Should -Be 1977
+    }
+
+    It 'does not call the LLM when TMDb returns zero results, even with LlmDisambiguationEnabled true' {
+        $llmConfig = $script:Config + @{ LlmDisambiguationEnabled = $true; LlmEndpoint = 'http://127.0.0.1:8080/v1'; LlmModel = 'qwen3.5-9b' }
+
+        Mock Invoke-RestMethod { return [pscustomobject]@{ results = @() } }
+
+        $result = Resolve-Title -DiscLabel 'UNKNOWN_MOVIE_XYZ' -Config $llmConfig
+
+        $result.Matched | Should -Be $false
+        Should -Invoke Invoke-RestMethod -ParameterFilter { $Uri -like '*chat/completions*' } -Times 0 -Exactly
     }
 
     It 'falls back when TMDb returns no results' {

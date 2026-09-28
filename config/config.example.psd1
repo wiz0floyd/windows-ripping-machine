@@ -16,6 +16,11 @@
     EjectWhenDone     = $true
     TmdbApiKey        = ''             # blank => label+date naming
     HaWebhookUrl      = ''             # blank => toast only
+    # --- LLM disambiguation (optional) ---
+    LlmDisambiguationEnabled = $false  # $true => ask a local LLM to disambiguate ambiguous TMDb matches
+    LlmEndpoint       = 'http://127.0.0.1:8080/v1'   # OpenAI-compatible base URL (llama.cpp, etc.)
+    LlmModel          = 'qwen3.5-9b'
+    LlmTimeoutSec     = 15
     # --- Upscale stage ---
     UpscaleDvds       = $false
     AutoUpscale       = $false         # $false => stop after -SampleOnly clip, notify for review
