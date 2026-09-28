@@ -30,6 +30,7 @@ BeforeAll {
     # Job-state assertions read the records the child scripts wrote.
     . (Join-Path $script:RepoRoot 'src' 'Common.ps1')
     . (Join-Path $script:RepoRoot 'src' 'JobState.ps1')
+    . (Join-Path $PSScriptRoot 'TestHelpers.ps1')
 
     function New-ArmE2eConfig {
         param(
@@ -132,7 +133,7 @@ Describe 'End-to-end: DiscWatcher.ps1 -Simulate -Once (Video)' {
         $jobs = @(Get-ArmJobList -Kind Rip -Config $script:E2eConfig.JobConfig)
         $jobs.Count | Should -Be 1
         $jobs[0].State | Should -Be 'Complete'
-        $jobs[0].DestDir | Should -Be $namedDirs[0].FullName
+        ConvertTo-ArmLongPath $jobs[0].DestDir | Should -Be (ConvertTo-ArmLongPath $namedDirs[0].FullName)
         @($jobs[0].History).State | Should -Be @('Detected', 'Ripping', 'Moving', 'Complete')
     }
 }
@@ -248,8 +249,8 @@ Describe 'End-to-end: Upscale-Worker.ps1 -Simulate -Once' {
         $jobs = @(Get-ArmJobList -Kind Upscale -Config $script:E2eConfig.JobConfig)
         $jobs.Count | Should -Be 1
         $jobs[0].State | Should -Be 'AwaitingReview'
-        $jobs[0].SamplePath | Should -Be $expectedSamplePath
-        $jobs[0].QueueFile | Should -Be $reviewFile
+        ConvertTo-ArmLongPath $jobs[0].SamplePath | Should -Be (ConvertTo-ArmLongPath $expectedSamplePath)
+        ConvertTo-ArmLongPath $jobs[0].QueueFile | Should -Be (ConvertTo-ArmLongPath $reviewFile)
         (Get-Content -LiteralPath $reviewFile -Raw | ConvertFrom-Json).JobId | Should -Be $jobs[0].Id
 
         # Guards against the exact regression this test is here to catch: unquoted
