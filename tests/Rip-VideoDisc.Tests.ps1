@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 
 BeforeAll {
     . (Join-Path $PSScriptRoot '..' 'src' 'Common.ps1')
+    . (Join-Path $PSScriptRoot '..' 'src' 'JobState.ps1')
     . (Join-Path $PSScriptRoot '..' 'src' 'Resolve-Title.ps1')
     . (Join-Path $PSScriptRoot '..' 'src' 'Rip-VideoDisc.ps1')
 
@@ -206,6 +207,25 @@ Describe 'Invoke-VideoRip' {
         $metadata = Get-Content $metadataPath -Raw | ConvertFrom-Json
         $metadata.Title | Should -Be ''
         $metadata.Year | Should -Be ''
+    }
+
+    It 'with -JobId, marks the job Ripping with StagingDir/DiscLabel before the long rip runs' {
+        $script:Config.StateDir = Join-Path $script:OutDir 'state'
+        $script:RipJobId = New-ArmJob -Kind Rip -Properties @{ Drive = 'D:' } -Config $script:Config
+        $script:StateDuringRip = $null
+        Mock Invoke-ArmTool (New-VideoRipMock -MkvFileNames @('title_t00.mkv') -OnRip {
+                param($outDir)
+                $script:StateDuringRip = Get-ArmJob -JobId $script:RipJobId -Config $script:Config
+            })
+
+        $result = Invoke-VideoRip -DriveLetter 'D' -Config $script:Config -JobId $script:RipJobId
+
+        $result.Success | Should -BeTrue
+        $script:StateDuringRip.State | Should -Be 'Ripping'
+        $script:StateDuringRip.StagingDir | Should -Be $result.OutputDir
+        $script:StateDuringRip.DiscLabel | Should -Be $result.DiscLabel
+        $script:StateDuringRip.DiscType | Should -Be $result.DiscType
+        $script:StateDuringRip.Title | Should -Be $result.Resolved.FolderName
     }
 
     It 'does not overwrite a pre-existing metadata.json (preserves a user edit from a prior failed attempt)' {

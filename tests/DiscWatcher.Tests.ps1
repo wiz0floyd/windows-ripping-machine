@@ -277,6 +277,125 @@ Describe 'Invoke-DiscDispatch' {
         }
     }
 
+    Context 'Job state' {
+        BeforeEach {
+            $script:Config.StateDir = Join-Path $script:TestRoot 'state'
+            $script:RipOutputDir = Join-Path $script:StagingDir 'RAW_LABEL'
+            New-Item -ItemType Directory -Force -Path $script:RipOutputDir | Out-Null
+            'x' * 500 | Set-Content (Join-Path $script:RipOutputDir 'big.mkv')
+        }
+
+        It 'records a Rip job that ends Complete with the NAS DestDir, passing JobId to Invoke-VideoRip' {
+            Mock Invoke-VideoRip {
+                [pscustomobject]@{
+                    Success = $true; DiscLabel = 'RAW_LABEL'; DiscType = 'BD'
+                    OutputDir = $script:RipOutputDir; TitleCount = 1; Error = $null
+                    Resolved = [pscustomobject]@{ FolderName = 'My Movie (2020)'; Matched = $true; Title = 'My Movie'; Year = 2020 }
+                }
+            }
+
+            Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Video' -Config $script:Config
+
+            $jobs = @(Get-ArmJobList -Kind Rip -Config $script:Config)
+            $jobs.Count | Should -Be 1
+            $jobs[0].State | Should -Be 'Complete'
+            $jobs[0].Drive | Should -Be 'D:'
+            $jobs[0].Title | Should -Be 'My Movie (2020)'
+            $jobs[0].DestDir | Should -Be (Join-Path $script:NasVideoRoot 'My Movie (2020)')
+            @($jobs[0].History).State | Should -Be @('Detected', 'Moving', 'Complete')
+            $expectedId = $jobs[0].Id
+            Should -Invoke Invoke-VideoRip -Times 1 -ParameterFilter { $JobId -eq $expectedId }
+        }
+
+        It 'marks the Rip job Failed with the rip error' {
+            Mock Invoke-VideoRip {
+                [pscustomobject]@{ Success = $false; DiscLabel = $null; DiscType = $null; OutputDir = $null; TitleCount = 0; Error = 'makemkvcon rip failed'; Resolved = $null }
+            }
+
+            Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Video' -Config $script:Config
+
+            $job = @(Get-ArmJobList -Kind Rip -Config $script:Config)[0]
+            $job.State | Should -Be 'Failed'
+            $job.Error | Should -Be 'makemkvcon rip failed'
+        }
+
+        It 'marks the Rip job Failed when the NAS move fails' {
+            Mock Invoke-VideoRip {
+                [pscustomobject]@{
+                    Success = $true; DiscLabel = 'RAW_LABEL'; DiscType = 'BD'
+                    OutputDir = $script:RipOutputDir; TitleCount = 1; Error = $null
+                    Resolved = [pscustomobject]@{ FolderName = 'My Movie (2020)'; Matched = $true; Title = 'My Movie'; Year = 2020 }
+                }
+            }
+            Mock Move-ToNas { [pscustomobject]@{ Success = $false; DestDir = $null; Error = 'robocopy failed' } }
+
+            Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Video' -Config $script:Config
+
+            $job = @(Get-ArmJobList -Kind Rip -Config $script:Config)[0]
+            $job.State | Should -Be 'Failed'
+            $job.Error | Should -Match 'robocopy failed'
+        }
+
+        It 'writes JobId into the upscale queue file and creates a Queued Upscale job' {
+            $script:Config.UpscaleDvds = $true
+            Mock Invoke-VideoRip {
+                [pscustomobject]@{
+                    Success = $true; DiscLabel = 'RAW_LABEL'; DiscType = 'DVD'
+                    OutputDir = $script:RipOutputDir; TitleCount = 1; Error = $null
+                    Resolved = [pscustomobject]@{ FolderName = 'DVD Movie (1999)'; Matched = $true; Title = 'DVD Movie'; Year = 1999 }
+                }
+            }
+
+            Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Video' -Config $script:Config
+
+            $queueFile = Join-Path $script:QueueDir 'DVD Movie (1999).json'
+            $entry = Get-Content -LiteralPath $queueFile -Raw | ConvertFrom-Json
+            @($entry.PSObject.Properties.Name) | Should -Be @('Source', 'DestDir', 'JobId')
+            $upscale = Get-ArmJob -JobId $entry.JobId -Config $script:Config
+            $upscale.Kind | Should -Be 'Upscale'
+            $upscale.State | Should -Be 'Queued'
+            $upscale.QueueFile | Should -Be $queueFile
+            $upscale.Title | Should -Be 'DVD Movie (1999)'
+        }
+
+        It 'records an audio Rip job through Moving to Complete' {
+            $audioDir = Join-Path $script:StagingDir 'audio-guid'
+            New-Item -ItemType Directory -Force -Path $audioDir | Out-Null
+            'flac' | Set-Content (Join-Path $audioDir 'track01.flac')
+            Mock Invoke-AudioRip {
+                [pscustomobject]@{ Success = $true; OutputDir = $audioDir; Artist = 'Some Artist'; Album = 'Some Album'; Error = $null }
+            }
+
+            Invoke-DiscDispatch -DriveLetter 'E' -DiscType 'AudioCD' -Config $script:Config
+
+            $job = @(Get-ArmJobList -Kind Rip -Config $script:Config)[0]
+            $job.State | Should -Be 'Complete'
+            $job.Title | Should -Be 'Some Artist - Some Album'
+            $job.DestDir | Should -Be (Join-Path $script:NasMusicRoot 'audio-guid')
+        }
+
+        It 'creates no job for a Data disc' {
+            Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Data' -Config $script:Config
+            @(Get-ArmJobList -Config $script:Config).Count | Should -Be 0
+        }
+
+        It 'still completes the rip when StateDir is not configured' {
+            $script:Config.Remove('StateDir')
+            Mock Invoke-VideoRip {
+                [pscustomobject]@{
+                    Success = $true; DiscLabel = 'RAW_LABEL'; DiscType = 'BD'
+                    OutputDir = $script:RipOutputDir; TitleCount = 1; Error = $null
+                    Resolved = [pscustomobject]@{ FolderName = 'My Movie (2020)'; Matched = $true; Title = 'My Movie'; Year = 2020 }
+                }
+            }
+
+            Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Video' -Config $script:Config
+
+            Test-Path (Join-Path $script:NasVideoRoot 'My Movie (2020)' 'big.mkv') | Should -BeTrue
+            Should -Invoke Send-ArmNotification -Times 1 -ParameterFilter { $Level -eq 'Info' }
+        }
+    }
+
     Context 'Data disc' {
         It 'logs WARN and notifies Info without touching Move-ToNas or eject' {
             Mock Move-ToNas { throw 'should not be called' }

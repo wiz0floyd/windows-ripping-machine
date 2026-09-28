@@ -8,6 +8,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'Common.ps1')
+. (Join-Path $PSScriptRoot 'JobState.ps1')
 . (Join-Path $PSScriptRoot 'Send-Notification.ps1')
 . (Join-Path $PSScriptRoot 'Upscale-Video.ps1')
 
@@ -83,6 +84,14 @@ function Test-ArmActiveWindow {
     PowerShell wildcard metacharacters, so every file operation here on that path
     uses -LiteralPath to avoid silent glob-matching failures.
 
+    Job state (JobState.ps1): the item's Upscale job is set to Sampling /
+    Upscaling BEFORE Invoke-Upscale runs (so "queued" and "running" are
+    distinguishable), then AwaitingReview (+SamplePath) / Complete / Failed.
+    A queue file without a JobId (written before job tracking existed, or
+    while StateDir was unavailable) gets a job created on first touch and the
+    JobId persisted into the file. Job-state calls never throw, and persisting
+    the JobId has its own try/catch, so bookkeeping can never fail an upscale.
+
 .PARAMETER QueueFile
     Path to the *.json queue file to process.
 
@@ -99,10 +108,30 @@ function Invoke-ArmUpscaleQueueItem {
         [hashtable] $Config
     )
 
+    $jobId = $null
     try {
         $item = Get-Content -LiteralPath $QueueFile -Raw | ConvertFrom-Json
         $source = $item.Source
         $destDir = $item.DestDir
+
+        if ($item.PSObject.Properties.Name -contains 'JobId' -and $item.JobId -and (Get-ArmJob -JobId $item.JobId -Config $Config)) {
+            $jobId = [string] $item.JobId
+        } else {
+            $jobId = New-ArmJob -Kind Upscale -Properties @{
+                State     = 'Queued'
+                Title     = [System.IO.Path]::GetFileNameWithoutExtension($QueueFile)
+                DestDir   = $destDir
+                QueueFile = $QueueFile
+            } -Config $Config
+            if ($jobId) {
+                try {
+                    $item | Add-Member -MemberType NoteProperty -Name JobId -Value $jobId -Force
+                    $item | ConvertTo-Json | Set-Content -LiteralPath $QueueFile -Encoding utf8
+                } catch {
+                    Write-ArmLog -Level WARN -Message "Could not persist JobId into $QueueFile : $_" -Config $Config
+                }
+            }
+        }
 
         if (-not $source -or -not (Test-Path -LiteralPath $source)) {
             throw "Queue item source not found: $source"
@@ -111,6 +140,7 @@ function Invoke-ArmUpscaleQueueItem {
         $approved = $item.PSObject.Properties.Name -contains 'SampleGenerated' -and $item.SampleGenerated
 
         if (-not $Config.AutoUpscale -and -not $approved) {
+            $null = Update-ArmJob -JobId $jobId -Properties @{ State = 'Sampling'; QueueFile = $QueueFile; Error = $null } -Config $Config
             $result = Invoke-Upscale -InputFile $source -OutputDir (Split-Path -Parent $QueueFile) -Config $Config -SampleOnly
 
             if (-not $result.Success) {
@@ -128,7 +158,14 @@ function Invoke-ArmUpscaleQueueItem {
 
             $reviewPath = [System.IO.Path]::ChangeExtension($QueueFile, '.awaiting-review')
             Move-Item -LiteralPath $QueueFile -Destination $reviewPath -Force
+
+            $null = Update-ArmJob -JobId $jobId -Properties @{
+                State      = 'AwaitingReview'
+                SamplePath = $result.OutputFile
+                QueueFile  = $reviewPath
+            } -Config $Config
         } else {
+            $null = Update-ArmJob -JobId $jobId -Properties @{ State = 'Upscaling'; QueueFile = $QueueFile; Error = $null } -Config $Config
             $result = Invoke-Upscale -InputFile $source -OutputDir $destDir -Config $Config
 
             if (-not $result.Success) {
@@ -140,9 +177,12 @@ function Invoke-ArmUpscaleQueueItem {
                 -Level Info -Config $Config
 
             Remove-Item -LiteralPath $QueueFile -Force
+
+            $null = Update-ArmJob -JobId $jobId -Properties @{ State = 'Complete'; DestDir = $destDir } -Config $Config
         }
     } catch {
-        Write-ArmLog -Level ERROR -Message "Upscale queue item failed for $QueueFile : $_" -Config $Config
+        $failure = "$_"
+        Write-ArmLog -Level ERROR -Message "Upscale queue item failed for $QueueFile : $failure" -Config $Config
 
         Send-ArmNotification -Title 'Upscale failed' `
             -Message "Failed to process $QueueFile : $_" `
@@ -153,6 +193,19 @@ function Invoke-ArmUpscaleQueueItem {
             Move-Item -LiteralPath $QueueFile -Destination $failedPath -Force -ErrorAction SilentlyContinue
         } catch {
             Write-ArmLog -Level WARN -Message "Could not rename queue file $QueueFile to .failed : $_" -Config $Config
+        }
+
+        $failedQueueFile = if (Test-Path -LiteralPath $failedPath) { $failedPath } else { $QueueFile }
+        if ($jobId) {
+            $null = Update-ArmJob -JobId $jobId -Properties @{ State = 'Failed'; Error = $failure; QueueFile = $failedQueueFile } -Config $Config
+        } else {
+            # Unparseable queue file: still surface it as a Failed job.
+            $null = New-ArmJob -Kind Upscale -Properties @{
+                State     = 'Failed'
+                Title     = [System.IO.Path]::GetFileNameWithoutExtension($QueueFile)
+                QueueFile = $failedQueueFile
+                Error     = $failure
+            } -Config $Config
         }
     }
 }
@@ -181,6 +234,10 @@ function Invoke-ArmUpscaleQueuePass {
 
         [switch] $Once
     )
+
+    # Job-history retention runs every pass (cheap; never throws), including
+    # outside active hours.
+    $null = Remove-ArmStaleJobs -Config $Config
 
     if (-not $Once -and -not (Test-ArmActiveWindow -Config $Config)) {
         Write-ArmLog -Level INFO -Message 'Upscale worker: outside active hours, skipping pass' -Config $Config
