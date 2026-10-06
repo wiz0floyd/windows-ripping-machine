@@ -31,6 +31,22 @@ export const seed = {
     expect(id).toMatch(/^\d{8}-\d{6}-[0-9a-f]{6}$/);
     return id;
   },
+  /** An Upscale job plus its queue file and stub source mkv on disk (see seed.ps1 NewUpscale). */
+  upscale(
+    ext: '.json' | '.awaiting-review' | '.failed',
+    props: Props = {},
+  ): { JobId: string; QueueFile: string; DestDir: string; Source: string } {
+    const lines = runSeed(['-Action', 'NewUpscale', '-QueueExtension', ext, '-PropertiesB64', b64(props)]).split(/\r?\n/);
+    return JSON.parse(lines[lines.length - 1]);
+  },
+  /** Runs one Upscale-Worker.ps1 -Simulate pass over the queue directory. */
+  runWorkerOnce(): void {
+    execFileSync(
+      'pwsh',
+      ['-NoProfile', '-NonInteractive', '-File', env.workerScript, '-Simulate', '-Once', '-ConfigPath', env.configPath],
+      { encoding: 'utf8', timeout: 120_000 },
+    );
+  },
   update(jobId: string, props: Props): void {
     runSeed(['-Action', 'Update', '-JobId', jobId, '-PropertiesB64', b64(props)]);
   },

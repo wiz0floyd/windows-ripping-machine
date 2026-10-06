@@ -11,6 +11,13 @@
     -Action New     New-ArmJob -Kind <Kind> -Properties <decoded>; writes the JobId to stdout.
     -Action Update  Update-ArmJob -JobId <JobId> -Properties <decoded>.
     -Action Log     Replace today's wrm-<yyyyMMdd>.log with the decoded JSON string array.
+    -Action NewUpscale
+                    An Upscale job plus everything the worker would have left on disk:
+                    a stub source mkv in <NasVideoPath>\<Title>\title1.mkv (DestDir =
+                    that folder) and the queue file <UpscaleQueueDir>\<Title><QueueExtension>
+                    ({Source;DestDir;JobId}, plus SampleGenerated=true unless the
+                    extension is .json). Writes {JobId;QueueFile;DestDir;Source} as
+                    one JSON line to stdout.
 
 .EXAMPLE
     pwsh -NoProfile -File seed.ps1 -ConfigPath C:\t\config.psd1 -Action New -Kind Rip -PropertiesB64 eyJTdGF0ZSI6IlJpcHBpbmcifQ==
@@ -20,7 +27,7 @@ param(
     [string] $ConfigPath,
 
     [Parameter(Mandatory = $true)]
-    [ValidateSet('Reset', 'New', 'Update', 'Log')]
+    [ValidateSet('Reset', 'New', 'Update', 'Log', 'NewUpscale')]
     [string] $Action,
 
     [ValidateSet('Rip', 'Upscale')]
@@ -28,7 +35,10 @@ param(
 
     [string] $JobId,
 
-    [string] $PropertiesB64
+    [string] $PropertiesB64,
+
+    [ValidateSet('.json', '.awaiting-review', '.failed')]
+    [string] $QueueExtension = '.json'
 )
 
 Set-StrictMode -Version Latest
@@ -71,6 +81,29 @@ switch ($Action) {
         if (-not (Update-ArmJob -JobId $JobId -Properties $props -Config $config)) {
             throw "Update-ArmJob failed for '$JobId'"
         }
+    }
+    'NewUpscale' {
+        $props = ConvertFrom-SeedPayload
+        if ($null -eq $props) { $props = @{} }
+        $title = if ($props['Title']) { [string]$props['Title'] } else { 'Seeded Movie (2020)' }
+        $safe = ConvertTo-ArmSafeFileName -Name $title
+        $destDir = Join-Path $config.NasVideoPath $safe
+        $null = New-Item -ItemType Directory -Force -Path $destDir
+        $source = Join-Path $destDir 'title1.mkv'
+        [System.IO.File]::WriteAllBytes($source, (New-Object byte[] 4096))
+
+        $queueFile = Join-Path $config.UpscaleQueueDir "$safe$QueueExtension"
+        $props['QueueFile'] = $queueFile
+        $props['DestDir'] = $destDir
+        $id = New-ArmJob -Kind Upscale -Properties $props -Config $config
+        if (-not $id) { throw 'New-ArmJob returned no id' }
+
+        $item = [ordered]@{ Source = $source; DestDir = $destDir; JobId = $id }
+        if ($QueueExtension -ne '.json') { $item.SampleGenerated = $true }
+        $null = New-Item -ItemType Directory -Force -Path $config.UpscaleQueueDir
+        $item | ConvertTo-Json | Set-Content -LiteralPath $queueFile -Encoding utf8
+
+        Write-Output (@{ JobId = $id; QueueFile = $queueFile; DestDir = $destDir; Source = $source } | ConvertTo-Json -Compress)
     }
     'Log' {
         $lines = @(ConvertFrom-SeedPayload)

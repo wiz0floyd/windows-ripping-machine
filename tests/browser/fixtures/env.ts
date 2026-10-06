@@ -13,6 +13,7 @@ export interface TestEnv {
   configPath: string;
   webUiScript: string;
   seedScript: string;
+  workerScript: string;
 }
 
 function psQuote(value: string): string {
@@ -52,6 +53,9 @@ export function ensureTestRoot(): TestEnv {
       `    UpscaleDvds = $false`,
       `    AutoUpscale = $false`,
       `    UpscaleActiveHours = @('00:00','23:59')`,
+      `    UpscaleModel = 'realesrgan-plus'`,
+      `    UpscaleScale = 4`,
+      `    UpscaleCrf = 16`,
       `    WebUiEnabled = $true`,
       `    WebUiPort = ${PORT}`,
       `    Simulate = $true`,
@@ -68,5 +72,6 @@ export function ensureTestRoot(): TestEnv {
     configPath,
     webUiScript: path.join(REPO_ROOT, 'src', 'WebUi.ps1'),
     seedScript: path.join(REPO_ROOT, 'tests', 'browser', 'fixtures', 'seed.ps1'),
+    workerScript: path.join(REPO_ROOT, 'src', 'Upscale-Worker.ps1'),
   };
 }

@@ -347,6 +347,10 @@ Invoke-ArmWebRequest -Method <string> -Path <string> [-Query <hashtable>] [-Body
 #                           each job has every JobState field, Created/Updated/History[].At
 #                           as ISO 8601 round-trip strings. Unknown kind → 400.
 #    GET /api/jobs/<id>     one job; malformed or unknown id → 404.
+#    POST /api/jobs/<id>/{approve|retry|cancel}   upscale actions; require header
+#                           'X-WRM-Action: 1' (else 403). Valid states: approve=AwaitingReview,
+#                           retry=Failed, cancel=Queued|AwaitingReview; other state → 409,
+#                           unknown id → 404. Each job in /api/jobs carries an Actions list.
 #    GET /api/log[?lines=N] {Lines:[...]} = last N lines of today's wrm-<yyyyMMdd>.log
 #                           (default 200, clamped 1..1000, non-integer → 400; missing
 #                           file → []). Read with FileShare.ReadWrite; never written.
