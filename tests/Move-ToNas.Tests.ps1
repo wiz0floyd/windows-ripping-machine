@@ -306,3 +306,34 @@ Describe 'Move-ToNas' {
         Remove-Item -Path (Split-Path $destRoot) -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
+
+Describe 'Move-ArmExtrasToSubdir' {
+    BeforeEach {
+        $script:Dir = Join-Path $env:TEMP "wrm-extras-$(New-Guid)"
+        $null = New-Item -ItemType Directory -Path $script:Dir -Force
+    }
+    AfterEach { Remove-Item -Path $script:Dir -Recurse -Force -ErrorAction SilentlyContinue }
+
+    It 'keeps the largest mkv in place and moves the others into extras' {
+        Set-Content (Join-Path $script:Dir 't00.mkv') -Value ('a' * 100)
+        Set-Content (Join-Path $script:Dir 't01.mkv') -Value ('a' * 5000)
+        Set-Content (Join-Path $script:Dir 't02.mkv') -Value ('a' * 300)
+        Set-Content (Join-Path $script:Dir 'metadata.json') -Value '{}'
+
+        $r = Move-ArmExtrasToSubdir -Dir $script:Dir -Config (New-TestConfig)
+
+        $r.Success | Should -BeTrue
+        $r.Moved | Should -Be 2
+        Test-Path (Join-Path $script:Dir 't01.mkv') | Should -BeTrue
+        Test-Path (Join-Path $script:Dir 'extras' 't00.mkv') | Should -BeTrue
+        Test-Path (Join-Path $script:Dir 'extras' 't02.mkv') | Should -BeTrue
+        Test-Path (Join-Path $script:Dir 'metadata.json') | Should -BeTrue
+    }
+
+    It 'does nothing for a single mkv' {
+        Set-Content (Join-Path $script:Dir 't00.mkv') -Value 'x'
+        $r = Move-ArmExtrasToSubdir -Dir $script:Dir -Config (New-TestConfig)
+        $r.Moved | Should -Be 0
+        Test-Path (Join-Path $script:Dir 'extras') | Should -BeFalse
+    }
+}
