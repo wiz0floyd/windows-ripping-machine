@@ -9,6 +9,8 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'Common.ps1')
 . (Join-Path $PSScriptRoot 'JobState.ps1')
+. (Join-Path $PSScriptRoot 'Resolve-Title.ps1')
+. (Join-Path $PSScriptRoot 'Rip-VideoDisc.ps1')
 
 <#
 .SYNOPSIS
@@ -33,6 +35,8 @@ $script:ArmWebDefaultPort = 8765
 $script:ArmWebLogDefaultLines = 200
 $script:ArmWebLogMaxLines = 1000
 $script:ArmWebActiveRipStates = @('Detected', 'Ripping', 'Moving')
+$script:ArmWebMetadataMaxLength = 200
+$script:ArmWebMetadataMaxBody = 4096
 
 # POSTs must carry this header (value '1'). A cross-origin page can't add a custom
 # header without a CORS preflight, which this server never grants - so this is
@@ -186,14 +190,15 @@ function ConvertTo-ArmWebJob {
                 At    = ConvertTo-ArmIsoTimestamp -Value $entry.At
             }
         })
-    $out.Actions = @(Get-ArmWebJobActionList -Kind $out.Kind -State $out.State)
+    $out.Actions = @(Get-ArmWebJobActionList -Kind $out.Kind -State $out.State -DiscType $out.DiscType)
     return $out
 }
 
 <#
 .SYNOPSIS
-    Actions (approve / retry / cancel) valid for a job right now; empty for rips
-    and for upscale jobs the worker is processing.
+    Actions valid for a job right now. Upscale jobs: approve / retry / cancel
+    (empty while the worker is processing). Video rips: 'metadata' (manual title
+    edit) while Ripping.
 #>
 function Get-ArmWebJobActionList {
     [CmdletBinding()]
@@ -203,9 +208,16 @@ function Get-ArmWebJobActionList {
         [string] $Kind,
 
         [AllowNull()]
-        [string] $State
+        [string] $State,
+
+        [AllowNull()]
+        [string] $DiscType
     )
 
+    if ($Kind -eq 'Rip') {
+        if ($State -eq 'Ripping' -and $DiscType -ne 'AudioCD') { return @('metadata') }
+        return @()
+    }
     if ($Kind -ne 'Upscale') { return @() }
     return @(foreach ($action in $script:ArmWebUpscaleActionStates.Keys) {
             if ($State -in $script:ArmWebUpscaleActionStates[$action]) { $action }
@@ -667,6 +679,296 @@ function Invoke-ArmWebUpscaleAction {
     return (New-ArmWebJsonResponse -InputObject (ConvertTo-ArmWebJob -Job (Get-ArmJob -JobId $JobId -Config $Config)))
 }
 
+<#
+.SYNOPSIS
+    Validate a manual Title/Year and compute the NAS folder name it would produce.
+
+.DESCRIPTION
+    The folder name comes from the same ConvertTo-ArmFolderName rule the pipeline
+    uses (Resolve-TitleOverride), so the UI preview and the real rename agree.
+    Title: required, at most 200 chars, no control characters, and must still be
+    non-blank after invalid filename characters are stripped (so ':' alone is
+    refused) and must not be a Windows-reserved/dot-only name. Year: blank or
+    exactly 4 digits.
+
+.OUTPUTS
+    [hashtable] @{ Valid; Title; Year; FolderName; Errors } (Errors: field -> message).
+#>
+function Test-ArmWebMetadataInput {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string] $Title,
+
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string] $Year
+    )
+
+    $errors = [ordered]@{}
+    $titleTrim = if ($null -ne $Title) { $Title.Trim() } else { '' }
+    $yearTrim = if ($null -ne $Year) { $Year.Trim() } else { '' }
+    $folder = ''
+
+    if (-not $titleTrim) {
+        $errors.Title = 'Title is required'
+    } elseif ($titleTrim.Length -gt $script:ArmWebMetadataMaxLength) {
+        $errors.Title = "Title must be at most $($script:ArmWebMetadataMaxLength) characters"
+    } elseif ($titleTrim -match '[\x00-\x1f\x7f]') {
+        $errors.Title = 'Title must not contain control characters'
+    } elseif (-not (ConvertTo-ArmSafeFileName -Name $titleTrim)) {
+        $errors.Title = 'Title has no usable characters left after removing characters Windows does not allow in names'
+    }
+
+    if ($yearTrim -and $yearTrim -notmatch '^[0-9]{4}$') {
+        $errors.Year = 'Year must be blank or 4 digits'
+    }
+
+    if (-not $errors.Contains('Title')) {
+        $folder = ConvertTo-ArmFolderName -Title $titleTrim -Year $yearTrim
+        if (-not $folder -or $folder -match '^\.+$' -or $folder -match '^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(\..*)?$') {
+            $errors.Title = 'Title would produce a folder name Windows does not allow'
+            $folder = ''
+        }
+    }
+
+    return @{
+        Valid      = ($errors.Count -eq 0)
+        Title      = $titleTrim
+        Year       = $yearTrim
+        FolderName = $folder
+        Errors     = $errors
+    }
+}
+
+<#
+.SYNOPSIS
+    Locate a rip job's staging directory, refusing anything outside StagingDir.
+
+.DESCRIPTION
+    The path comes only from the job record (never the request). The directory
+    must exist and be a direct child of the configured StagingDir.
+
+.OUTPUTS
+    [hashtable] @{ Path } on success, or @{ Error } when refused.
+#>
+function Resolve-ArmWebStagingDir {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [pscustomobject] $Job,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable] $Config
+    )
+
+    if (-not $Config.ContainsKey('StagingDir') -or -not $Config.StagingDir) {
+        return @{ Error = 'StagingDir is not configured' }
+    }
+    $recorded = if ($Job.PSObject.Properties.Name -contains 'StagingDir') { [string]$Job.StagingDir } else { '' }
+    if (-not $recorded) {
+        return @{ Error = 'This rip has no staging directory on record yet' }
+    }
+    try {
+        $root = [System.IO.Path]::GetFullPath($Config.StagingDir).TrimEnd('\', '/')
+        $full = [System.IO.Path]::GetFullPath($recorded).TrimEnd('\', '/')
+    } catch {
+        return @{ Error = "The rip's staging directory path is invalid" }
+    }
+    $parent = [System.IO.Path]::GetDirectoryName($full)
+    if (-not $parent -or -not [string]::Equals($parent.TrimEnd('\', '/'), $root, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return @{ Error = "The rip's staging directory is not inside StagingDir; refusing to touch it" }
+    }
+    if (-not (Test-Path -LiteralPath $full -PathType Container)) {
+        return @{ Error = 'The rip''s staging directory no longer exists' }
+    }
+    return @{ Path = $full }
+}
+
+<#
+.SYNOPSIS
+    $null when a rip job's metadata can be edited now, else the reason (for a 409).
+#>
+function Get-ArmWebMetadataBlocker {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [pscustomobject] $Job
+    )
+
+    $discType = if ($Job.PSObject.Properties.Name -contains 'DiscType') { [string]$Job.DiscType } else { '' }
+    if ($discType -eq 'AudioCD') {
+        return 'Audio CDs have no editable title metadata'
+    }
+    if ([string]$Job.State -ne 'Ripping') {
+        return "Cannot edit metadata of a rip that is $($Job.State) (only while Ripping)"
+    }
+    return $null
+}
+
+<#
+.SYNOPSIS
+    Current Title/Year from a staging dir's metadata.json ('' / '' when absent or unreadable).
+#>
+function Read-ArmWebMetadata {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $StagingDir
+    )
+
+    $result = @{ Title = ''; Year = '' }
+    $path = Join-Path $StagingDir 'metadata.json'
+    try {
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            $json = Get-Content -LiteralPath $path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            foreach ($field in @('Title', 'Year')) {
+                $prop = $json.PSObject.Properties[$field]
+                if ($prop -and $null -ne $prop.Value) { $result[$field] = ([string]$prop.Value).Trim() }
+            }
+        }
+    } catch {
+        Write-Verbose "Unreadable metadata.json in '$StagingDir': $_"
+    }
+    return $result
+}
+
+<#
+.SYNOPSIS
+    GET /api/jobs/<id>/metadata: the form's prefill (and whether it is editable).
+#>
+function Get-ArmWebMetadata {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $JobId,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable] $Config
+    )
+
+    $job = Get-ArmJob -JobId $JobId -Config $Config
+    if (-not $job -or $job.Kind -ne 'Rip') {
+        return (New-ArmWebJsonResponse -Status 404 -InputObject @{ Error = 'Rip job not found' })
+    }
+    $staging = Resolve-ArmWebStagingDir -Job $job -Config $Config
+    $meta = if ($staging.ContainsKey('Path')) { Read-ArmWebMetadata -StagingDir $staging.Path } else { @{ Title = ''; Year = '' } }
+    $blocker = Get-ArmWebMetadataBlocker -Job $job
+    if (-not $blocker -and $staging.ContainsKey('Error')) { $blocker = $staging.Error }
+    $check = Test-ArmWebMetadataInput -Title $meta.Title -Year $meta.Year
+    return (New-ArmWebJsonResponse -InputObject ([ordered]@{
+                Editable   = (-not $blocker)
+                Reason     = $blocker
+                Title      = $meta.Title
+                Year       = $meta.Year
+                FolderName = $check.FolderName
+                Current    = if ($job.PSObject.Properties.Name -contains 'Title') { [string]$job.Title } else { '' }
+            }))
+}
+
+<#
+.SYNOPSIS
+    POST /api/jobs/<id>/metadata {Title; Year}: write the manual title override.
+
+.DESCRIPTION
+    Writes the same metadata.json the user can hand-edit (Set-ArmMetadataFile
+    -Force, atomic), which Resolve-TitleOverride reads right before the rename +
+    NAS move - no pipeline change. Allowed only for a video rip that is Ripping
+    (404 unknown job, 409 otherwise); invalid input is a 400 with per-field
+    errors and nothing is written. The path comes from the job record and is
+    checked to sit directly under StagingDir. After writing, the file is read
+    back and the job re-read: if the rip moved on meanwhile the response is a
+    409 saying the edit may not have been applied.
+
+.OUTPUTS
+    [hashtable] web response.
+#>
+function Save-ArmWebMetadata {
+    [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Request handler; the caller has already authorized the action (CSRF header).')]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $JobId,
+
+        [AllowEmptyString()]
+        [string] $Body,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable] $Config
+    )
+
+    $job = Get-ArmJob -JobId $JobId -Config $Config
+    if (-not $job -or $job.Kind -ne 'Rip') {
+        return (New-ArmWebJsonResponse -Status 404 -InputObject @{ Error = 'Rip job not found' })
+    }
+    $blocker = Get-ArmWebMetadataBlocker -Job $job
+    if ($blocker) {
+        return (New-ArmWebJsonResponse -Status 409 -InputObject @{ Error = $blocker })
+    }
+    $staging = Resolve-ArmWebStagingDir -Job $job -Config $Config
+    if ($staging.ContainsKey('Error')) {
+        return (New-ArmWebJsonResponse -Status 409 -InputObject @{ Error = $staging.Error })
+    }
+
+    $badRequest = { param($message) New-ArmWebJsonResponse -Status 400 -InputObject @{ Error = $message } }
+    if ($Body.Length -gt $script:ArmWebMetadataMaxBody) {
+        return (& $badRequest 'Request body is too large')
+    }
+    $payload = $null
+    try {
+        $payload = $Body | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        return (& $badRequest 'Body must be JSON like {"Title":"...","Year":"1999"}')
+    }
+    if ($payload -isnot [pscustomobject]) {
+        return (& $badRequest 'Body must be a JSON object with Title and Year')
+    }
+    $title = $payload.PSObject.Properties['Title']
+    $year = $payload.PSObject.Properties['Year']
+    if (-not $title -or $title.Value -isnot [string]) {
+        return (New-ArmWebJsonResponse -Status 400 -InputObject @{ Error = 'Validation failed'; Errors = @{ Title = 'Title is required' } })
+    }
+    $yearValue = ''
+    if ($year -and $null -ne $year.Value) {
+        if ($year.Value -isnot [string] -and $year.Value -isnot [int] -and $year.Value -isnot [long]) {
+            return (New-ArmWebJsonResponse -Status 400 -InputObject @{ Error = 'Validation failed'; Errors = @{ Year = 'Year must be blank or 4 digits' } })
+        }
+        $yearValue = [string]$year.Value
+    }
+
+    $check = Test-ArmWebMetadataInput -Title $title.Value -Year $yearValue
+    if (-not $check.Valid) {
+        return (New-ArmWebJsonResponse -Status 400 -InputObject @{ Error = 'Validation failed'; Errors = $check.Errors })
+    }
+
+    Set-ArmMetadataFile -OutputDir $staging.Path -Title $check.Title -Year $check.Year -Config $Config -Force
+    $written = Read-ArmWebMetadata -StagingDir $staging.Path
+    if ($written.Title -ne $check.Title -or $written.Year -ne $check.Year) {
+        return (New-ArmWebJsonResponse -Status 500 -InputObject @{ Error = 'Could not write metadata.json; see the log' })
+    }
+
+    $now = Get-ArmJob -JobId $JobId -Config $Config
+    if ($now -and [string]$now.State -ne 'Ripping') {
+        Write-ArmLog -Level WARN -Message "Web UI: metadata edit for job $JobId saved but the rip is now $($now.State)" -Config $Config
+        return (New-ArmWebJsonResponse -Status 409 -InputObject @{ Error = "The rip became $($now.State) while saving; the edit may not have been applied" })
+    }
+    $null = Update-ArmJob -JobId $JobId -Properties @{ Title = $check.FolderName } -Config $Config
+    Write-ArmLog -Level INFO -Message "Web UI: metadata for rip $JobId set to '$($check.FolderName)'" -Config $Config
+    return (New-ArmWebJsonResponse -InputObject ([ordered]@{
+                Title      = $check.Title
+                Year       = $check.Year
+                FolderName = $check.FolderName
+            }))
+}
+
 # --- Routes ------------------------------------------------------------------
 
 Register-ArmWebRoute -Method GET -Pattern '/' -Handler {
@@ -704,6 +1006,23 @@ Register-ArmWebRoute -Method GET -Pattern '/api/jobs/(?<id>[^/]+)' -Handler {
 Register-ArmWebRoute -Method POST -Pattern '/api/jobs/(?<id>[^/]+)/(?<action>approve|retry|cancel)' -Handler {
     param($Request)
     Invoke-ArmWebUpscaleAction -JobId $Request.Params.id -Action $Request.Params.action -Config $Request.Config
+}
+
+Register-ArmWebRoute -Method GET -Pattern '/api/jobs/(?<id>[^/]+)/metadata' -Handler {
+    param($Request)
+    Get-ArmWebMetadata -JobId $Request.Params.id -Config $Request.Config
+}
+
+Register-ArmWebRoute -Method POST -Pattern '/api/jobs/(?<id>[^/]+)/metadata' -Handler {
+    param($Request)
+    Save-ArmWebMetadata -JobId $Request.Params.id -Body $Request.Body -Config $Request.Config
+}
+
+# Folder-name preview for the edit form, so the sanitising rule lives only in PowerShell.
+Register-ArmWebRoute -Method GET -Pattern '/api/metadata-preview' -Handler {
+    param($Request)
+    $check = Test-ArmWebMetadataInput -Title ([string]$Request.Query['title']) -Year ([string]$Request.Query['year'])
+    New-ArmWebJsonResponse -InputObject ([ordered]@{ Valid = $check.Valid; FolderName = $check.FolderName; Errors = $check.Errors })
 }
 
 Register-ArmWebRoute -Method GET -Pattern '/api/log' -Handler {

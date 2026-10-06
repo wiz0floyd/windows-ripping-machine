@@ -39,6 +39,22 @@ export const seed = {
     const lines = runSeed(['-Action', 'NewUpscale', '-QueueExtension', ext, '-PropertiesB64', b64(props)]).split(/\r?\n/);
     return JSON.parse(lines[lines.length - 1]);
   },
+  /**
+   * A Rip job plus its staging dir (stub mkv + metadata.json from MetaTitle/MetaYear);
+   * see seed.ps1 NewRip. Defaults: State Ripping, DiscType DVD.
+   */
+  rip(props: Props = {}): { JobId: string; StagingDir: string } {
+    const lines = runSeed(['-Action', 'NewRip', '-PropertiesB64', b64(props)]).split(/\r?\n/);
+    return JSON.parse(lines[lines.length - 1]);
+  },
+  /** Runs the real Invoke-VideoDispatch tail (title override -> rename -> Move-ToNas) for a seeded rip. */
+  finishRip(jobId: string): void {
+    execFileSync(
+      'pwsh',
+      ['-NoProfile', '-NonInteractive', '-File', env.finishRipScript, '-ConfigPath', env.configPath, '-JobId', jobId],
+      { encoding: 'utf8', timeout: 120_000 },
+    );
+  },
   /** Runs one Upscale-Worker.ps1 -Simulate pass over the queue directory. */
   runWorkerOnce(): void {
     execFileSync(

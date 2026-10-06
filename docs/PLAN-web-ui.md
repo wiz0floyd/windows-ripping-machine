@@ -237,7 +237,9 @@ the PR description per README "Acceptance checklist (manual)".
 
 1. ~~Localhost-only or LAN?~~ Resolved: localhost-only (see above).
 2. Should "update metadata" also cover already-moved rips (rename on the NAS),
-   or only in-flight rips as planned?
+   or only in-flight rips as planned? **Unresolved; S4 took the conservative
+   choice**: in-flight rips only (`Ripping`), 409 afterwards. NAS renames would also
+   need to rewrite upscale queue entries pointing at the folder.
 
 ## Verification plan (summary)
 

@@ -525,6 +525,235 @@ Describe 'POST /api/jobs/{id}/approve|retry|cancel (upscale actions)' {
     }
 }
 
+Describe 'manual metadata edit (S4)' {
+    BeforeAll {
+        $script:okHeaders = @{ 'X-WRM-Action' = '1' }
+
+        function New-TestMetaConfig {
+            $cfg = New-TestWebConfig
+            $cfg.StagingDir = Join-Path (Split-Path -Parent $cfg.StateDir) 'staging'
+            $null = New-Item -ItemType Directory -Force -Path $cfg.StagingDir
+            return $cfg
+        }
+
+        # A Rip job whose staging dir holds the metadata.json Invoke-VideoRip would have written.
+        function New-TestRip {
+            param(
+                [hashtable] $Config,
+                [string] $State = 'Ripping',
+                [string] $DiscType = 'DVD',
+                [string] $Dir = 'DISC_LABEL',
+                [string] $Title = 'Old Title',
+                [string] $Year = '1999'
+            )
+            $staging = Join-Path $Config.StagingDir $Dir
+            $null = New-Item -ItemType Directory -Force -Path $staging
+            @{ Title = $Title; Year = $Year } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $staging 'metadata.json') -Encoding utf8
+            $id = New-ArmJob -Kind Rip -Properties @{ State = $State; DiscType = $DiscType; StagingDir = $staging; Title = "$Title ($Year)" } -Config $Config
+            return [pscustomobject]@{ Id = $id; Staging = $staging; Metadata = (Join-Path $staging 'metadata.json') }
+        }
+
+        function Save-TestMeta {
+            param([hashtable] $Config, [string] $Id, [string] $Body, [hashtable] $Headers = $script:okHeaders)
+            return (Invoke-ArmWebRequest -Method POST -Path "/api/jobs/$Id/metadata" -Body $Body -Headers $Headers -Config $Config)
+        }
+    }
+
+    BeforeEach {
+        $script:cfg = New-TestMetaConfig
+    }
+
+    It 'writes metadata.json, updates the job title, and returns the folder name' {
+        $rip = New-TestRip -Config $script:cfg
+        $r = Save-TestMeta -Config $script:cfg -Id $rip.Id -Body '{"Title":"New: Title?","Year":"2001"}'
+        $r.Status | Should -Be 200
+        $body = $r.Body | ConvertFrom-Json
+        $body.FolderName | Should -Be 'New Title (2001)'
+        $disk = Get-Content -LiteralPath $rip.Metadata -Raw | ConvertFrom-Json
+        $disk.Title | Should -Be 'New: Title?'
+        $disk.Year | Should -Be '2001'
+        (Get-ArmJob -JobId $rip.Id -Config $script:cfg).Title | Should -Be 'New Title (2001)'
+        Get-ChildItem -LiteralPath $rip.Staging -Filter '*.tmp' | Should -BeNullOrEmpty
+    }
+
+    It 'is picked up by Resolve-TitleOverride (the pipeline reads the same file)' {
+        $rip = New-TestRip -Config $script:cfg
+        $null = Save-TestMeta -Config $script:cfg -Id $rip.Id -Body '{"Title":"Brand New","Year":2010}'
+        $fallback = [pscustomobject]@{ FolderName = 'x'; Matched = $false; Title = $null; Year = $null }
+        $resolved = Resolve-TitleOverride -OutputDir $rip.Staging -FallbackResolved $fallback -Config $script:cfg
+        $resolved.FolderName | Should -Be 'Brand New (2010)'
+    }
+
+    It 'accepts a blank year' {
+        $rip = New-TestRip -Config $script:cfg
+        $r = Save-TestMeta -Config $script:cfg -Id $rip.Id -Body '{"Title":"No Year","Year":""}'
+        $r.Status | Should -Be 200
+        ($r.Body | ConvertFrom-Json).FolderName | Should -Be 'No Year'
+    }
+
+    It 'rejects invalid input with 400 and per-field errors, writing nothing' -ForEach @(
+        @{ Name = 'blank title'; Body = '{"Title":"  ","Year":"1999"}'; Field = 'Title' }
+        @{ Name = 'missing title'; Body = '{"Year":"1999"}'; Field = 'Title' }
+        @{ Name = 'title of only invalid chars'; Body = '{"Title":":?*","Year":""}'; Field = 'Title' }
+        @{ Name = 'dot-only title'; Body = '{"Title":"..","Year":""}'; Field = 'Title' }
+        @{ Name = 'reserved device name'; Body = '{"Title":"CON","Year":""}'; Field = 'Title' }
+        @{ Name = 'too-long title'; Body = (@{ Title = ('a' * 201); Year = '' } | ConvertTo-Json -Compress); Field = 'Title' }
+        @{ Name = 'control characters'; Body = '{"Title":"a\u0000b","Year":""}'; Field = 'Title' }
+        @{ Name = 'non-string title'; Body = '{"Title":5,"Year":""}'; Field = 'Title' }
+        @{ Name = '2-digit year'; Body = '{"Title":"T","Year":"99"}'; Field = 'Year' }
+        @{ Name = 'letters in year'; Body = '{"Title":"T","Year":"abcd"}'; Field = 'Year' }
+        @{ Name = '5-digit year'; Body = '{"Title":"T","Year":"19999"}'; Field = 'Year' }
+        @{ Name = 'object year'; Body = '{"Title":"T","Year":{"a":1}}'; Field = 'Year' }
+    ) {
+        $rip = New-TestRip -Config $script:cfg
+        $before = Get-Content -LiteralPath $rip.Metadata -Raw
+        $r = Save-TestMeta -Config $script:cfg -Id $rip.Id -Body $Body
+        $r.Status | Should -Be 400 -Because $Name
+        ($r.Body | ConvertFrom-Json).Errors.$Field | Should -Not -BeNullOrEmpty
+        Get-Content -LiteralPath $rip.Metadata -Raw | Should -Be $before
+    }
+
+    It 'rejects a malformed or non-object body with 400' -ForEach @(
+        @{ Body = 'not json' }
+        @{ Body = '' }
+        @{ Body = '[1,2]' }
+        @{ Body = '"text"' }
+    ) {
+        $rip = New-TestRip -Config $script:cfg
+        (Save-TestMeta -Config $script:cfg -Id $rip.Id -Body $Body).Status | Should -Be 400
+    }
+
+    It 'rejects an oversized body with 400' {
+        $rip = New-TestRip -Config $script:cfg
+        $big = '{"Title":"T","Year":"","Pad":"' + ('x' * 5000) + '"}'
+        (Save-TestMeta -Config $script:cfg -Id $rip.Id -Body $big).Status | Should -Be 400
+    }
+
+    It 'returns 403 without the X-WRM-Action header and writes nothing' {
+        $rip = New-TestRip -Config $script:cfg
+        $r = Save-TestMeta -Config $script:cfg -Id $rip.Id -Body '{"Title":"Hacked","Year":""}' -Headers @{}
+        $r.Status | Should -Be 403
+        (Get-Content -LiteralPath $rip.Metadata -Raw | ConvertFrom-Json).Title | Should -Be 'Old Title'
+    }
+
+    It 'returns 404 for an unknown, malformed, or non-rip job id' {
+        (Save-TestMeta -Config $script:cfg -Id '20000101-000000-abcdef' -Body '{"Title":"T","Year":""}').Status | Should -Be 404
+        (Save-TestMeta -Config $script:cfg -Id '..' -Body '{"Title":"T","Year":""}').Status | Should -Be 404
+        $up = New-ArmJob -Kind Upscale -Properties @{ State = 'Queued' } -Config $script:cfg
+        (Save-TestMeta -Config $script:cfg -Id $up -Body '{"Title":"T","Year":""}').Status | Should -Be 404
+        (Invoke-ArmWebRequest -Method GET -Path '/api/jobs/20000101-000000-abcdef/metadata' -Config $script:cfg).Status | Should -Be 404
+    }
+
+    It 'returns 409 once the rip is no longer Ripping, leaving the file untouched' -ForEach @(
+        @{ State = 'Detected' }, @{ State = 'Moving' }, @{ State = 'Complete' }, @{ State = 'Failed' }
+    ) {
+        $rip = New-TestRip -Config $script:cfg -State $State
+        $r = Save-TestMeta -Config $script:cfg -Id $rip.Id -Body '{"Title":"Too Late","Year":""}'
+        $r.Status | Should -Be 409 -Because $State
+        (Get-Content -LiteralPath $rip.Metadata -Raw | ConvertFrom-Json).Title | Should -Be 'Old Title'
+    }
+
+    It 'returns 409 for an audio CD rip' {
+        $rip = New-TestRip -Config $script:cfg -DiscType 'AudioCD'
+        (Save-TestMeta -Config $script:cfg -Id $rip.Id -Body '{"Title":"T","Year":""}').Status | Should -Be 409
+    }
+
+    It 'returns 409 when the recorded staging dir is outside StagingDir (tampered record)' {
+        $victim = Join-Path $TestDrive 'elsewhere'
+        $null = New-Item -ItemType Directory -Force -Path $victim
+        $id = New-ArmJob -Kind Rip -Properties @{ State = 'Ripping'; DiscType = 'DVD'; StagingDir = $victim } -Config $script:cfg
+        (Save-TestMeta -Config $script:cfg -Id $id -Body '{"Title":"T","Year":""}').Status | Should -Be 409
+        Test-Path -LiteralPath (Join-Path $victim 'metadata.json') | Should -BeFalse
+    }
+
+    It 'returns 409 when the staging dir is gone, without leaking the path or exception text' {
+        $rip = New-TestRip -Config $script:cfg
+        Remove-Item -LiteralPath $rip.Staging -Recurse -Force
+        $r = Save-TestMeta -Config $script:cfg -Id $rip.Id -Body '{"Title":"T","Year":""}'
+        $r.Status | Should -Be 409
+        $r.Body | Should -Not -Match ([regex]::Escape($script:cfg.StagingDir))
+    }
+
+    It 'returns 500 with a generic message (no exception text) when the write fails' {
+        $rip = New-TestRip -Config $script:cfg
+        Mock Set-ArmMetadataFile { }
+        $r = Save-TestMeta -Config $script:cfg -Id $rip.Id -Body '{"Title":"Zzz Different","Year":""}'
+        $r.Status | Should -Be 500
+        $r.Body | Should -Not -Match 'Exception|StackTrace|at <ScriptBlock>'
+    }
+
+    It 'reports 409 when the rip moved on between the check and the write' {
+        $rip = New-TestRip -Config $script:cfg
+        # The read-back is the last step before the final state re-check: flip the state there.
+        Mock Read-ArmWebMetadata {
+            $null = Update-ArmJob -JobId $rip.Id -Properties @{ State = 'Moving' } -Config $script:cfg
+            @{ Title = 'Raced'; Year = '' }
+        }
+        $r = Save-TestMeta -Config $script:cfg -Id $rip.Id -Body '{"Title":"Raced","Year":""}'
+        $r.Status | Should -Be 409
+        ($r.Body | ConvertFrom-Json).Error | Should -Match 'may not have been applied'
+    }
+
+    Context 'Set-ArmMetadataFile -Force' {
+        It 'does not overwrite an existing file by default' {
+            $rip = New-TestRip -Config $script:cfg
+            Set-ArmMetadataFile -OutputDir $rip.Staging -Title 'Other' -Year '2000' -Config $script:cfg
+            (Get-Content -LiteralPath $rip.Metadata -Raw | ConvertFrom-Json).Title | Should -Be 'Old Title'
+        }
+        It 'overwrites with -Force' {
+            $rip = New-TestRip -Config $script:cfg
+            Set-ArmMetadataFile -OutputDir $rip.Staging -Title 'Other' -Year '2000' -Config $script:cfg -Force
+            $disk = Get-Content -LiteralPath $rip.Metadata -Raw | ConvertFrom-Json
+            $disk.Title | Should -Be 'Other'
+            $disk.Year | Should -Be '2000'
+        }
+    }
+
+    Context 'GET /api/jobs/{id}/metadata and /api/metadata-preview' {
+        It 'returns the current metadata.json values and Editable=true while Ripping' {
+            $rip = New-TestRip -Config $script:cfg
+            $r = Invoke-ArmWebRequest -Method GET -Path "/api/jobs/$($rip.Id)/metadata" -Config $script:cfg
+            $r.Status | Should -Be 200
+            $b = $r.Body | ConvertFrom-Json
+            $b.Title | Should -Be 'Old Title'
+            $b.Year | Should -Be '1999'
+            $b.Editable | Should -BeTrue
+            $b.FolderName | Should -Be 'Old Title (1999)'
+        }
+        It 'returns Editable=false with a reason once Moving' {
+            $rip = New-TestRip -Config $script:cfg -State Moving
+            $b = (Invoke-ArmWebRequest -Method GET -Path "/api/jobs/$($rip.Id)/metadata" -Config $script:cfg).Body | ConvertFrom-Json
+            $b.Editable | Should -BeFalse
+            $b.Reason | Should -Match 'Moving'
+        }
+        It 'previews the folder name using the pipeline sanitising rule' {
+            $r = Invoke-ArmWebRequest -Method GET -Path '/api/metadata-preview' -Query @{ title = 'Star: Wars/ Ep?'; year = '1977' } -Config $script:cfg
+            $r.Status | Should -Be 200
+            $b = $r.Body | ConvertFrom-Json
+            $b.Valid | Should -BeTrue
+            $b.FolderName | Should -Be 'Star Wars Ep (1977)'
+        }
+        It 'previews validation errors with 200' {
+            $b = (Invoke-ArmWebRequest -Method GET -Path '/api/metadata-preview' -Query @{ title = ''; year = '99' } -Config $script:cfg).Body | ConvertFrom-Json
+            $b.Valid | Should -BeFalse
+            $b.Errors.Title | Should -Not -BeNullOrEmpty
+            $b.Errors.Year | Should -Not -BeNullOrEmpty
+        }
+    }
+
+    Context 'Actions in /api/jobs' {
+        It 'offers metadata only for video rips that are Ripping' {
+            $video = New-TestRip -Config $script:cfg
+            $audio = New-TestRip -Config $script:cfg -DiscType 'AudioCD' -Dir 'CD'
+            $moving = New-TestRip -Config $script:cfg -State Moving -Dir 'MV'
+            $jobs = (Invoke-ArmWebRequest -Method GET -Path '/api/jobs' -Config $script:cfg).Body | ConvertFrom-Json
+            (@(($jobs | Where-Object Id -eq $video.Id).Actions) -join ',') | Should -Be 'metadata'
+            @(($jobs | Where-Object Id -eq $audio.Id).Actions) | Should -HaveCount 0
+            @(($jobs | Where-Object Id -eq $moving.Id).Actions) | Should -HaveCount 0
+        }
+    }
+}
+
 Describe 'WebUi.ps1 entry point (socket smoke test)' {
     BeforeAll {
         # Real temp dir (not TestDrive): the server runs in a separate pwsh process.
