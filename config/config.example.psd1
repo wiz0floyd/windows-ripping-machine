@@ -32,6 +32,7 @@
     # --- Web UI (http://localhost:<WebUiPort>/, this machine only) ---
     WebUiEnabled      = $true          # $false => the wrm-webui task exits immediately
     WebUiPort         = 8765
+    WebUiOpenOnDisc   = $true          # open the dashboard in the browser when a disc is detected
     # --- Job history ---
     JobHistoryDays    = 30             # finished (Complete/Failed/Cancelled) job records older than this are pruned
     # --- Test/dev ---

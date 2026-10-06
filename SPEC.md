@@ -87,6 +87,7 @@ wrm/
     # --- Web UI (http://localhost:<WebUiPort>/, this machine only) ---
     WebUiEnabled      = $true          # $false => WebUi.ps1 exits immediately
     WebUiPort         = 8765
+    WebUiOpenOnDisc   = $true          # DiscWatcher opens the dashboard (Open-ArmWebUi) when a Video/AudioCD disc is detected; skipped under -Simulate / WebUiEnabled=$false
     # --- Job history ---
     JobHistoryDays    = 30             # prune Complete/Failed/Cancelled job records older than this
     # --- Test/dev ---
