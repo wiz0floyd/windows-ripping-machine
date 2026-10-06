@@ -177,3 +177,61 @@ function Move-ToNas {
         return New-ArmResult -Success $false -Properties ([ordered]@{ DestDir = $null }) -Error $errorMsg
     }
 }
+
+<#
+.SYNOPSIS
+    Arrange a staged video directory in Jellyfin's extras layout.
+
+.DESCRIPTION
+    Jellyfin treats extra .mkv files sitting next to the main movie as
+    alternate versions of it. Keeps the largest .mkv at the top level of
+    Dir (the main feature) and moves every other top-level .mkv into an
+    'extras' subdirectory, one of Jellyfin's recognised extras folder names
+    (https://jellyfin.org/docs/general/server/media/movies/#extras-folders).
+
+    No-op when Dir holds fewer than two top-level .mkv files. Never throws;
+    failures are logged and returned so the caller can still proceed.
+
+.PARAMETER Dir
+    Staging directory containing the ripped .mkv files.
+
+.PARAMETER Config
+    Configuration hashtable (for logging).
+
+.OUTPUTS
+    [pscustomobject] with Success [bool], Moved [int] (extras relocated), Error [string].
+#>
+function Move-ArmExtrasToSubdir {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Dir,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable] $Config
+    )
+
+    try {
+        $mkvs = @(Get-ChildItem -LiteralPath $Dir -File -Filter '*.mkv' |
+            Sort-Object -Property Length -Descending)
+        if ($mkvs.Count -lt 2) {
+            return New-ArmResult -Success $true -Properties ([ordered]@{ Moved = 0 }) -Error $null
+        }
+
+        $extrasDir = Join-Path $Dir 'extras'
+        $null = New-Item -ItemType Directory -Path $extrasDir -Force
+
+        $moved = 0
+        foreach ($extra in ($mkvs | Select-Object -Skip 1)) {
+            Move-Item -LiteralPath $extra.FullName -Destination (Join-Path $extrasDir $extra.Name) -Force
+            $moved++
+        }
+        Write-ArmLog -Level INFO -Message "Moved $moved extra(s) into '$extrasDir'; main feature: $($mkvs[0].Name)" -Config $Config
+        return New-ArmResult -Success $true -Properties ([ordered]@{ Moved = $moved }) -Error $null
+    } catch {
+        $errorMsg = "Exception in Move-ArmExtrasToSubdir: $_"
+        Write-ArmLog -Level ERROR -Message $errorMsg -Config $Config
+        return New-ArmResult -Success $false -Properties ([ordered]@{ Moved = 0 }) -Error $errorMsg
+    }
+}

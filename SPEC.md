@@ -203,6 +203,9 @@ Resolve-Title -DiscLabel <string> -Config <hashtable> -> [pscustomobject]
 
 # Move-ToNas.ps1
 Move-ToNas -SourceDir <string> -DestRoot <string> -Config <hashtable> -> [pscustomobject]
+Move-ArmExtrasToSubdir -Dir <string> -Config <hashtable> -> [pscustomobject] { Success, Moved, Error }
+# Called by Invoke-VideoDispatch before Move-ToNas: keeps the largest top-level .mkv in place and moves
+# the other top-level .mkv files into <Dir>\extras\ (Jellyfin extras folder). No-op for <2 .mkv files.
 #  @{ Success; DestDir; Error }
 #  robocopy <src> <dest> /E /Z /NP /R:3 /W:10; exit codes 0-7 = success, ≥8 = failure.
 #  Verify: every source file exists at dest with equal Length. Delete source dir

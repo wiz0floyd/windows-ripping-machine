@@ -239,6 +239,11 @@ function Invoke-VideoDispatch {
     }
     $actualFolderName = Split-Path -Leaf $renamedDir
 
+    $extrasResult = Move-ArmExtrasToSubdir -Dir $renamedDir -Config $Config
+    if (-not $extrasResult.Success) {
+        Write-ArmLog -Level WARN -Message "Could not arrange extras subfolder: $($extrasResult.Error)" -Config $Config
+    }
+
     $moveResult = Move-ToNas -SourceDir $renamedDir -DestRoot $Config.NasVideoPath -Config $Config
 
     if (-not $moveResult.Success) {

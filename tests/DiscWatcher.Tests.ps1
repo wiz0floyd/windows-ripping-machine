@@ -113,6 +113,28 @@ Describe 'Invoke-DiscDispatch' {
             Should -Invoke Invoke-DiscEject -Times 1
         }
 
+        It 'places non-main mkv files in an extras subfolder on the NAS' {
+            $ripOutputDir = Join-Path $script:StagingDir 'RAW_LABEL'
+            New-Item -ItemType Directory -Force -Path $ripOutputDir | Out-Null
+            'x' * 500 | Set-Content (Join-Path $ripOutputDir 'main.mkv')
+            'x' * 50 | Set-Content (Join-Path $ripOutputDir 'bonus.mkv')
+
+            Mock Invoke-VideoRip {
+                [pscustomobject]@{
+                    Success = $true; DiscLabel = 'RAW_LABEL'; DiscType = 'BD'
+                    OutputDir = $ripOutputDir; TitleCount = 2; Error = $null
+                    Resolved = [pscustomobject]@{ FolderName = 'Extras Movie (2020)'; Matched = $true; Title = 'Extras Movie'; Year = 2020 }
+                }
+            }
+
+            Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Video' -Config $script:Config
+
+            $dest = Join-Path $script:NasVideoRoot 'Extras Movie (2020)'
+            Test-Path (Join-Path $dest 'main.mkv') | Should -BeTrue
+            Test-Path (Join-Path $dest 'extras' 'bonus.mkv') | Should -BeTrue
+            Test-Path (Join-Path $dest 'bonus.mkv') | Should -BeFalse
+        }
+
         It 'queues an upscale job when DVD and UpscaleDvds is true' {
             $script:Config.UpscaleDvds = $true
             $ripOutputDir = Join-Path $script:StagingDir 'RAW_LABEL'
