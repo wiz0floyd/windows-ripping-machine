@@ -433,6 +433,73 @@ function Get-VideoFrameRate {
 
 <#
 .SYNOPSIS
+    Decide the colour matrix of the engine output and whether the final encode must convert it to BT.709. Pure (#29).
+
+.DESCRIPTION
+    Every engine output is BT.601-ish for a DVD source, but the final file used to be untagged
+    (players assume BT.709). Returns @{ Input; InputSpec; Convert; Warnings }:
+      Input      'bt601-6-525' | 'bt601-6-625' | 'bt601-matrix-bt709-primaries' | $null
+      InputSpec  colorspace-filter input options (e.g. 'iall=bt601-6-525'), or $null for tag only
+      Convert    [bool]
+    Rules: color_space smpte170m/bt470bg = BT.601 (525 vs 625 line variant from
+    color_primaries, else from the space); bt709 = BT.709. Untagged: height < 720 is BT.601
+    (<= 500 lines NTSC/525, else PAL/625); >= 720 or unknown height is BT.709.
+    Tags outside smpte170m/bt470bg/bt709 add a Warning and fall back to the height rule.
+    openproteus (tools/ncnn_upscale.py) re-encodes RGB to YUV with the swscale default, so its
+    output is BT.601 matrix with the source's primaries whatever the source was: a BT.709 or
+    untagged-HD source still converts (ispace=bt470bg, iprimaries/itrc bt709). anime4k and
+    realesrgan keep the source matrix and are tag only for BT.709 sources.
+#>
+function Get-UpscaleColorInput {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory = $true)] [pscustomobject] $SourceInfo,
+        [string] $Engine = ''
+    )
+
+    $warnings = [System.Collections.Generic.List[string]]::new()
+    $space = if ($SourceInfo.ColorSpace) { "$($SourceInfo.ColorSpace)".ToLowerInvariant() } else { '' }
+    $prim = if ($SourceInfo.ColorPrimaries) { "$($SourceInfo.ColorPrimaries)".ToLowerInvariant() } else { '' }
+    $height = if ($null -ne $SourceInfo.Height) { [int]$SourceInfo.Height } else { 0 }
+    $known = @('smpte170m', 'bt470bg', 'bt709')
+
+    $kind = $null   # '525' | '625' | '709'
+    $unknownTag = @(@($space, $prim) | Where-Object { $_ -and $_ -notin $known })
+    if ($unknownTag.Count -gt 0) {
+        $warnings.Add("Get-UpscaleColorInput: unsupported colour tag '$($unknownTag -join ', ')'; deciding the matrix from the frame height ($height)")
+    } elseif ($space -in @('smpte170m', 'bt470bg')) {
+        $kind = if ($prim -eq 'bt470bg') { '625' } elseif ($prim -eq 'smpte170m') { '525' } elseif ($space -eq 'bt470bg') { '625' } else { '525' }
+    } elseif ($space -eq 'bt709') {
+        $kind = '709'
+    } elseif ($space -eq '') {
+        $kind = switch ($prim) { 'smpte170m' { '525' } 'bt470bg' { '625' } 'bt709' { '709' } default { $null } }
+    }
+    if (-not $kind) {
+        $kind = if ($height -le 0 -or $height -ge 720) { '709' } elseif ($height -le 500) { '525' } else { '625' }
+    }
+
+    $matrix = $null
+    $spec = $null
+    if ($kind -eq '709') {
+        if ($Engine -eq 'openproteus') {
+            $matrix = 'bt601-matrix-bt709-primaries'
+            $spec = 'ispace=bt470bg:iprimaries=bt709:itrc=bt709'
+        }
+    } else {
+        $matrix = "bt601-6-$kind"
+        $spec = "iall=$matrix"
+    }
+    return [pscustomobject][ordered]@{
+        Input     = $matrix
+        InputSpec = $spec
+        Convert   = [bool]$spec
+        Warnings  = @($warnings)
+    }
+}
+
+<#
+.SYNOPSIS
     Decide how to upscale a source: turn probe results + config into an upscale plan. Pure.
 
 .DESCRIPTION
@@ -463,7 +530,11 @@ function Get-VideoFrameRate {
                                (openproteus)
       Encode                   @{ Codec; Crf; Preset; AudioCodec; ResetSar }
       Colour                   @{ Space; Primaries; Transfer; Range; Action } - the source's
-                               colour tags; Action is 'none' (tags are not touched today).
+                               colour tags; Action is 'convert-to-bt709' or 'tag-only'.
+      ColorInput / ColorInputSpec / ColorConvert   from Get-UpscaleColorInput: the engine output's
+                               matrix label, the colorspace input options, and whether the final
+                               encode adds colorspace=all=bt709:<ColorInputSpec>:irange=tv:range=tv:dither=fsb
+                               (output is always tagged BT.709 regardless)
       Source                   the Get-VideoSourceInfo object
       OutputFileName           '<basename> [AI upscale 1080p].mkv'
       Warnings                 [string[]] for the caller to log at WARN
@@ -584,6 +655,12 @@ function Get-UpscalePlan {
         $planError = "Unknown upscale engine '$engine' for ContentType $ContentType (expected openproteus, anime4k, or realesrgan)"
     }
 
+    # Colour policy (#29): see Get-UpscaleColorInput.
+    $color = Get-UpscaleColorInput -SourceInfo $SourceInfo -Engine $engine
+    foreach ($w in $color.Warnings) { $warnings.Add($w) }
+    $colorInput = $color.Input
+    $colorConvert = $color.Convert
+
     return [pscustomobject][ordered]@{
         InputFile      = $InputFile
         BaseName       = $baseName
@@ -611,8 +688,11 @@ function Get-UpscalePlan {
             Primaries  = $SourceInfo.ColorPrimaries
             Transfer   = $SourceInfo.ColorTransfer
             Range      = $SourceInfo.ColorRange
-            Action     = 'none'
+            Action     = if ($colorConvert) { 'convert-to-bt709' } else { 'tag-only' }
         }
+        ColorInput     = $colorInput
+        ColorInputSpec = $color.InputSpec
+        ColorConvert   = $colorConvert
         Source         = $SourceInfo
         OutputFileName = "$baseName [AI upscale 1080p].mkv"
         Warnings       = @($warnings)
@@ -728,9 +808,17 @@ function Get-UpscaleEncodeArgumentList {
         '-map', '0:v:0',
         '-map', '1:a'
     )
-    if ($Plan.Encode.ResetSar) {
-        $muxArgs += @('-vf', 'setsar=1')
+    # One filter chain: SAR reset, then the BT.601 -> BT.709 matrix conversion. The
+    # intermediates are 8-bit yuv420p and the encode sets no -pix_fmt, so the filter
+    # runs at the encoder's own depth.
+    $vfParts = @()
+    if ($Plan.Encode.ResetSar) { $vfParts += 'setsar=1' }
+    if ($Plan.ColorConvert) { $vfParts += "colorspace=all=bt709:$($Plan.ColorInputSpec):irange=tv:range=tv:dither=fsb" }
+    if ($vfParts.Count -gt 0) {
+        $muxArgs += @('-vf', ($vfParts -join ','))
     }
+    # Always tag the output so libx265 writes BT.709 into the HEVC VUI.
+    $muxArgs += @('-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-color_range', 'tv')
     $muxArgs += @(
         '-c:v', $Plan.Encode.Codec,
         '-crf', "$($Plan.Encode.Crf)",
