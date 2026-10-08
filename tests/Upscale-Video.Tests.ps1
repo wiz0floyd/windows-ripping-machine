@@ -176,7 +176,7 @@ Describe 'Get-InterlaceType' {
         }
     }
 
-    It 'calls Invoke-ArmTool with the ffmpeg idet filter and 2000 frame limit' {
+    It 'calls Invoke-ArmTool with the ffmpeg idet filter and a 1000 frame limit per window' {
         Mock Invoke-ArmTool {
             [pscustomobject]@{
                 ExitCode = 0
@@ -188,8 +188,132 @@ Describe 'Get-InterlaceType' {
         Get-InterlaceType -InputFile 'C:\fake\progressive.mkv' -Config $script:Config | Out-Null
 
         Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter {
-            $Name -eq 'ffmpeg' -and ($Arguments -join ' ') -match 'idet' -and ($Arguments -join ' ') -match '2000'
+            $Name -eq 'ffmpeg' -and ($Arguments -join ' ') -match 'idet' -and ($Arguments -join ' ') -match '-frames:v 1000'
         }
+    }
+}
+
+Describe 'Get-InterlaceType decision table (#30)' {
+    BeforeAll {
+        # One idet summary: multi-frame line from $Prog of $Total progressive (rest TFF),
+        # repeated-fields line from $Repeated (Top) of $RepTotal.
+        function New-DecisionStderr([int] $Prog, [int] $Total, [int] $Repeated = 0, [int] $RepTotal = 1000) {
+            @(
+                "[Parsed_idet_0 @ 0001] Repeated Fields: Neither: $($RepTotal - $Repeated) Top: $Repeated Bottom: 0"
+                "[Parsed_idet_0 @ 0001] Multi frame detection: TFF: $($Total - $Prog) BFF: 0 Progressive: $Prog Undetermined: 0"
+            )
+        }
+    }
+    BeforeEach {
+        $script:Config = @{ Simulate = $true; LogDir = $script:TestDir }
+        Mock Write-ArmLog {}
+    }
+
+    It '<Name>' -ForEach @(
+        @{ Name = 'progressive share 0.50 is Progressive'; Prog = 500; Total = 1000; Rep = 0; Expect = 'Progressive' }
+        @{ Name = 'progressive share 0.49 with no cadence is Interlaced'; Prog = 490; Total = 1000; Rep = 0; Expect = 'Interlaced' }
+        @{ Name = 'progressive share 0.49 with a cadence is Telecined'; Prog = 490; Total = 1000; Rep = 300; Expect = 'Telecined' }
+        @{ Name = 'progressive share wins over a repeated-field cadence'; Prog = 900; Total = 1000; Rep = 300; Expect = 'Progressive' }
+        @{ Name = 'repeated fields exactly 15% are not Telecined'; Prog = 0; Total = 1000; Rep = 150; Expect = 'Interlaced' }
+        @{ Name = 'repeated fields just over 15% are Telecined'; Prog = 0; Total = 1000; Rep = 151; Expect = 'Telecined' }
+        @{ Name = 'neither condition is Interlaced'; Prog = 10; Total = 1000; Rep = 0; Expect = 'Interlaced' }
+    ) {
+        Mock Invoke-ArmTool { [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = New-DecisionStderr -Prog $Prog -Total $Total -Repeated $Rep } }
+        Get-InterlaceType -InputFile 'C:\fake\d.mkv' -Config $script:Config | Should -Be $Expect
+    }
+
+    It 'logs the parsed counts at INFO for every classification' {
+        Mock Invoke-ArmTool { [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = New-DecisionStderr -Prog 500 -Total 1000 -Repeated 20 } }
+        Get-InterlaceType -InputFile 'C:\fake\d.mkv' -Config $script:Config | Out-Null
+        Should -Invoke Write-ArmLog -Times 1 -ParameterFilter {
+            $Level -eq 'INFO' -and $Message -match 'Progressive=500' -and $Message -match 'Top=20' -and $Message -match '-> Progressive'
+        }
+    }
+
+    It 'unparseable output: Interlaced, one WARN with a truncated raw output, INFO still logged' {
+        Mock Invoke-ArmTool { [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @('x' * 1000) } }
+        Get-InterlaceType -InputFile 'C:\fake\u.mkv' -Config $script:Config | Should -Be 'Interlaced'
+        Should -Invoke Write-ArmLog -Times 1 -ParameterFilter {
+            $Level -eq 'WARN' -and $Message -match 'u\.mkv' -and $Message -match 'Raw output: x+\.\.\.$' -and $Message.Length -lt 600
+        }
+        Should -Invoke Write-ArmLog -Times 1 -ParameterFilter { $Level -eq 'INFO' -and $Message -match '-> Interlaced' }
+    }
+}
+
+Describe 'Get-InterlaceType probe windows (#30)' {
+    BeforeAll {
+        function New-WindowStderr([int] $Prog, [int] $Tff) {
+            @("[Parsed_idet_0 @ 0001] Repeated Fields: Neither: 100 Top: 0 Bottom: 0"
+              "[Parsed_idet_0 @ 0001] Multi frame detection: TFF: $Tff BFF: 0 Progressive: $Prog Undetermined: 0")
+        }
+    }
+    BeforeEach {
+        $script:Config = @{ Simulate = $true; LogDir = $script:TestDir }
+        $script:Calls = [System.Collections.Generic.List[string]]::new()
+        Mock Write-ArmLog {}
+    }
+
+    It 'probes 600 s and 50% of the source duration, 1000 frames each' {
+        Mock Invoke-ArmTool { $script:Calls.Add(($Arguments -join ' ')); [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = New-WindowStderr -Prog 900 -Tff 100 } }
+        Get-InterlaceType -InputFile 'C:\fake\a.mkv' -Config $script:Config -SourceDuration 7200.5 | Should -Be 'Progressive'
+        $script:Calls.Count | Should -Be 2
+        $script:Calls[0] | Should -Be '-ss 600 -i C:\fake\a.mkv -filter:v idet -frames:v 1000 -an -f null -'
+        $script:Calls[1] | Should -Be '-ss 3600 -i C:\fake\a.mkv -filter:v idet -frames:v 1000 -an -f null -'
+    }
+
+    It 'sums counts across windows before classifying' {
+        $script:N = 0
+        # window 1: 100% progressive (1000), window 2: 100% TFF (400) => 1000/1400 = 0.71 -> Progressive
+        Mock Invoke-ArmTool {
+            $script:N++
+            $err = if ($script:N -eq 1) { New-WindowStderr -Prog 1000 -Tff 0 } else { New-WindowStderr -Prog 0 -Tff 400 }
+            [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = $err }
+        }
+        Get-InterlaceType -InputFile 'C:\fake\a.mkv' -Config $script:Config -SourceDuration 7200 | Should -Be 'Progressive'
+        $script:N = 0
+        # window 1: 300 progressive, window 2: 1000 TFF => 300/1300 -> Interlaced
+        Mock Invoke-ArmTool {
+            $script:N++
+            $err = if ($script:N -eq 1) { New-WindowStderr -Prog 300 -Tff 0 } else { New-WindowStderr -Prog 0 -Tff 1000 }
+            [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = $err }
+        }
+        Get-InterlaceType -InputFile 'C:\fake\a.mkv' -Config $script:Config -SourceDuration 7200 | Should -Be 'Interlaced'
+    }
+
+    It 'probes only 600 s when the duration is unknown' {
+        Mock Invoke-ArmTool { $script:Calls.Add(($Arguments -join ' ')); [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = New-WindowStderr -Prog 900 -Tff 100 } }
+        Get-InterlaceType -InputFile 'C:\fake\a.mkv' -Config $script:Config | Should -Be 'Progressive'
+        $script:Calls.Count | Should -Be 1
+        $script:Calls[0] | Should -Match '^-ss 600 '
+    }
+
+    It 'falls back to 0:00 when the windows yield nothing (window past the end of a short file)' {
+        Mock Invoke-ArmTool {
+            $script:Calls.Add(($Arguments -join ' '))
+            $err = if ($Arguments[1] -eq '0') { New-WindowStderr -Prog 900 -Tff 100 } else { New-WindowStderr -Prog 0 -Tff 0 }
+            [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = $err }
+        }
+        Get-InterlaceType -InputFile 'C:\fake\short.mkv' -Config $script:Config -SourceDuration 120 | Should -Be 'Progressive'
+        # 600 s is past the end of a 120 s file: skipped; the 50% window (60 s) comes back empty.
+        $script:Calls.Count | Should -Be 2
+        $script:Calls[0] | Should -Match '^-ss 60 '
+        $script:Calls[1] | Should -Be '-ss 0 -i C:\fake\short.mkv -filter:v idet -frames:v 1000 -an -f null -'
+    }
+
+    It 'falls back to 0:00 when the mid-feature windows print no idet lines at all' {
+        Mock Invoke-ArmTool {
+            $script:Calls.Add(($Arguments -join ' '))
+            $err = if ($Arguments[1] -eq '0') { New-WindowStderr -Prog 900 -Tff 100 } else { @('Output file is empty, nothing was encoded') }
+            [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = $err }
+        }
+        Get-InterlaceType -InputFile 'C:\fake\a.mkv' -Config $script:Config | Should -Be 'Progressive'
+        $script:Calls[-1] | Should -Match '^-ss 0 '
+    }
+
+    It 'does not repeat the 0:00 probe when 0:00 was already tried' {
+        Mock Invoke-ArmTool { $script:Calls.Add(($Arguments -join ' ')); [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @('nothing') } }
+        Get-InterlaceType -InputFile 'C:\fake\a.mkv' -Config $script:Config -Seek 0 | Should -Be 'Interlaced'
+        $script:Calls.Count | Should -Be 1
     }
 }
 
@@ -438,30 +562,23 @@ Describe 'Invoke-Upscale' {
     }
 }
 
-Describe 'Get-InterlaceType probe window' {
+Describe 'Get-InterlaceType explicit window (-Seek/-Duration)' {
     BeforeEach {
         $script:Config = @{ Simulate = $true; LogDir = $script:TestDir }
         Mock Invoke-ArmTool { [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = Get-FixtureLines 'ffmpeg-idet-progressive.txt' } }
     }
 
-    It 'probes from 0:00 with the exact historical arguments when no window is given' {
-        Get-InterlaceType -InputFile 'C:\fake\a.mkv' -Config $script:Config | Should -Be 'Progressive'
-        Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter {
-            $Name -eq 'ffmpeg' -and ($Arguments -join ' ') -eq '-i C:\fake\a.mkv -filter:v idet -frames:v 2000 -an -f null -'
-        }
-    }
-
     It 'puts -ss/-t before -i when a window is given (same window parameters as Get-VideoFrameRate)' {
         Get-InterlaceType -InputFile 'C:\fake\a.mkv' -Config $script:Config -Seek 600 -Duration 120 | Should -Be 'Progressive'
         Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter {
-            ($Arguments -join ' ') -eq '-ss 600 -t 120 -i C:\fake\a.mkv -filter:v idet -frames:v 2000 -an -f null -'
+            ($Arguments -join ' ') -eq '-ss 600 -t 120 -i C:\fake\a.mkv -filter:v idet -frames:v 1000 -an -f null -'
         }
     }
 
-    It 'accepts a seek without a duration' {
-        $null = Get-InterlaceType -InputFile 'C:\fake\a.mkv' -Config $script:Config -Seek 0
+    It 'an explicit seek replaces the default windows' {
+        $null = Get-InterlaceType -InputFile 'C:\fake\a.mkv' -Config $script:Config -Seek 30 -SourceDuration 7200
         Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter {
-            ($Arguments -join ' ') -eq '-ss 0 -i C:\fake\a.mkv -filter:v idet -frames:v 2000 -an -f null -'
+            ($Arguments -join ' ') -eq '-ss 30 -i C:\fake\a.mkv -filter:v idet -frames:v 1000 -an -f null -'
         }
     }
 }
@@ -617,15 +734,32 @@ Describe 'Get-UpscalePlan' {
     }
 
     It 'keeps the #30 per-class filter chains in a single Preprocess.Filter field' {
-        (New-TestPlan -Interlace Interlaced).Preprocess.Filter | Should -Be 'bwdif=mode=send_frame'
-        (New-TestPlan -Interlace Telecined).Preprocess.Filter | Should -Be 'fieldmatch,yadif=deint=interlaced,decimate'
+        (New-TestPlan -Interlace Interlaced).Preprocess.Filter | Should -Be 'idet,bwdif=mode=send_frame:deint=interlaced'
+        (New-TestPlan -Interlace Telecined -Rate '30000/1001').Preprocess.Filter | Should -Be 'fieldmatch,yadif=deint=interlaced,decimate'
     }
 
     It 'applies CFR to Progressive and Interlaced but never to Telecined (decimate sets the rate)' {
         (New-TestPlan -Interlace Interlaced -Rate '30000/1001').Preprocess.FrameRate | Should -Be '30000/1001'
-        $t = New-TestPlan -Interlace Telecined -Rate '24000/1001'
+        $t = New-TestPlan -Interlace Telecined -Rate '30000/1001'
+        $t.InterlaceType | Should -Be 'Telecined'
         $t.Preprocess.FrameRate | Should -BeNullOrEmpty
         $t.Warnings.Count | Should -Be 0
+        (New-TestPlan -Interlace Telecined -Rate $null).InterlaceType | Should -Be 'Telecined'
+    }
+
+    It 'soft-telecine guard: Telecined at a decoded 23.976 is downgraded to Progressive with a warning (#30)' {
+        $t = New-TestPlan -Interlace Telecined -Rate '24000/1001' -Override @{ UpscaleLiveAction = 'anime4k' }
+        $t.InterlaceType | Should -Be 'Progressive'
+        $t.Preprocess.Filter | Should -BeNullOrEmpty
+        $t.Preprocess.FrameRate | Should -Be '24000/1001'
+        $t.Warnings.Count | Should -Be 1
+        $t.Warnings[0] | Should -Match 'Telecined but already decodes at 24000/1001'
+        (New-TestPlan -Interlace Telecined -Rate '24/1' -Override @{ UpscaleLiveAction = 'anime4k' }).InterlaceType | Should -Be 'Progressive'
+    }
+
+    It 'the guard does not touch Interlaced at 23.976 or Telecined at 25 fps' {
+        (New-TestPlan -Interlace Interlaced -Rate '24000/1001' -Override @{ UpscaleLiveAction = 'anime4k' }).InterlaceType | Should -Be 'Interlaced'
+        (New-TestPlan -Interlace Telecined -Rate '25/1' -Override @{ UpscaleLiveAction = 'anime4k' }).InterlaceType | Should -Be 'Telecined'
     }
 
     It 'warns (once, naming the file) and leaves CFR off when the rate was not measured' {
@@ -721,11 +855,11 @@ Describe 'Upscale stage argument builders' {
 
     It 'builds the preprocess arguments in the historical order (window, filter, CFR, ffv1)' {
         $a = Get-UpscalePreprocessArgumentList -Plan (New-TestPlan -Interlace Interlaced -Sample) -OutputFile 'T:\p.mkv'
-        $a -join ' ' | Should -Be '-y -i C:\in\movie.mkv -ss 600 -t 120 -vf bwdif=mode=send_frame -fps_mode cfr -r 24000/1001 -c:v ffv1 -an T:\p.mkv'
+        $a -join ' ' | Should -Be '-y -i C:\in\movie.mkv -ss 600 -t 120 -vf idet,bwdif=mode=send_frame:deint=interlaced -fps_mode cfr -r 24000/1001 -c:v ffv1 -an T:\p.mkv'
     }
 
     It 'builds the telecined preprocess with no CFR flags' {
-        $a = Get-UpscalePreprocessArgumentList -Plan (New-TestPlan -Interlace Telecined) -OutputFile 'T:\p.mkv'
+        $a = Get-UpscalePreprocessArgumentList -Plan (New-TestPlan -Interlace Telecined -Rate '30000/1001') -OutputFile 'T:\p.mkv'
         $a -join ' ' | Should -Be '-y -i C:\in\movie.mkv -vf fieldmatch,yadif=deint=interlaced,decimate -c:v ffv1 -an T:\p.mkv'
     }
 
@@ -1041,12 +1175,30 @@ Describe 'Invoke-Upscale constant-frame-rate preprocess' {
         Should -Invoke Write-ArmLog -ParameterFilter { $Level -eq 'WARN' -and $Message -match 'could not measure the frame rate' }
     }
 
-    It 'does not force a rate for telecined sources (decimate already emits a constant rate)' {
+    It 'does not force a rate for hard-telecined sources (decimate already emits a constant rate)' {
         $script:IdetFixture = 'ffmpeg-idet-telecined.txt'
+        $script:ProbeStderr = @('frame= 1798 fps=0.0 q=-0.0 Lsize=N/A time=00:01:00.00 bitrate=N/A speed= 300x')
+        $script:Config.UpscaleLiveAction = 'anime4k'
 
         $r = Invoke-Upscale -InputFile $script:InputFile -OutputDir $script:OutputDir -Config $script:Config
         $r.Success | Should -Be $true
+        $r.InterlaceType | Should -Be 'Telecined'
 
         Should -Invoke Invoke-ArmTool -Times 0 -ParameterFilter { ($Arguments -join ' ') -match '-fps_mode cfr' }
+        Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter { ($Arguments -join ' ') -match 'fieldmatch,yadif=deint=interlaced,decimate' }
+    }
+
+    It 'soft-telecine guard: a Telecined verdict at a decoded 23.976 skips decimate, forces CFR and reports Progressive (#30)' {
+        $script:IdetFixture = 'ffmpeg-idet-telecined.txt'   # probe says Telecined; ProbeStderr (default) decodes at 23.976
+        $script:Config.UpscaleLiveAction = 'anime4k'
+        Mock Write-ArmLog {}
+
+        $r = Invoke-Upscale -InputFile $script:InputFile -OutputDir $script:OutputDir -Config $script:Config
+        $r.Success | Should -Be $true
+        $r.InterlaceType | Should -Be 'Progressive'
+
+        Should -Invoke Invoke-ArmTool -Times 0 -ParameterFilter { ($Arguments -join ' ') -match 'decimate' }
+        Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter { ($Arguments -join ' ') -match '-fps_mode cfr -r 24000/1001 -c:v ffv1' }
+        Should -Invoke Write-ArmLog -ParameterFilter { $Level -eq 'WARN' -and $Message -match 'soft telecine' }
     }
 }

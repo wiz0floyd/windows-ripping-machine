@@ -169,7 +169,7 @@ When a DVD rip completes and `UpscaleDvds=true`, the Upscale-Worker daemon proce
 
 **Preprocessing logic:**
 - **Telecined** (3:2 pulldown cadence, common on older broadcasts): applies fieldmatch + yadif deinterlace + decimate
-- **Interlaced** (TFF/BFF fields): applies bwdif deinterlace
+- **Interlaced** (TFF/BFF fields): applies bwdif deinterlace, only to frames idet flags as interlaced
 - **Progressive** (no interlacing): passes through as-is
 
 Intermediate files are encoded lossless (ffv1) to avoid compounding generation loss before the AI upscale. Final encode uses libx265 at the quality level specified by `UpscaleCrf` (default: 16, high quality / near-transparent).

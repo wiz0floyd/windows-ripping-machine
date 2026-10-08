@@ -6,12 +6,32 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-ss",
+          "600",
           "-i",
           "<InputFile>",
           "-filter:v",
           "idet",
           "-frames:v",
-          "2000",
+          "1000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-ss",
+          "4313",
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "1000",
           "-an",
           "-f",
           "null",
@@ -116,12 +136,32 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-ss",
+          "600",
           "-i",
           "<InputFile>",
           "-filter:v",
           "idet",
           "-frames:v",
-          "2000",
+          "1000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-ss",
+          "4313",
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "1000",
           "-an",
           "-f",
           "null",
@@ -234,12 +274,32 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-ss",
+          "600",
           "-i",
           "<InputFile>",
           "-filter:v",
           "idet",
           "-frames:v",
-          "2000",
+          "1000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-ss",
+          "4313",
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "1000",
           "-an",
           "-f",
           "null",
@@ -336,12 +396,32 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-ss",
+          "600",
           "-i",
           "<InputFile>",
           "-filter:v",
           "idet",
           "-frames:v",
-          "2000",
+          "1000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-ss",
+          "4313",
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "1000",
           "-an",
           "-f",
           "null",
@@ -446,12 +526,32 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-ss",
+          "600",
           "-i",
           "<InputFile>",
           "-filter:v",
           "idet",
           "-frames:v",
-          "2000",
+          "1000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-ss",
+          "4313",
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "1000",
           "-an",
           "-f",
           "null",
@@ -544,12 +644,32 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-ss",
+          "600",
           "-i",
           "<InputFile>",
           "-filter:v",
           "idet",
           "-frames:v",
-          "2000",
+          "1000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-ss",
+          "4313",
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "1000",
           "-an",
           "-f",
           "null",
@@ -650,12 +770,32 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-ss",
+          "600",
           "-i",
           "<InputFile>",
           "-filter:v",
           "idet",
           "-frames:v",
-          "2000",
+          "1000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-ss",
+          "4313",
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "1000",
           "-an",
           "-f",
           "null",
@@ -688,7 +828,7 @@
           "-i",
           "<InputFile>",
           "-vf",
-          "bwdif=mode=send_frame",
+          "idet,bwdif=mode=send_frame:deint=interlaced",
           "-fps_mode",
           "cfr",
           "-r",
@@ -762,12 +902,32 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-ss",
+          "600",
           "-i",
           "<InputFile>",
           "-filter:v",
           "idet",
           "-frames:v",
-          "2000",
+          "1000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-ss",
+          "4313",
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "1000",
           "-an",
           "-f",
           "null",
@@ -804,7 +964,7 @@
           "-t",
           "120",
           "-vf",
-          "bwdif=mode=send_frame",
+          "idet,bwdif=mode=send_frame:deint=interlaced",
           "-fps_mode",
           "cfr",
           "-r",
@@ -882,12 +1042,32 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-ss",
+          "600",
           "-i",
           "<InputFile>",
           "-filter:v",
           "idet",
           "-frames:v",
-          "2000",
+          "1000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-ss",
+          "4313",
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "1000",
           "-an",
           "-f",
           "null",
@@ -920,7 +1100,7 @@
           "-i",
           "<InputFile>",
           "-vf",
-          "bwdif=mode=send_frame",
+          "idet,bwdif=mode=send_frame:deint=interlaced",
           "-fps_mode",
           "cfr",
           "-r",
@@ -986,12 +1166,32 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-ss",
+          "600",
           "-i",
           "<InputFile>",
           "-filter:v",
           "idet",
           "-frames:v",
-          "2000",
+          "1000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-ss",
+          "4313",
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "1000",
           "-an",
           "-f",
           "null",
@@ -1028,7 +1228,7 @@
           "-t",
           "120",
           "-vf",
-          "bwdif=mode=send_frame",
+          "idet,bwdif=mode=send_frame:deint=interlaced",
           "-fps_mode",
           "cfr",
           "-r",
@@ -1098,12 +1298,32 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-ss",
+          "600",
           "-i",
           "<InputFile>",
           "-filter:v",
           "idet",
           "-frames:v",
-          "2000",
+          "1000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-ss",
+          "4313",
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "1000",
           "-an",
           "-f",
           "null",
@@ -1136,7 +1356,7 @@
           "-i",
           "<InputFile>",
           "-vf",
-          "bwdif=mode=send_frame",
+          "idet,bwdif=mode=send_frame:deint=interlaced",
           "-fps_mode",
           "cfr",
           "-r",
@@ -1198,12 +1418,32 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-ss",
+          "600",
           "-i",
           "<InputFile>",
           "-filter:v",
           "idet",
           "-frames:v",
-          "2000",
+          "1000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-ss",
+          "4313",
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "1000",
           "-an",
           "-f",
           "null",
@@ -1240,7 +1480,7 @@
           "-t",
           "120",
           "-vf",
-          "bwdif=mode=send_frame",
+          "idet,bwdif=mode=send_frame:deint=interlaced",
           "-fps_mode",
           "cfr",
           "-r",
@@ -1306,13 +1546,51 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-ss",
+          "600",
           "-i",
           "<InputFile>",
           "-filter:v",
           "idet",
           "-frames:v",
-          "2000",
+          "1000",
           "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-ss",
+          "4313",
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "1000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "600",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
           "-f",
           "null",
           "-"
@@ -1396,13 +1674,51 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-ss",
+          "600",
           "-i",
           "<InputFile>",
           "-filter:v",
           "idet",
           "-frames:v",
-          "2000",
+          "1000",
           "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-ss",
+          "4313",
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "1000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "600",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
           "-f",
           "null",
           "-"
@@ -1494,13 +1810,51 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-ss",
+          "600",
           "-i",
           "<InputFile>",
           "-filter:v",
           "idet",
           "-frames:v",
-          "2000",
+          "1000",
           "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-ss",
+          "4313",
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "1000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "600",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
           "-f",
           "null",
           "-"
@@ -1576,13 +1930,51 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-ss",
+          "600",
           "-i",
           "<InputFile>",
           "-filter:v",
           "idet",
           "-frames:v",
-          "2000",
+          "1000",
           "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-ss",
+          "4313",
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "1000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "600",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
           "-f",
           "null",
           "-"
@@ -1666,13 +2058,51 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-ss",
+          "600",
           "-i",
           "<InputFile>",
           "-filter:v",
           "idet",
           "-frames:v",
-          "2000",
+          "1000",
           "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-ss",
+          "4313",
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "1000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "600",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
           "-f",
           "null",
           "-"
@@ -1744,13 +2174,51 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-ss",
+          "600",
           "-i",
           "<InputFile>",
           "-filter:v",
           "idet",
           "-frames:v",
-          "2000",
+          "1000",
           "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-ss",
+          "4313",
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "1000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "600",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
           "-f",
           "null",
           "-"
@@ -1830,12 +2298,32 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-ss",
+          "600",
           "-i",
           "<InputFile>",
           "-filter:v",
           "idet",
           "-frames:v",
-          "2000",
+          "1000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-ss",
+          "4313",
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "1000",
           "-an",
           "-f",
           "null",
@@ -1954,12 +2442,32 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-ss",
+          "600",
           "-i",
           "<InputFile>",
           "-filter:v",
           "idet",
           "-frames:v",
-          "2000",
+          "1000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-ss",
+          "4313",
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "1000",
           "-an",
           "-f",
           "null",
@@ -1992,7 +2500,7 @@
           "-i",
           "<InputFile>",
           "-vf",
-          "bwdif=mode=send_frame",
+          "idet,bwdif=mode=send_frame:deint=interlaced",
           "-fps_mode",
           "cfr",
           "-r",
@@ -2066,12 +2574,32 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-ss",
+          "600",
           "-i",
           "<InputFile>",
           "-filter:v",
           "idet",
           "-frames:v",
-          "2000",
+          "1000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-ss",
+          "4313",
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "1000",
           "-an",
           "-f",
           "null",
@@ -2176,12 +2704,32 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-ss",
+          "600",
           "-i",
           "<InputFile>",
           "-filter:v",
           "idet",
           "-frames:v",
-          "2000",
+          "1000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-ss",
+          "4313",
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "1000",
           "-an",
           "-f",
           "null",
@@ -2278,12 +2826,32 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-ss",
+          "600",
           "-i",
           "<InputFile>",
           "-filter:v",
           "idet",
           "-frames:v",
-          "2000",
+          "1000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-ss",
+          "4313",
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "1000",
           "-an",
           "-f",
           "null",
@@ -2388,12 +2956,32 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-ss",
+          "600",
           "-i",
           "<InputFile>",
           "-filter:v",
           "idet",
           "-frames:v",
-          "2000",
+          "1000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-ss",
+          "4313",
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "1000",
           "-an",
           "-f",
           "null",
@@ -2430,7 +3018,7 @@
           "-t",
           "120",
           "-vf",
-          "bwdif=mode=send_frame",
+          "idet,bwdif=mode=send_frame:deint=interlaced",
           "-fps_mode",
           "cfr",
           "-r",
@@ -2500,12 +3088,32 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-ss",
+          "600",
           "-i",
           "<InputFile>",
           "-filter:v",
           "idet",
           "-frames:v",
-          "2000",
+          "1000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-ss",
+          "4313",
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "1000",
           "-an",
           "-f",
           "null",
@@ -2610,12 +3218,32 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-ss",
+          "600",
           "-i",
           "<InputFile>",
           "-filter:v",
           "idet",
           "-frames:v",
-          "2000",
+          "1000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-ss",
+          "4313",
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "1000",
           "-an",
           "-f",
           "null",

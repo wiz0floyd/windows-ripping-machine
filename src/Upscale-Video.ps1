@@ -6,34 +6,34 @@ $ErrorActionPreference = 'Stop'
     Classify the interlace type of a video file using ffmpeg's idet filter.
 
 .DESCRIPTION
-    Runs `ffmpeg -filter:v idet -frames:v 2000 -an -f null -` via Invoke-ArmTool and
-    parses the two summary lines idet writes to stderr. ffmpeg 8.x prints the whole
-    summary twice (an all-zero one from a throw-away probe graph, then the real one);
-    the LAST occurrence of each line is used:
+    Probes one or more mid-feature windows via Invoke-ArmTool
+    (`ffmpeg -ss <start> -i <file> -filter:v idet -frames:v 1000 -an -f null -`),
+    parses the two summary lines idet writes to stderr, SUMS the counts across the
+    windows, then classifies. ffmpeg 8.x prints the whole summary twice (an all-zero
+    one from a throw-away probe graph, then the real one); the LAST occurrence of each
+    line per window is used (issue #30):
 
         Repeated Fields: Neither: <n> Top: <n> Bottom: <n>
         Multi frame detection: TFF: <n> BFF: <n> Progressive: <n> Undetermined: <n>
 
-    Classification (in order, first match wins):
-      1. Progressive  - Multi frame detection Progressive count is >=50% of the
-                         Multi frame detection total (TFF+BFF+Progressive+Undetermined).
-                         Measured on 18 real DVD rips: film and progressive video read
-                         80.9-100%; interlaced and hard-telecined sources read 0-1.5%.
-                         Any threshold in roughly 5-75% separates them; 0.5 is the
-                         midpoint.
-      2. Telecined    - Repeated Fields (Top+Bottom) is >15% of the Repeated Fields
-                         total (Neither+Top+Bottom). This is the 3:2 pulldown cadence
-                         signature; both telecined and interlaced sources can show high
-                         TFF/BFF on the Multi frame detection line, so that line alone
-                         cannot distinguish them - the Repeated Fields line is the
-                         discriminator.
-      3. Interlaced   - Anything else (significant TFF/BFF, no repeated-field cadence).
+    Probe windows (default, no -Seek): 600 s and 50% of -SourceDuration (the duration
+    Get-VideoSourceInfo already measured; no re-probe here), 1000 frames each, so the
+    studio logos / opening credits at 0:00 do not decide the class. A window at or past
+    the end of a known-length file is skipped (or yields zero counts); if no window
+    produced parseable counts the probe falls back to 0:00. An explicit -Seek probes
+    just that window (same 0:00 fallback).
 
-    If stderr has no parseable "Multi frame detection" line, or its counts total zero,
-    logs a WARN naming the file and defaults to
-    'Interlaced' (the safer preprocessing choice - bwdif is a no-op-ish pass on
-    progressive content, whereas skipping deinterlacing on genuinely interlaced
-    content produces visible combing after upscale).
+    Classification (in order, first match wins), measured on 18 real DVD rips:
+      1. Progressive  - Multi frame detection Progressive share >= 0.5 of the total
+                         (TFF+BFF+Progressive+Undetermined). Film/progressive video reads
+                         80.9-100%; interlaced and hard-telecined read 0-1.5%.
+      2. Telecined    - Repeated Fields (Top+Bottom) > 15% of the Repeated Fields total
+                         (Neither+Top+Bottom): the 3:2 pulldown cadence signature.
+      3. Interlaced   - Anything else, including (safe default) when no counts could be
+                         parsed - a WARN with the truncated raw output is logged.
+    The parsed counts are logged at INFO for every classification. Whether a Telecined
+    verdict is safe at the source's decoded frame rate is Get-UpscalePlan's call
+    (soft-telecine guard).
 
 .PARAMETER InputFile
     Path to the source video file.
@@ -41,20 +41,23 @@ $ErrorActionPreference = 'Stop'
 .PARAMETER Config
     Configuration hashtable, passed through to Invoke-ArmTool.
 
+.PARAMETER SourceDuration
+    Source duration in seconds (Get-VideoSourceInfo.DurationSec). Enables the
+    50%-of-duration window; 0 / unknown probes the 600 s window only.
+
 .PARAMETER Seek
-    Optional start of the probe window in seconds (`-ss <Seek>` before `-i`). Omitted
-    (the default, -1) probes from 0:00 exactly as before.
+    Optional explicit single window start in seconds (`-ss <Seek>` before `-i`),
+    replacing the default windows. Default -1 = use the default windows.
 
 .PARAMETER Duration
-    Optional length of the probe window in seconds (`-t <Duration>`). Omitted (the
-    default, 0) means no time limit beyond the 2000-frame cap. Same window parameters
-    as Get-VideoFrameRate.
+    Optional length of each probe window in seconds (`-t <Duration>`). Default 0 =
+    no time limit beyond the 1000-frame cap.
 
 .OUTPUTS
     [string] One of 'Telecined', 'Interlaced', 'Progressive'.
 
 .EXAMPLE
-    $type = Get-InterlaceType -InputFile 'C:\rips\staging\movie.mkv' -Config $config
+    $type = Get-InterlaceType -InputFile 'C:\rips\staging\movie.mkv' -Config $config -SourceDuration 7200
 #>
 function Get-InterlaceType {
     [CmdletBinding()]
@@ -66,69 +69,83 @@ function Get-InterlaceType {
         [Parameter(Mandatory = $true)]
         [hashtable] $Config,
 
+        [double] $SourceDuration = 0,
+
         [int] $Seek = -1,
 
         [int] $Duration = 0
     )
 
-    $window = @()
-    if ($Seek -ge 0) { $window += @('-ss', "$Seek") }
-    if ($Duration -gt 0) { $window += @('-t', "$Duration") }
+    $frameCap = 1000
 
-    $result = Invoke-ArmTool -Name ffmpeg -Config $Config -Arguments (@($window) + @(
-        '-i', $InputFile,
-        '-filter:v', 'idet',
-        '-frames:v', '2000',
-        '-an',
-        '-f', 'null',
-        '-'
-    ))
+    # Window starts: explicit -Seek, else 600 s and 50% of the known duration. Starts at
+    # or past the end of a known-length file are skipped.
+    $candidates = @(if ($Seek -ge 0) { $Seek } else { 600 })
+    if ($Seek -lt 0 -and $SourceDuration -gt 0) { $candidates += [int][math]::Floor($SourceDuration * 0.5) }
+    $starts = @($candidates | Select-Object -Unique | Where-Object { $SourceDuration -le 0 -or $_ -lt $SourceDuration })
 
-    $stderrText = ($result.StdErr -join "`n")
+    $sum = @{ Tff = 0L; Bff = 0L; Prog = 0L; Und = 0L; Neither = 0L; Top = 0L; Bottom = 0L }
+    $rawParts = [System.Collections.Generic.List[string]]::new()
+    $used = [System.Collections.Generic.List[int]]::new()
 
-    # ffmpeg 8.x prints the idet summary TWICE: first an all-zero one from a
-    # throw-away probe filtergraph, then the real one. Older builds print it once.
-    # Always take the LAST summary (issue #30).
-    $multiMatches = [regex]::Matches(
-        $stderrText,
-        'Multi frame detection:\s*TFF:\s*(\d+)\s*BFF:\s*(\d+)\s*Progressive:\s*(\d+)\s*Undetermined:\s*(\d+)'
-    )
-    $repeatMatches = [regex]::Matches(
-        $stderrText,
-        'Repeated Fields:\s*Neither:\s*(\d+)\s*Top:\s*(\d+)\s*Bottom:\s*(\d+)'
-    )
+    $probe = {
+        param([int[]] $WindowStarts)
+        foreach ($start in $WindowStarts) {
+            $window = @('-ss', "$start")
+            if ($Duration -gt 0) { $window += @('-t', "$Duration") }
+            $result = Invoke-ArmTool -Name ffmpeg -Config $Config -Arguments (@($window) + @(
+                '-i', $InputFile,
+                '-filter:v', 'idet',
+                '-frames:v', "$frameCap",
+                '-an',
+                '-f', 'null',
+                '-'
+            ))
+            $text = (@($result.StdErr) -join "`n")
+            $rawParts.Add($text)
 
-    $multiTotal = 0
-    $progressive = 0
-    if ($multiMatches.Count -gt 0) {
-        $multiMatch = $multiMatches[$multiMatches.Count - 1]
-        $progressive = [int]$multiMatch.Groups[3].Value
-        $multiTotal = [int]$multiMatch.Groups[1].Value + [int]$multiMatch.Groups[2].Value +
-            $progressive + [int]$multiMatch.Groups[4].Value
-    }
+            # ffmpeg 8.x prints the idet summary TWICE (first all-zero); take the LAST.
+            $multi = [regex]::Matches($text,
+                'Multi frame detection:\s*TFF:\s*(\d+)\s*BFF:\s*(\d+)\s*Progressive:\s*(\d+)\s*Undetermined:\s*(\d+)')
+            if ($multi.Count -eq 0) { continue }
+            $g = $multi[$multi.Count - 1].Groups
+            $windowTotal = [long]$g[1].Value + [long]$g[2].Value + [long]$g[3].Value + [long]$g[4].Value
+            if ($windowTotal -le 0) { continue }
+            $sum.Tff += [long]$g[1].Value; $sum.Bff += [long]$g[2].Value
+            $sum.Prog += [long]$g[3].Value; $sum.Und += [long]$g[4].Value
+            $used.Add($start)
 
-    if ($multiTotal -le 0) {
-        Write-ArmLog -Level WARN -Message "Get-InterlaceType: could not parse idet output (missing or all-zero counts) for $InputFile; defaulting to Interlaced" -Config $Config
-        return 'Interlaced'
-    }
-
-    if (($progressive / $multiTotal) -ge 0.5) {
-        return 'Progressive'
-    }
-
-    if ($repeatMatches.Count -gt 0) {
-        $repeatMatch = $repeatMatches[$repeatMatches.Count - 1]
-        $neither = [int]$repeatMatch.Groups[1].Value
-        $top = [int]$repeatMatch.Groups[2].Value
-        $bottom = [int]$repeatMatch.Groups[3].Value
-        $repeatTotal = $neither + $top + $bottom
-
-        if ($repeatTotal -gt 0 -and (($top + $bottom) / $repeatTotal) -gt 0.15) {
-            return 'Telecined'
+            $rep = [regex]::Matches($text, 'Repeated Fields:\s*Neither:\s*(\d+)\s*Top:\s*(\d+)\s*Bottom:\s*(\d+)')
+            if ($rep.Count -gt 0) {
+                $r = $rep[$rep.Count - 1].Groups
+                $sum.Neither += [long]$r[1].Value; $sum.Top += [long]$r[2].Value; $sum.Bottom += [long]$r[3].Value
+            }
         }
     }
+    & $probe $starts
 
-    return 'Interlaced'
+    # Short file / nothing parsed: fall back to the start of the file.
+    if ($used.Count -eq 0 -and $starts -notcontains 0) {
+        & $probe @(0)
+    }
+
+    $multiTotal = $sum.Tff + $sum.Bff + $sum.Prog + $sum.Und
+    $repeatTotal = $sum.Neither + $sum.Top + $sum.Bottom
+    $countText = "multi TFF=$($sum.Tff) BFF=$($sum.Bff) Progressive=$($sum.Prog) Undetermined=$($sum.Und); repeated Neither=$($sum.Neither) Top=$($sum.Top) Bottom=$($sum.Bottom); windows=[$($used -join ',')]"
+
+    $label = 'Interlaced'
+    if ($multiTotal -le 0) {
+        $raw = ((@($rawParts) -join ' ') -replace '\s+', ' ').Trim()
+        if ($raw.Length -gt 300) { $raw = $raw.Substring(0, 300) + '...' }
+        Write-ArmLog -Level WARN -Message "Get-InterlaceType: could not parse idet output (missing or all-zero counts) for $InputFile; defaulting to Interlaced. Raw output: $raw" -Config $Config
+    } elseif (($sum.Prog / $multiTotal) -ge 0.5) {
+        $label = 'Progressive'
+    } elseif ($repeatTotal -gt 0 -and (($sum.Top + $sum.Bottom) / $repeatTotal) -gt 0.15) {
+        $label = 'Telecined'
+    }
+
+    Write-ArmLog -Level INFO -Message "Get-InterlaceType: $InputFile idet $countText -> $label" -Config $Config
+    return $label
 }
 
 # Hashtable lookup that is safe under StrictMode: returns $Default when the key is
@@ -443,7 +460,8 @@ function Get-VideoFrameRate {
 
     Plan fields:
       InputFile, BaseName, ContentType, SampleOnly
-      InterlaceType            'Telecined' | 'Interlaced' | 'Progressive'
+      InterlaceType            'Telecined' | 'Interlaced' | 'Progressive' (after the
+                               soft-telecine guard: Telecined + decoded 23.976 => Progressive)
       Window                   $null, or @{ Seek; Duration } (-SampleOnly: 600 / 120).
                                Applied to the preprocess input and the mux's audio input.
       Preprocess               @{ Filter; FrameRate }
@@ -472,7 +490,9 @@ function Get-VideoFrameRate {
                                a bad config fails before the slow preprocess.
 
 .PARAMETER FrameRate
-    Result of Get-VideoFrameRate ('24000/1001', ... or $null). Ignored for Telecined.
+    Result of Get-VideoFrameRate ('24000/1001', ... or $null). Not used as the CFR rate for
+    Telecined (decimate sets it), but a Telecined verdict at a decoded 23.976 (soft
+    telecine) is downgraded to Progressive, with a warning.
 
 .OUTPUTS
     [pscustomobject]
@@ -513,10 +533,18 @@ function Get-UpscalePlan {
         $window = [ordered]@{ Seek = 600; Duration = 120 }
     }
 
+    # Soft-telecine guard (#30): a source that already DECODES at ~23.976 fps has had its
+    # pulldown removed (flags only); `decimate` would drop a further 1 frame in 5 (19.2 fps)
+    # and desync A/V. Never take the Telecined chain then - treat it as Progressive.
+    if ($InterlaceType -eq 'Telecined' -and $FrameRate -and $FrameRate -in @('24000/1001', '24/1')) {
+        $warnings.Add("Invoke-Upscale: $InputFile was classified Telecined but already decodes at $FrameRate (soft telecine); skipping IVTC/decimate and treating it as Progressive")
+        $InterlaceType = 'Progressive'
+    }
+
     # Deinterlace/IVTC chain (single field so it can move into the runner's decoder, #28).
     $filter = switch ($InterlaceType) {
         'Telecined' { 'fieldmatch,yadif=deint=interlaced,decimate' }
-        'Interlaced' { 'bwdif=mode=send_frame' }
+        'Interlaced' { 'idet,bwdif=mode=send_frame:deint=interlaced' }
         default { $null }
     }
 
@@ -756,7 +784,7 @@ function Get-UpscaleEncodeArgumentList {
          mismatch, missing OpenProteus runner/model) fails here, before any slow work.
       2. ffmpeg preprocess to a temporary intermediate:
            Telecined  -> -vf fieldmatch,yadif=deint=interlaced,decimate
-           Interlaced -> -vf bwdif=mode=send_frame
+           Interlaced -> -vf idet,bwdif=mode=send_frame:deint=interlaced
            Progressive-> passthrough
          Non-Telecined sources also get `-fps_mode cfr -r <measured rate>`.
          Intermediate is encoded ffv1 (lossless) to avoid compounding generation loss
@@ -843,14 +871,14 @@ function Invoke-Upscale {
     try {
         # --- (a) probe the source, then plan ---
         $sourceInfo = Get-VideoSourceInfo -InputFile $InputFile -Config $Config
-        $interlaceType = Get-InterlaceType -InputFile $InputFile -Config $Config
-        $frameRate = $null
-        if ($interlaceType -ne 'Telecined') {
-            $frameRate = Get-VideoFrameRate -InputFile $InputFile -Config $Config
-        }
+        $sourceDuration = if ($sourceInfo.DurationSec) { [double]$sourceInfo.DurationSec } else { 0 }
+        $interlaceType = Get-InterlaceType -InputFile $InputFile -Config $Config -SourceDuration $sourceDuration
+        # Always measured: Get-UpscalePlan needs the decoded rate for the soft-telecine guard.
+        $frameRate = Get-VideoFrameRate -InputFile $InputFile -Config $Config
 
         $plan = Get-UpscalePlan -InputFile $InputFile -SourceInfo $sourceInfo -InterlaceType $interlaceType `
             -FrameRate $frameRate -Config $Config -ContentType $ContentType -SampleOnly:$SampleOnly
+        $interlaceType = $plan.InterlaceType   # may differ from the probe (soft-telecine guard)
         foreach ($warning in $plan.Warnings) {
             Write-ArmLog -Level WARN -Message $warning -Config $Config
         }

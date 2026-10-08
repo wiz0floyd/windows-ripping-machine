@@ -15,6 +15,11 @@
       Config      overrides merged over the base config (see New-UpscaleGoldenConfig)
       Sar         source sample aspect ratio 'n:d' (the frame size is always 720x480)
       RateStderr  frame-rate probe stderr ('' => the probe measures nothing)
+                  Telecined scenarios use 29.97 (hard telecine); a decoded 23.976 trips the
+                  soft-telecine guard (#30).
+    Re-recorded for #30: two mid-feature idet probes (600 s and 50% of the 8627.9 s
+    fixture duration, 1000 frames each), the Interlaced idet,bwdif chain, and the
+    frame-rate probe now also runs for Telecined sources.
 #>
 
 function Get-UpscaleGoldenScenarios {
@@ -28,7 +33,7 @@ function Get-UpscaleGoldenScenarios {
                 $scenarios.Add(@{
                     Id = "$interlace-$engine-$mode"; Interlace = $interlace; Sample = $sample
                     ContentType = 'LiveAction'; Config = @{ UpscaleLiveAction = $engine }
-                    Sar = '853:720'; RateStderr = $rate24
+                    Sar = '853:720'; RateStderr = $(if ($interlace -eq 'Telecined') { $rate30 } else { $rate24 })
                 })
             }
         }

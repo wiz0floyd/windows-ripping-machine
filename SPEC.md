@@ -295,18 +295,26 @@ Send-ArmNotification -Title <string> -Message <string> -Level <Info|Error>
 #  POST JSON @{title;message;level} with 5s timeout, failures logged WARN only.
 
 # Upscale-Video.ps1
-Get-InterlaceType -InputFile <string> -Config <hashtable> [-Seek <int>] [-Duration <int>]
-#  -> 'Telecined'|'Interlaced'|'Progressive'
-#  ffmpeg -filter:v idet -frames:v 2000 -an -f null - ; parse "Multi frame detection"
-#  and "Repeated Fields". ffmpeg 8.x prints the idet summary TWICE (a throw-away
-#  probe graph's all-zero summary, then the real one; older builds print once), so
-#  the LAST match of each line is used (issue #30). Decision table, first match wins:
-#    Progressive share of Multi-frame total >= 0.5  → Progressive
+Get-InterlaceType -InputFile <string> -Config <hashtable> [-SourceDuration <double>] [-Seek <int>] [-Duration <int>]
+#  -> 'Telecined'|'Interlaced'|'Progressive'  (string; counts from idet summed over windows)
+#  Per window: ffmpeg -ss <start> -i <file> -filter:v idet -frames:v 1000 -an -f null - ;
+#  parse "Multi frame detection" and "Repeated Fields". ffmpeg 8.x prints the idet summary
+#  TWICE (a throw-away probe graph's all-zero summary, then the real one; older builds
+#  print once), so the LAST match of each line per window is used (issue #30).
+#  Windows (default, no -Seek): 600 s and floor(50% of -SourceDuration) - the duration
+#  Invoke-Upscale already has from Get-VideoSourceInfo (never re-probed). Unknown duration
+#  = the 600 s window only; a window at/past the end of a known-length file is skipped.
+#  If no window yields parseable non-zero counts, it falls back to 0:00. An explicit -Seek
+#  replaces the default windows. Counts are summed across windows, then classified.
+#  Decision table, first match wins:
+#    Progressive share of Multi-frame total >= 0.5 (was 0.80)       → Progressive
 #    else (Top+Bottom)/(Neither+Top+Bottom) of Repeated Fields > 0.15 → Telecined
-#    else → Interlaced
-#  Missing/unparseable Multi-frame line, or counts totalling zero → Interlaced plus
-#  a WARN log naming the file. The 0.5 cut sits mid-gap of 18 surveyed DVD rips:
-#  film/progressive video read 80.9-100% progressive, interlaced/hard-telecined 0-1.5%.
+#    else (counts parsed)                                             → Interlaced
+#    counts unparseable / all zero                                    → Interlaced (safe
+#       default) + a WARN naming the file with the first 300 chars of the raw output
+#  The parsed counts and windows are logged at INFO for every classification. The 0.5 cut
+#  sits mid-gap of 18 surveyed DVD rips: film/progressive video read 80.9-100% progressive,
+#  interlaced/hard-telecined 0-1.5%.
 
 Get-VideoFrameRate -InputFile <string> -Config <hashtable> [-Seek 600] [-Duration 60] -> [string]|$null
 #  Decodes a short window (`ffmpeg -ss -t -i -map 0:v:0 -f null -`; retries from 0),
@@ -334,25 +342,22 @@ Get-VideoSourceInfo -InputFile <string> -Config <hashtable> -> [pscustomobject]
 #  ConvertTo-VideoSourceInfo -Json <string> [-InputFile <string>] is the pure parser.
 
 # Probe window: Get-InterlaceType and Get-VideoFrameRate take the same optional -Seek/-Duration:
-#  Get-InterlaceType -Seek <int> -Duration <int>   (defaults -1 / 0 = omitted, i.e. probe from 0:00)
-#  Get-VideoFrameRate -Seek <int=600> -Duration <int=60>
-#  Invoke-Upscale does not pass a window to Get-InterlaceType yet (windowed/multi-sample
-#  classification is #30); the parameters exist so that change is a call-site edit.
-#  Unlike Get-VideoFrameRate, Get-InterlaceType does NOT retry from 0:00 when the seek
-#  lands past the end of a short file: idet then reports zero counts, which classifies
-#  as Interlaced with a WARN (the safe default). #30 owns adding that fallback.
+#  Get-InterlaceType -Seek <int=-1: default windows> -Duration <int=0: none> -SourceDuration <double=0>
+#  Get-VideoFrameRate -Seek <int=600> -Duration <int=60>   (retries from 0:00)
+#  Both fall back to 0:00 when the mid-feature window yields nothing (short file).
 
 Get-UpscalePlan -InputFile <string> -SourceInfo <pscustomobject> -InterlaceType <Telecined|Interlaced|Progressive>
                 -FrameRate <string|$null> -Config <hashtable> [-ContentType <LiveAction|Animation>]
                 [-SampleOnly] -> [pscustomobject]
 #  PURE: no I/O, no process launches, no logging - every decision lives here and is
 #  unit-tested on its fields. Inputs are the facts Invoke-Upscale gathered
-#  (Get-VideoSourceInfo, Get-InterlaceType, Get-VideoFrameRate [skipped for Telecined]).
+#  (Get-VideoSourceInfo, Get-InterlaceType, Get-VideoFrameRate [always measured]).
 #  @{ InputFile; BaseName; ContentType; SampleOnly; InterlaceType;
 #     Window            # $null, or @{ Seek=600; Duration=120 } for -SampleOnly
 #     Preprocess        # @{ Filter; FrameRate }  Filter = ONE -vf chain string or $null
 #                       #   (Telecined 'fieldmatch,yadif=deint=interlaced,decimate',
-#                       #    Interlaced 'bwdif=mode=send_frame', Progressive $null);
+#                       #    Interlaced 'idet,bwdif=mode=send_frame:deint=interlaced',
+#                       #    Progressive $null);
 #                       #   FrameRate = measured rate for `-fps_mode cfr -r`, $null for
 #                       #   Telecined or when unmeasured (then Warnings has the WARN)
 #     Engine; EngineTool; EngineLabel   # EngineTool = 'ncnn' | 'video2x'
@@ -375,12 +380,16 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
                [-ContentType <LiveAction|Animation>] [-SampleOnly] -> [pscustomobject]
 #  @{ Success; OutputFile; InterlaceType; Engine; Error }   # Engine = openproteus|anime4k|realesrgan ($null if failed before engine selection)
 #  Probe, plan, execute. (a) Probe: Get-VideoSourceInfo (ffprobe, source file),
-#  Get-InterlaceType, and - unless Telecined - Get-VideoFrameRate. Then Get-UpscalePlan;
+#  Get-InterlaceType (-SourceDuration from the probe) and Get-VideoFrameRate. Then Get-UpscalePlan;
 #  plan Warnings are logged, plan Error and (non-Simulate) missing openproteus
 #  runner/model files (error points at setup.ps1) fail the run before any encode.
 #  (b) preprocess with ffmpeg:
 #     Telecined  → -vf fieldmatch,yadif=deint=interlaced,decimate  (→23.976p)
-#     Interlaced → -vf bwdif=mode=send_frame
+#                  Soft-telecine guard (in Get-UpscalePlan): a Telecined verdict while the decoded
+#                  rate is already ~23.976 (24000/1001 or 24/1) is downgraded to Progressive (no
+#                  decimate - it would drop to 19.2 fps and desync A/V) with a plan Warning;
+#                  the plan's and result's InterlaceType then read 'Progressive'.
+#     Interlaced → -vf idet,bwdif=mode=send_frame:deint=interlaced  (bwdif only on frames idet flags interlaced)
 #     Progressive→ passthrough
 #     encode intermediate ffv1 to temp;  -SampleOnly: -ss 600 -t 120.
 #     Non-Telecined sources also get `-fps_mode cfr -r <Get-VideoFrameRate>` so the
