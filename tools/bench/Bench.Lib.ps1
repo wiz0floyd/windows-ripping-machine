@@ -240,7 +240,10 @@ function Get-BenchEncodeArgumentList {
         return Get-UpscaleEncodeArgumentList -Plan $Plan -UpscaledFile $UpscaledFile -OutputFile $OutputFile
     }
     $argList = @('-y', '-i', $UpscaledFile, '-i', $Plan.InputFile, '-map', '0:v:0', '-map', '1:a')
-    if ($Plan.Encode['ResetSar']) { $argList += @('-vf', 'setsar=1') }
+    $vfParts = @()
+    if ($Plan.Encode['ResetSar']) { $vfParts += 'setsar=1' }
+    if ($Plan.ColorConvert) { $vfParts += "colorspace=all=bt709:$($Plan.ColorInputSpec):irange=tv:range=tv:dither=fsb" }
+    if ($vfParts.Count -gt 0) { $argList += @('-vf', ($vfParts -join ',')) }
     $argList += @(
         '-c:v', 'hevc_amf',
         '-quality', "$($encode['Quality'])",

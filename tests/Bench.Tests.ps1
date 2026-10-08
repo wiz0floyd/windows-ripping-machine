@@ -23,6 +23,9 @@ BeforeAll {
             Target        = [ordered]@{ Width = 1440; Height = 1080; DisplayAspect = 1.7791 }
             Upscale       = [ordered]@{ Runner = 'r.py'; ModelBase = 'm'; Ffmpeg = 'ffmpeg'; Ffprobe = 'ffprobe' }
             Encode        = [ordered]@{ Codec = 'libx265'; Crf = 18; Preset = 'slow'; AudioCodec = 'copy'; ResetSar = $true }
+            ColorInput    = 'bt601-6-525'
+            ColorInputSpec = 'iall=bt601-6-525'
+            ColorConvert  = $true
             Error         = $null
         }
     }
@@ -123,7 +126,7 @@ Describe 'Argument builders' {
         $argList[$argList.IndexOf('-preset') + 1] | Should -Be 'medium'
         $argList[$argList.IndexOf('-c:v') + 1] | Should -Be 'libx265'
         $argList | Should -Contain '-shortest'
-        $argList | Should -Contain 'setsar=1'
+        $argList | Should -Contain 'setsar=1,colorspace=all=bt709:iall=bt601-6-525:irange=tv:range=tv:dither=fsb'
     }
 
     It 'builds hevc_amf CQP 10-bit args with no libx265 flags' {
