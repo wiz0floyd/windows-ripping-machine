@@ -31,7 +31,7 @@ $ErrorActionPreference = 'Stop'
 
 $script:ArmJobFields = @(
     'Id', 'Kind', 'State', 'Title', 'DiscLabel', 'DiscType', 'Drive', 'StagingDir',
-    'DestDir', 'QueueFile', 'SamplePath', 'Error', 'Created', 'Updated', 'History'
+    'DestDir', 'QueueFile', 'SamplePath', 'ContentType', 'Engine', 'InterlaceType', 'Error', 'Created', 'Updated', 'History'
 )
 $script:ArmJobIdPattern = '^\d{8}-\d{6}-[0-9a-f]{6}$'
 $script:ArmJobTerminalStates = @('Complete', 'Failed', 'Cancelled')

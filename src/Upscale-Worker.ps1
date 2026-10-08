@@ -67,10 +67,37 @@ function Test-ArmActiveWindow {
 
 <#
 .SYNOPSIS
+    Pick the Engine and InterlaceType a finished Invoke-Upscale reported, as job-record properties.
+
+.DESCRIPTION
+    Returns only the properties the result actually carries, so a result without them
+    (older stub, failure) leaves the job record's existing values untouched.
+#>
+function Get-ArmUpscaleRunInfo {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory = $true)]
+        $Result
+    )
+
+    $info = @{}
+    $names = $Result.PSObject.Properties.Name
+    foreach ($key in @('Engine', 'InterlaceType')) {
+        if ($names -contains $key -and $Result.$key) {
+            $info[$key] = [string] $Result.$key
+        }
+    }
+    return $info
+}
+
+<#
+.SYNOPSIS
     Process a single upscale queue file.
 
 .DESCRIPTION
-    Reads a queue JSON file ({Source;DestDir}) and runs the upscale pipeline:
+    Reads a queue JSON file ({Source;DestDir[;ContentType='Animation']}) and runs the
+    upscale pipeline:
       - AutoUpscale = $false: runs Invoke-Upscale -SampleOnly, notifies with the
         sample path for review, and renames the queue file to '.awaiting-review'
         (the user renames it back to '.json' after approving, to be picked up on
@@ -139,9 +166,16 @@ function Invoke-ArmUpscaleQueueItem {
 
         $approved = $item.PSObject.Properties.Name -contains 'SampleGenerated' -and $item.SampleGenerated
 
+        # Optional queue field; selects UpscaleAnimation vs UpscaleLiveAction. Anything
+        # other than 'Animation' (including absent) means LiveAction.
+        $contentType = 'LiveAction'
+        if ($item.PSObject.Properties.Name -contains 'ContentType' -and $item.ContentType -eq 'Animation') {
+            $contentType = 'Animation'
+        }
+
         if (-not $Config.AutoUpscale -and -not $approved) {
-            $null = Update-ArmJob -JobId $jobId -Properties @{ State = 'Sampling'; QueueFile = $QueueFile; Error = $null } -Config $Config
-            $result = Invoke-Upscale -InputFile $source -OutputDir (Split-Path -Parent $QueueFile) -Config $Config -SampleOnly
+            $null = Update-ArmJob -JobId $jobId -Properties @{ State = 'Sampling'; QueueFile = $QueueFile; Error = $null; ContentType = $contentType } -Config $Config
+            $result = Invoke-Upscale -InputFile $source -OutputDir (Split-Path -Parent $QueueFile) -Config $Config -ContentType $contentType -SampleOnly
 
             if (-not $result.Success) {
                 throw "Sample upscale failed: $($result.Error)"
@@ -159,14 +193,16 @@ function Invoke-ArmUpscaleQueueItem {
             $reviewPath = [System.IO.Path]::ChangeExtension($QueueFile, '.awaiting-review')
             Move-Item -LiteralPath $QueueFile -Destination $reviewPath -Force
 
-            $null = Update-ArmJob -JobId $jobId -Properties @{
+            $reviewProps = @{
                 State      = 'AwaitingReview'
                 SamplePath = $result.OutputFile
                 QueueFile  = $reviewPath
-            } -Config $Config
+            }
+            $reviewProps += Get-ArmUpscaleRunInfo -Result $result
+            $null = Update-ArmJob -JobId $jobId -Properties $reviewProps -Config $Config
         } else {
-            $null = Update-ArmJob -JobId $jobId -Properties @{ State = 'Upscaling'; QueueFile = $QueueFile; Error = $null } -Config $Config
-            $result = Invoke-Upscale -InputFile $source -OutputDir $destDir -Config $Config
+            $null = Update-ArmJob -JobId $jobId -Properties @{ State = 'Upscaling'; QueueFile = $QueueFile; Error = $null; ContentType = $contentType } -Config $Config
+            $result = Invoke-Upscale -InputFile $source -OutputDir $destDir -Config $Config -ContentType $contentType
 
             if (-not $result.Success) {
                 throw "Upscale failed: $($result.Error)"
@@ -178,7 +214,9 @@ function Invoke-ArmUpscaleQueueItem {
 
             Remove-Item -LiteralPath $QueueFile -Force
 
-            $null = Update-ArmJob -JobId $jobId -Properties @{ State = 'Complete'; DestDir = $destDir } -Config $Config
+            $completeProps = @{ State = 'Complete'; DestDir = $destDir }
+            $completeProps += Get-ArmUpscaleRunInfo -Result $result
+            $null = Update-ArmJob -JobId $jobId -Properties $completeProps -Config $Config
         }
     } catch {
         $failure = "$_"

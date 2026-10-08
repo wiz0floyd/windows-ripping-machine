@@ -125,6 +125,40 @@ Describe 'Start-UpscaleWorker -Once' {
         Should -Invoke Send-ArmNotification -Times 1 -ParameterFilter { $Level -eq 'Info' }
     }
 
+    It 'passes ContentType=Animation from the queue item to Invoke-Upscale' {
+        $config = New-TestConfig -AutoUpscale $true
+        Mock Get-ArmConfig { $config }
+        $fakeOutput = Join-Path $script:QueueDir.FullName 'movie [AI upscale 1080p].mkv'
+        Set-Content -LiteralPath $fakeOutput -Value 'fake upscaled bytes'
+        Mock Invoke-Upscale {
+            [pscustomobject]@{ Success = $true; OutputFile = $fakeOutput; InterlaceType = 'Progressive'; Error = $null }
+        }
+
+        $queueFile = Join-Path $script:QueueDir.FullName 'movie.json'
+        (@{ Source = $script:SourceFile; DestDir = $script:DestDir.FullName; ContentType = 'Animation' } | ConvertTo-Json) | Set-Content -Path $queueFile
+
+        Start-UpscaleWorker -Once
+
+        Should -Invoke Invoke-Upscale -Times 1 -ParameterFilter { $ContentType -eq 'Animation' }
+    }
+
+    It 'defaults to ContentType=LiveAction when the queue item has none (or an unknown value)' {
+        $config = New-TestConfig -AutoUpscale $true
+        Mock Get-ArmConfig { $config }
+        $fakeOutput = Join-Path $script:QueueDir.FullName 'movie [AI upscale 1080p].mkv'
+        Set-Content -LiteralPath $fakeOutput -Value 'fake upscaled bytes'
+        Mock Invoke-Upscale {
+            [pscustomobject]@{ Success = $true; OutputFile = $fakeOutput; InterlaceType = 'Progressive'; Error = $null }
+        }
+
+        $queueFile = Join-Path $script:QueueDir.FullName 'movie.json'
+        (@{ Source = $script:SourceFile; DestDir = $script:DestDir.FullName; ContentType = 'Documentary' } | ConvertTo-Json) | Set-Content -Path $queueFile
+
+        Start-UpscaleWorker -Once
+
+        Should -Invoke Invoke-Upscale -Times 1 -ParameterFilter { $ContentType -eq 'LiveAction' }
+    }
+
     It 'failure path: renames queue file to .failed and sends Error notification' {
         $config = New-TestConfig -AutoUpscale $true
         Mock Get-ArmConfig { $config }
@@ -222,6 +256,53 @@ Describe 'Invoke-ArmUpscaleQueueItem job state' {
 
         $script:StateDuringUpscale | Should -Be 'Upscaling'
         (Get-ArmJob -JobId $script:JobId -Config $script:Config).State | Should -Be 'Complete'
+    }
+
+    It 'records ContentType while sampling and Engine/InterlaceType once the sample is ready' {
+        $script:ContentTypeDuringUpscale = $null
+        ([ordered]@{ Source = $script:SourceFile; DestDir = $script:DestDir; JobId = $script:JobId; ContentType = 'Animation' } | ConvertTo-Json) |
+            Set-Content -Path $script:QueueFile
+        Mock Invoke-Upscale {
+            $script:ContentTypeDuringUpscale = (Get-ArmJob -JobId $script:JobId -Config $script:Config).ContentType
+            [pscustomobject]@{ Success = $true; OutputFile = (Join-Path $script:QueueDir 'movie [AI upscale 1080p].mkv'); InterlaceType = 'Telecined'; Engine = 'anime4k'; Error = $null }
+        }
+
+        Invoke-ArmUpscaleQueueItem -QueueFile $script:QueueFile -Config $script:Config
+
+        $script:ContentTypeDuringUpscale | Should -Be 'Animation'
+        $job = Get-ArmJob -JobId $script:JobId -Config $script:Config
+        $job.State | Should -Be 'AwaitingReview'
+        $job.ContentType | Should -Be 'Animation'
+        $job.Engine | Should -Be 'anime4k'
+        $job.InterlaceType | Should -Be 'Telecined'
+    }
+
+    It 'records LiveAction, Engine and InterlaceType on a completed full run' {
+        $script:Config.AutoUpscale = $true
+        Mock Invoke-Upscale {
+            [pscustomobject]@{ Success = $true; OutputFile = (Join-Path $script:DestDir 'movie [AI upscale 1080p].mkv'); InterlaceType = 'Progressive'; Engine = 'openproteus'; Error = $null }
+        }
+
+        Invoke-ArmUpscaleQueueItem -QueueFile $script:QueueFile -Config $script:Config
+
+        $job = Get-ArmJob -JobId $script:JobId -Config $script:Config
+        $job.State | Should -Be 'Complete'
+        $job.ContentType | Should -Be 'LiveAction'
+        $job.Engine | Should -Be 'openproteus'
+        $job.InterlaceType | Should -Be 'Progressive'
+    }
+
+    It 'still completes when the Invoke-Upscale result carries no Engine' {
+        $script:Config.AutoUpscale = $true
+        Mock Invoke-Upscale {
+            [pscustomobject]@{ Success = $true; OutputFile = (Join-Path $script:DestDir 'movie [AI upscale 1080p].mkv'); Error = $null }
+        }
+
+        Invoke-ArmUpscaleQueueItem -QueueFile $script:QueueFile -Config $script:Config
+
+        $job = Get-ArmJob -JobId $script:JobId -Config $script:Config
+        $job.State | Should -Be 'Complete'
+        $job.Engine | Should -BeNullOrEmpty
     }
 
     It 'marks the job Failed with the error and the .failed queue path' {

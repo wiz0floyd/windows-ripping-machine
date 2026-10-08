@@ -88,6 +88,121 @@ function Show-Video2xManualStep {
     Write-Host ''
 }
 
+function Invoke-ArmPython {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] [string] $Python,
+        [Parameter(Mandatory = $true)] [string[]] $Arguments
+    )
+    & $Python @Arguments
+    return $LASTEXITCODE
+}
+
+function Expand-ArmTarGz {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] [string] $Archive,
+        [Parameter(Mandatory = $true)] [string] $Destination
+    )
+    $null = New-Item -ItemType Directory -Force -Path $Destination
+    & tar -xzf $Archive -C $Destination
+    return $LASTEXITCODE
+}
+
+<#
+.SYNOPSIS
+    Install the ncnn upscale runtime used by the 'openproteus' engine: a dedicated
+    Python venv with tools/requirements-ncnn.txt, plus the OpenProteus 2x ncnn model.
+
+.DESCRIPTION
+    Idempotent and non-fatal: every failure is a warning (the pipeline still works
+    with the anime4k/realesrgan engines). The model download is verified against a
+    pinned SHA256 before it is installed. The model comes from the
+    TNTwise/real-video-enhancer-models release of Sirosky's 2x OpenProteus Compact;
+    the upstream repo declares no license, so this is for personal use.
+
+.PARAMETER RequirementsPath
+    tools/requirements-ncnn.txt.
+
+.PARAMETER PythonPath
+    Target venv python.exe (config key NcnnPath). Created if missing.
+
+.PARAMETER ModelDir
+    Directory receiving openproteus-x2.param/.bin (config key NcnnModelDir).
+
+.PARAMETER BasePython
+    Python used to create the venv (default: python on PATH).
+#>
+function Install-NcnnUpscaler {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] [string] $RequirementsPath,
+        [Parameter(Mandatory = $true)] [string] $PythonPath,
+        [Parameter(Mandatory = $true)] [string] $ModelDir,
+        [string] $BasePython = 'python',
+        [string] $ModelUrl = 'https://github.com/TNTwise/real-video-enhancer-models/releases/download/models/2x_OpenProteus_Compact_i2_70K.tar.gz',
+        [string] $ModelSha256 = '0d96689273650613726ebae4482cdc56943f46e819f99109054d0ca325d6a7c7'
+    )
+
+    # --- venv + packages ---
+    if (-not (Test-Path -LiteralPath $PythonPath)) {
+        $venvDir = Split-Path -Parent (Split-Path -Parent $PythonPath)
+        Write-Host "Creating Python venv: $venvDir"
+        $rc = Invoke-ArmPython -Python $BasePython -Arguments @('-m', 'venv', $venvDir)
+        if ($rc -ne 0 -or -not (Test-Path -LiteralPath $PythonPath)) {
+            Write-Warning "Could not create the Python venv at $venvDir (is Python 3.10+ on PATH?). The 'openproteus' engine will be unavailable; set UpscaleLiveAction = 'anime4k' or install Python and re-run setup."
+            return
+        }
+    } else {
+        Write-Host "Python venv already exists: $PythonPath"
+    }
+    $rc = Invoke-ArmPython -Python $PythonPath -Arguments @('-I', '-m', 'pip', 'install', '--quiet', '-r', $RequirementsPath)
+    if ($rc -ne 0) {
+        Write-Warning "pip install -r $RequirementsPath failed (exit $rc); the 'openproteus' engine may not work."
+        return
+    }
+
+    # --- model ---
+    $paramFile = Join-Path $ModelDir 'openproteus-x2.param'
+    $binFile = Join-Path $ModelDir 'openproteus-x2.bin'
+    if ((Test-Path -LiteralPath $paramFile) -and (Test-Path -LiteralPath $binFile)) {
+        Write-Host "OpenProteus model already installed: $ModelDir"
+        return
+    }
+
+    $work = Join-Path ([System.IO.Path]::GetTempPath()) "wrm-openproteus-$(New-Guid)"
+    try {
+        $null = New-Item -ItemType Directory -Force -Path $work
+        $archive = Join-Path $work 'model.tar.gz'
+        Write-Host 'Downloading OpenProteus 2x ncnn model...'
+        Invoke-WebRequest -Uri $ModelUrl -OutFile $archive -UseBasicParsing
+        $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+        if ($actual -ne $ModelSha256.ToUpperInvariant()) {
+            Write-Warning "OpenProteus model SHA256 mismatch (expected $ModelSha256, got $($actual.ToLowerInvariant())); NOT installing it."
+            return
+        }
+        $extracted = Join-Path $work 'x'
+        if ((Expand-ArmTarGz -Archive $archive -Destination $extracted) -ne 0) {
+            Write-Warning 'Could not extract the OpenProteus model archive; skipping.'
+            return
+        }
+        $param = Get-ChildItem -LiteralPath $extracted -Recurse -Filter '*.param' | Select-Object -First 1
+        $bin = Get-ChildItem -LiteralPath $extracted -Recurse -Filter '*.bin' | Select-Object -First 1
+        if (-not $param -or -not $bin) {
+            Write-Warning 'OpenProteus archive did not contain a .param/.bin pair; skipping.'
+            return
+        }
+        $null = New-Item -ItemType Directory -Force -Path $ModelDir
+        Copy-Item -LiteralPath $param.FullName -Destination $paramFile -Force
+        Copy-Item -LiteralPath $bin.FullName -Destination $binFile -Force
+        Write-Host "Installed OpenProteus model to $ModelDir"
+    } catch {
+        Write-Warning "OpenProteus model install failed: $_"
+    } finally {
+        Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 <#
 .SYNOPSIS
     Create the staging/queue/log directories used by the pipeline, if missing.
@@ -460,6 +575,8 @@ Administrator (Run as Administrator) pwsh window.
 
     $examplePath = Join-Path $repoRoot 'config' 'config.example.psd1'
     $example = Import-PowerShellDataFile -Path $examplePath
+    Install-NcnnUpscaler -RequirementsPath (Join-Path $repoRoot 'tools' 'requirements-ncnn.txt') `
+        -PythonPath $example.NcnnPath -ModelDir $example.NcnnModelDir
     Initialize-ArmDirectories -Paths @{
         StagingDir      = $example.StagingDir
         UpscaleQueueDir = $example.UpscaleQueueDir

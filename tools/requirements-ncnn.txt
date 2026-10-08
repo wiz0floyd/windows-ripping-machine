@@ -1,0 +1,5 @@
+# Python deps for tools/ncnn_upscale.py (installed into a dedicated venv by setup.ps1).
+# sympy is an undeclared import of upscale-ncnn-py 1.2.0.
+upscale-ncnn-py==1.2.0
+numpy==2.5.3
+sympy==1.14.0

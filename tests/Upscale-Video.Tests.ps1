@@ -2,6 +2,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 BeforeAll {
+    $script:ProbeStderr = @()
     . (Join-Path $PSScriptRoot '..' 'src' 'Common.ps1')
     . (Join-Path $PSScriptRoot '..' 'src' 'Upscale-Video.ps1')
 
@@ -121,6 +122,10 @@ Describe 'Invoke-Upscale' {
             }
 
             # preprocess or mux: create the output file (last arg)
+            # frame-rate probe (`-f null -`) writes nothing; don't let the generic branch create a file named '-'
+            if ($Arguments[$Arguments.Count - 1] -eq '-') {
+                return [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @($script:ProbeStderr) }
+            }
             $outFile = $Arguments[$Arguments.Count - 1]
             Set-Content -LiteralPath $outFile -Value 'fake bytes'
             return [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @() }
@@ -146,6 +151,10 @@ Describe 'Invoke-Upscale' {
                 }
             }
 
+            # frame-rate probe (`-f null -`) writes nothing; don't let the generic branch create a file named '-'
+            if ($Arguments[$Arguments.Count - 1] -eq '-') {
+                return [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @($script:ProbeStderr) }
+            }
             $outFile = $Arguments[$Arguments.Count - 1]
             Set-Content -LiteralPath $outFile -Value 'fake bytes'
             return [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @() }
@@ -173,6 +182,10 @@ Describe 'Invoke-Upscale' {
                 }
             }
 
+            # frame-rate probe (`-f null -`) writes nothing; don't let the generic branch create a file named '-'
+            if ($Arguments[$Arguments.Count - 1] -eq '-') {
+                return [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @($script:ProbeStderr) }
+            }
             $outFile = $Arguments[$Arguments.Count - 1]
             Set-Content -LiteralPath $outFile -Value 'fake bytes'
             return [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @() }
@@ -186,7 +199,7 @@ Describe 'Invoke-Upscale' {
         }
     }
 
-    It 'returns Success=$false and Error when the video2x step fails' {
+    It 'returns Success=$false and Error when the upscale step fails' {
         Mock Invoke-ArmTool {
             param($Name, $Arguments, $Config, $TimeoutSec)
 
@@ -197,10 +210,14 @@ Describe 'Invoke-Upscale' {
                     StdErr   = Get-FixtureLines 'ffmpeg-idet-progressive.txt'
                 }
             }
-            if ($Name -eq 'video2x') {
+            if ($Name -in @('video2x', 'ncnn')) {
                 return [pscustomobject]@{ ExitCode = 1; StdOut = @(); StdErr = @('boom') }
             }
 
+            # frame-rate probe (`-f null -`) writes nothing; don't let the generic branch create a file named '-'
+            if ($Arguments[$Arguments.Count - 1] -eq '-') {
+                return [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @($script:ProbeStderr) }
+            }
             $outFile = $Arguments[$Arguments.Count - 1]
             Set-Content -LiteralPath $outFile -Value 'fake bytes'
             return [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @() }
@@ -225,6 +242,10 @@ Describe 'Invoke-Upscale' {
                 }
             }
 
+            # frame-rate probe (`-f null -`) writes nothing; don't let the generic branch create a file named '-'
+            if ($Arguments[$Arguments.Count - 1] -eq '-') {
+                return [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @($script:ProbeStderr) }
+            }
             $outFile = $Arguments[$Arguments.Count - 1]
 
             # The mux step is the one writing into $OutputDir; simulate ffmpeg dying
@@ -267,6 +288,10 @@ Describe 'Invoke-Upscale' {
                 }
             }
 
+            # frame-rate probe (`-f null -`) writes nothing; don't let the generic branch create a file named '-'
+            if ($Arguments[$Arguments.Count - 1] -eq '-') {
+                return [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @($script:ProbeStderr) }
+            }
             $outFile = $Arguments[$Arguments.Count - 1]
             if ((Split-Path -Leaf (Split-Path -Parent $outFile)) -like 'wrm-upscale-*') {
                 # preprocess/video2x steps write into Invoke-Upscale's own temp dir; capture it
@@ -280,5 +305,275 @@ Describe 'Invoke-Upscale' {
 
         $script:CapturedTempDir | Should -Not -BeNullOrEmpty
         Test-Path -LiteralPath $script:CapturedTempDir | Should -Be $false
+    }
+}
+
+Describe 'Get-VideoDisplayAspect' {
+    BeforeEach {
+        $script:Config = @{ Simulate = $true; LogDir = $script:TestDir }
+    }
+
+    It 'uses the DAR printed by ffmpeg for an anamorphic DVD stream' {
+        Mock Invoke-ArmTool {
+            [pscustomobject]@{ ExitCode = 1; StdOut = @(); StdErr = @(
+                '  Stream #0:0: Video: ffv1 (FFV1 / 0x31564646), yuv420p(tv), 720x480 [SAR 853:720 DAR 853:480], SAR 853:720 DAR 853:480, 29.97 fps') }
+        }
+
+        Get-VideoDisplayAspect -InputFile 'C:\fake\a.mkv' -Config $script:Config | Should -BeGreaterThan 1.77
+    }
+
+    It 'parses the bracketless DAR that ffmpeg prints for an ffv1 intermediate (real output)' {
+        Mock Invoke-ArmTool {
+            [pscustomobject]@{ ExitCode = 1; StdOut = @(); StdErr = @(
+                '  Stream #0:0(eng): Video: ffv1, yuv420p(tv, smpte170m, progressive), 720x480, SAR 853:720 DAR 853:480, 29.97 fps, 29.97 tbr, 1k tbn') }
+        }
+
+        Get-VideoDisplayAspect -InputFile 'C:\fake\a.mkv' -Config $script:Config | Should -BeGreaterThan 1.77
+    }
+
+    It 'uses the last DAR when the line has codec-level and stream-level values (real mpeg2 output)' {
+        Mock Invoke-ArmTool {
+            [pscustomobject]@{ ExitCode = 1; StdOut = @(); StdErr = @(
+                '  Stream #0:0(eng): Video: mpeg2video (Main), yuv420p(tv, smpte170m, progressive), 720x480 [SAR 8:9 DAR 4:3], SAR 853:720 DAR 853:480, 29.97 fps') }
+        }
+
+        Get-VideoDisplayAspect -InputFile 'C:\fake\a.mkv' -Config $script:Config | Should -BeGreaterThan 1.77
+    }
+
+    It 'falls back to the frame-size ratio when no DAR is printed' {
+        Mock Invoke-ArmTool {
+            [pscustomobject]@{ ExitCode = 1; StdOut = @(); StdErr = @('  Stream #0:0: Video: h264, yuv420p, 640x480, 24 fps') }
+        }
+
+        Get-VideoDisplayAspect -InputFile 'C:\fake\a.mkv' -Config $script:Config | Should -Be (640 / 480)
+    }
+
+    It 'assumes 16:9 and logs a WARN when nothing parses' {
+        Mock Invoke-ArmTool { [pscustomobject]@{ ExitCode = 1; StdOut = @(); StdErr = @('garbage') } }
+        Mock Write-ArmLog {}
+
+        Get-VideoDisplayAspect -InputFile 'C:\fake\a.mkv' -Config $script:Config | Should -Be (16.0 / 9.0)
+        Should -Invoke Write-ArmLog -ParameterFilter { $Level -eq 'WARN' }
+    }
+}
+
+Describe 'Invoke-Upscale engine routing' {
+    BeforeEach {
+        $script:Config = @{
+            Simulate          = $true
+            LogDir            = $script:TestDir
+            UpscaleLiveAction = 'openproteus'
+            UpscaleAnimation  = 'anime4k'
+            UpscaleHeight     = 1080
+            UpscaleShader     = 'anime4k-v4-a+a'
+            UpscaleModel      = 'realesr-animevideov3'
+            UpscaleScale      = 2
+            UpscaleCrf        = 16
+            NcnnModelDir      = 'C:\models'
+            FfmpegPath        = 'ffmpeg'
+        }
+        $script:DarStderr = '  Stream #0:0: Video: ffv1, yuv420p, 720x480 [SAR 853:720 DAR 853:480], 29.97 fps'
+
+        $script:InputFile = Join-Path $script:TestDir 'movie.mkv'
+        Set-Content -Path $script:InputFile -Value 'fake source bytes'
+        $script:OutputDir = Join-Path $script:TestDir "out-$(New-Guid)"
+        $null = New-Item -ItemType Directory -Path $script:OutputDir -Force
+
+        Mock Invoke-ArmTool {
+            param($Name, $Arguments, $Config, $TimeoutSec)
+            $joined = $Arguments -join ' '
+            if ($Name -eq 'ffmpeg' -and $joined -match 'idet') {
+                return [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = Get-FixtureLines 'ffmpeg-idet-progressive.txt' }
+            }
+            if ($Name -eq 'ffmpeg' -and $joined -match '-hide_banner') {
+                return [pscustomobject]@{ ExitCode = 1; StdOut = @(); StdErr = @($script:DarStderr) }
+            }
+            # frame-rate probe (`-f null -`) writes nothing; don't let the generic branch create a file named '-'
+            if ($Arguments[$Arguments.Count - 1] -eq '-') {
+                return [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @($script:ProbeStderr) }
+            }
+            $outFile = $Arguments[$Arguments.Count - 1]
+            if ($Name -eq 'ncnn') { $outFile = $Arguments[[array]::IndexOf($Arguments, '--output') + 1] }
+            if ($Name -eq 'video2x') { $outFile = $Arguments[[array]::IndexOf($Arguments, '-o') + 1] }
+            Set-Content -LiteralPath $outFile -Value 'fake bytes'
+            [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @() }
+        }
+    }
+
+    It 'runs the ncnn OpenProteus runner for LiveAction at the DAR-derived 1920x1080' {
+        $r = Invoke-Upscale -InputFile $script:InputFile -OutputDir $script:OutputDir -Config $script:Config
+        $r.Success | Should -Be $true
+        $r.Engine | Should -Be 'openproteus'
+
+        Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter {
+            $Name -eq 'ncnn' -and ($Arguments -join ' ') -match '--out-width 1920 --out-height 1080' -and
+            ($Arguments -join ' ') -match 'openproteus-x2\.param' -and ($Arguments -join ' ') -match '--scale 2'
+        }
+        Should -Invoke Invoke-ArmTool -Times 0 -ParameterFilter { $Name -eq 'video2x' }
+    }
+
+    It 'derives a 1440 width for a 4:3 source' {
+        $script:DarStderr = '  Stream #0:0: Video: ffv1, yuv420p, 720x480 [SAR 8:9 DAR 4:3], 29.97 fps'
+
+        $r = Invoke-Upscale -InputFile $script:InputFile -OutputDir $script:OutputDir -Config $script:Config
+        $r.Success | Should -Be $true
+
+        Should -Invoke Invoke-ArmTool -ParameterFilter {
+            $Name -eq 'ncnn' -and ($Arguments -join ' ') -match '--out-width 1440 --out-height 1080'
+        }
+    }
+
+    It 'runs video2x libplacebo Anime4K for Animation' {
+        $r = Invoke-Upscale -InputFile $script:InputFile -OutputDir $script:OutputDir -Config $script:Config -ContentType Animation
+        $r.Success | Should -Be $true
+        $r.Engine | Should -Be 'anime4k'
+
+        Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter {
+            $Name -eq 'video2x' -and ($Arguments -join ' ') -match '-p libplacebo' -and
+            ($Arguments -join ' ') -match '--libplacebo-shader anime4k-v4-a\+a' -and ($Arguments -join ' ') -match '-w 1920 -h 1080'
+        }
+        Should -Invoke Invoke-ArmTool -Times 0 -ParameterFilter { $Name -eq 'ncnn' }
+    }
+
+    It 'resets SAR to 1 in the final mux for the new engines' {
+        $null = Invoke-Upscale -InputFile $script:InputFile -OutputDir $script:OutputDir -Config $script:Config
+
+        Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter {
+            $Name -eq 'ffmpeg' -and ($Arguments -join ' ') -match 'libx265' -and ($Arguments -join ' ') -match '-vf setsar=1'
+        }
+    }
+
+    It 'keeps the legacy realesrgan path (no SAR reset) when configured' {
+        $script:Config.UpscaleLiveAction = 'realesrgan'
+
+        $r = Invoke-Upscale -InputFile $script:InputFile -OutputDir $script:OutputDir -Config $script:Config
+        $r.Success | Should -Be $true
+
+        Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter {
+            $Name -eq 'video2x' -and ($Arguments -join ' ') -match '-p realesrgan' -and ($Arguments -join ' ') -match '--realesrgan-model realesr-animevideov3'
+        }
+        Should -Invoke Invoke-ArmTool -Times 0 -ParameterFilter { $Name -eq 'ffmpeg' -and ($Arguments -join ' ') -match 'setsar' }
+    }
+
+    It 'fails with a clear error for an unknown engine' {
+        $script:Config.UpscaleLiveAction = 'bogus'
+
+        $r = Invoke-Upscale -InputFile $script:InputFile -OutputDir $script:OutputDir -Config $script:Config
+        $r.Success | Should -Be $false
+        $r.Error | Should -Match "Unknown upscale engine 'bogus'"
+    }
+
+    It 'points at setup.ps1 when the OpenProteus model is missing (non-simulated run)' {
+        $script:Config.Simulate = $false
+
+        $r = Invoke-Upscale -InputFile $script:InputFile -OutputDir $script:OutputDir -Config $script:Config
+        $r.Success | Should -Be $false
+        $r.Error | Should -Match 'setup\.ps1'
+    }
+
+    It 'overrides the 3600s default tool timeout for the long-running steps' {
+        $null = Invoke-Upscale -InputFile $script:InputFile -OutputDir $script:OutputDir -Config $script:Config
+
+        Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter { $Name -eq 'ncnn' -and $TimeoutSec -ge 86400 }
+        Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter { $Name -eq 'ffmpeg' -and ($Arguments -join ' ') -match 'libx265' -and $TimeoutSec -ge 86400 }
+    }
+}
+
+Describe 'Get-VideoFrameRate' {
+    BeforeEach {
+        $script:Config = @{ Simulate = $true; LogDir = $script:TestDir }
+    }
+
+    It 'measures 23.976 from a soft-telecined decode (real ffmpeg progress line)' {
+        Mock Invoke-ArmTool {
+            [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @('frame= 2878 fps=0.0 q=-0.0 Lsize=N/A time=00:02:00.01 bitrate=N/A speed= 320x') }
+        }
+
+        Get-VideoFrameRate -InputFile 'C:\fake\a.mkv' -Config $script:Config | Should -Be '24000/1001'
+    }
+
+    It 'snaps a true 29.97 source to 30000/1001' {
+        Mock Invoke-ArmTool {
+            [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @('frame= 1798 fps=0.0 q=-0.0 Lsize=N/A time=00:01:00.00 bitrate=N/A speed= 300x') }
+        }
+
+        Get-VideoFrameRate -InputFile 'C:\fake\a.mkv' -Config $script:Config | Should -Be '30000/1001'
+    }
+
+    It 'retries from the start when the first window is empty (short file), then returns null if nothing parses' {
+        Mock Invoke-ArmTool { [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @('frame=    0 fps=0.0 q=0.0 Lsize=N/A time=N/A') } }
+
+        Get-VideoFrameRate -InputFile 'C:\fake\a.mkv' -Config $script:Config | Should -BeNullOrEmpty
+        Should -Invoke Invoke-ArmTool -Times 2
+    }
+
+    It 'returns null for a rate far from every standard rate' {
+        Mock Invoke-ArmTool {
+            [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @('frame= 1000 fps=0.0 q=-0.0 Lsize=N/A time=00:01:00.00 bitrate=N/A speed= 300x') }
+        }
+
+        Get-VideoFrameRate -InputFile 'C:\fake\a.mkv' -Config $script:Config | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Invoke-Upscale constant-frame-rate preprocess' {
+    BeforeEach {
+        $script:Config = @{
+            Simulate = $true; LogDir = $script:TestDir; UpscaleLiveAction = 'openproteus'
+            UpscaleCrf = 16; NcnnModelDir = 'C:\models'
+        }
+        $script:InputFile = Join-Path $script:TestDir 'movie.mkv'
+        Set-Content -Path $script:InputFile -Value 'fake source bytes'
+        $script:OutputDir = Join-Path $script:TestDir "out-$(New-Guid)"
+        $null = New-Item -ItemType Directory -Path $script:OutputDir -Force
+        $script:IdetFixture = 'ffmpeg-idet-progressive.txt'
+        $script:ProbeStderr = @('frame= 2878 fps=0.0 q=-0.0 Lsize=N/A time=00:02:00.01 bitrate=N/A speed= 320x')
+
+        Mock Invoke-ArmTool {
+            param($Name, $Arguments, $Config, $TimeoutSec)
+            $joined = $Arguments -join ' '
+            if ($Name -eq 'ffmpeg' -and $joined -match 'idet') {
+                return [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = Get-FixtureLines $script:IdetFixture }
+            }
+            if ($Arguments[$Arguments.Count - 1] -eq '-') {
+                return [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @($script:ProbeStderr) }
+            }
+            if ($Name -eq 'ffmpeg' -and $joined -match '-hide_banner') {
+                return [pscustomobject]@{ ExitCode = 1; StdOut = @(); StdErr = @('  Stream #0:0: Video: ffv1, yuv420p, 720x480, SAR 853:720 DAR 853:480, 23.98 fps') }
+            }
+            $outFile = $Arguments[$Arguments.Count - 1]
+            if ($Name -eq 'ncnn') { $outFile = $Arguments[[array]::IndexOf($Arguments, '--output') + 1] }
+            Set-Content -LiteralPath $outFile -Value 'fake bytes'
+            [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @() }
+        }
+    }
+
+    It 'forces the measured constant rate on the ffv1 intermediate (fixes soft-telecine timing)' {
+        $r = Invoke-Upscale -InputFile $script:InputFile -OutputDir $script:OutputDir -Config $script:Config
+        $r.Success | Should -Be $true
+
+        Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter {
+            $Name -eq 'ffmpeg' -and ($Arguments -join ' ') -match '-fps_mode cfr -r 24000/1001 -c:v ffv1'
+        }
+    }
+
+    It 'leaves the preprocess unforced and logs a WARN when the rate cannot be measured' {
+        $script:ProbeStderr = @()
+        Mock Write-ArmLog {}
+
+        $r = Invoke-Upscale -InputFile $script:InputFile -OutputDir $script:OutputDir -Config $script:Config
+        $r.Success | Should -Be $true
+
+        Should -Invoke Invoke-ArmTool -Times 0 -ParameterFilter { ($Arguments -join ' ') -match '-fps_mode cfr' }
+        Should -Invoke Write-ArmLog -ParameterFilter { $Level -eq 'WARN' -and $Message -match 'could not measure the frame rate' }
+    }
+
+    It 'does not force a rate for telecined sources (decimate already emits a constant rate)' {
+        $script:IdetFixture = 'ffmpeg-idet-telecined.txt'
+
+        $r = Invoke-Upscale -InputFile $script:InputFile -OutputDir $script:OutputDir -Config $script:Config
+        $r.Success | Should -Be $true
+
+        Should -Invoke Invoke-ArmTool -Times 0 -ParameterFilter { ($Arguments -join ' ') -match '-fps_mode cfr' }
     }
 }

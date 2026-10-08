@@ -49,6 +49,8 @@ upscale-worker (separate Scheduled Task, low priority, configurable active hours
 NAS: Title (Year)/Title (Year) [AI upscale 1080p].mkv  — original remux always kept
 ```
 
+> **Update, October 2026:** step 3 above is superseded. A measured bake-off showed x4 Real-ESRGAN ran at about 1 fps and that the x2 models are all about 22 fps, so the worker now routes by content type: OpenProteus 2x (ncnn runner, `tools/ncnn_upscale.py`) for live action, Anime4K (Video2X libplacebo) for animation, output size from the source display aspect ratio. Numbers, method and environment: [`docs/upscaler-spike-2026-10.md`](upscaler-spike-2026-10.md).
+
 Sample-first gate: each title first produces a 2-minute upscaled sample clip for user review (`-SampleOnly`); the full run (est. several hours to overnight per movie on the 7800 XT) only proceeds per user approval or when `AutoUpscale = $true`. Upscale quality on live action is an aesthetic judgment (shimmer/oversharpening are real risks), so the user stays in the loop by default.
 
 ## Repository layout (new; `C:\dev\wrm`, will `git init`)

@@ -261,6 +261,11 @@
         detailCell.appendChild(document.createTextNode(' '));
         detailCell.appendChild(el('button', { type: 'button', class: 'copy', 'data-action': 'copy', 'data-testid': 'copy-sample', text: 'Copy path' }));
       }
+      const metaText = [job.Engine, job.ContentType, job.InterlaceType].filter(Boolean).join(' / ');
+      if (metaText) {
+        detailCell.appendChild(document.createTextNode(' '));
+        detailCell.appendChild(el('span', { class: 'upscale-meta', 'data-testid': 'upscale-meta', text: metaText }));
+      }
       // Buttons come from the server's Actions list (the one place the
       // state -> allowed-action rule lives).
       const buttons = (job.Actions || []).filter((a) => ACTION_LABELS[a]).map((a) =>

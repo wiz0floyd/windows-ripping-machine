@@ -99,7 +99,7 @@ Describe 'GET /api/jobs' {
         $raw = $r.Body | ConvertFrom-Json -DateKind String
         $job = @($raw)[0]
         $job.PSObject.Properties.Name | Should -Be @('Id', 'Kind', 'State', 'Title', 'DiscLabel', 'DiscType', 'Drive',
-            'StagingDir', 'DestDir', 'QueueFile', 'SamplePath', 'Error', 'Created', 'Updated', 'History', 'Actions')
+            'StagingDir', 'DestDir', 'QueueFile', 'SamplePath', 'ContentType', 'Engine', 'InterlaceType', 'Error', 'Created', 'Updated', 'History', 'Actions')
         $job.Created | Should -Match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+[+-]\d{2}:\d{2}$'
         @($job.History).State | Should -Be @('Detected', 'Ripping')
         @($job.History)[1].At | Should -Match '^\d{4}-\d{2}-\d{2}T'
@@ -521,6 +521,24 @@ Describe 'POST /api/jobs/{id}/approve|retry|cancel (upscale actions)' {
             $reviewRow | Should -Match 'data-testid="copy-sample"'
             $reviewRow | Should -Not -Match 'data-action="retry"'
             $busyRow | Should -Not -Match '<button'
+        }
+
+        It 'shows the engine, content type and interlace type of an upscale job (server-rendered, HTML-encoded)' {
+            $withMeta = New-ArmJob -Kind Upscale -Properties @{ State = 'AwaitingReview'; SamplePath = 'C:\q\s.mkv'; ContentType = 'LiveAction'; Engine = 'openproteus'; InterlaceType = 'Telecined' } -Config $script:cfg
+            $without = New-ArmJob -Kind Upscale -Properties @{ State = 'Queued' } -Config $script:cfg
+            $evil = New-ArmJob -Kind Upscale -Properties @{ State = 'Complete'; Engine = '<script>x</script>' } -Config $script:cfg
+
+            $html = (Invoke-ArmWebRequest -Method GET -Path '/' -Config $script:cfg).Body
+            $row = { param($id) [regex]::Match($html, "<tr[^>]*data-job-id=`"$id`".*?</tr>").Value }
+            (& $row $withMeta) | Should -Match 'data-testid="upscale-meta">openproteus / LiveAction / Telecined<'
+            (& $row $without) | Should -Not -Match 'upscale-meta'
+            (& $row $evil) | Should -Not -Match '<script>x'
+            (& $row $evil) | Should -Match '&lt;script&gt;x'
+
+            $api = (Invoke-ArmWebRequest -Method GET -Path "/api/jobs/$withMeta" -Config $script:cfg).Body | ConvertFrom-Json
+            $api.Engine | Should -Be 'openproteus'
+            $api.ContentType | Should -Be 'LiveAction'
+            $api.InterlaceType | Should -Be 'Telecined'
         }
     }
 }

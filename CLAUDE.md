@@ -4,16 +4,16 @@ Orientation for Claude Code. Everything below is current; don't re-discover it �
 
 ## What this is
 
-A Windows-native "Automatic Ripping Machine" in PowerShell 7. `DiscWatcher.ps1` watches optical drives, rips video discs with `makemkvcon` or audio CDs with `freaccmd`, stages locally, names video via TMDb (optionally validated by a local LLM), robocopies to a NAS SMB share, ejects, and notifies (toast + optional Home Assistant webhook). Optional stage 2: `Upscale-Worker.ps1` upscales DVD rips (ffmpeg deinterlace/IVTC → Video2X Real-ESRGAN → x265) behind a human review gate. Runs in the logged-in user's session as hidden Scheduled Tasks — no WSL/VMs (no optical passthrough; NAS creds/audio need the real session).
+A Windows-native "Automatic Ripping Machine" in PowerShell 7. `DiscWatcher.ps1` watches optical drives, rips video discs with `makemkvcon` or audio CDs with `freaccmd`, stages locally, names video via TMDb (optionally validated by a local LLM), robocopies to a NAS SMB share, ejects, and notifies (toast + optional Home Assistant webhook). Optional stage 2: `Upscale-Worker.ps1` upscales DVD rips (ffmpeg deinterlace/IVTC → OpenProteus 2x (live action, ncnn) or Anime4K (animation, Video2X) → x265) behind a human review gate. `WebUi.ps1` serves a localhost-only status/action page (`wrm-webui`). Runs in the logged-in user's session as hidden Scheduled Tasks — no WSL/VMs (no optical passthrough; NAS creds/audio need the real session).
 
 Pipeline: `DiscWatcher` → `Invoke-VideoRip` (calls `Resolve-Title` up front, writes `metadata.json`) / `Invoke-AudioRip` → `Resolve-TitleOverride` (user edits to `metadata.json`) → `Move-ToNas` → `Send-ArmNotification`. DVD + `UpscaleDvds=true` → queue file `<name>.json` in `UpscaleQueueDir` → `Upscale-Worker` (60s poll, only inside `UpscaleActiveHours`).
 
 ## Rules that aren't obvious from the code
 
 - **`SPEC.md` is the authoritative contract** for every function signature, parameters, and return shape. Read the relevant section before module work; update it in the same change if a signature/behavior changes. Don't duplicate its details here.
-- **Never call `makemkvcon`/`freaccmd`/`ffmpeg`/`video2x` directly** — go through `Invoke-ArmTool`, which routes to `tests/stubs/stub-<name>.ps1` when `$Config.Simulate`. This is what makes everything testable without hardware.
+- **Never call `makemkvcon`/`freaccmd`/`ffmpeg`/`video2x`/`ncnn` (venv python running `tools/ncnn_upscale.py`) directly** — go through `Invoke-ArmTool`, which routes to `tests/stubs/stub-<name>.ps1` when `$Config.Simulate`. This is what makes everything testable without hardware.
 - Pipeline functions **don't throw** for expected failures — return `New-ArmResult` / `@{ Success=$false; Error=<msg> }` so the watcher loop survives. Exceptions = programmer errors only.
-- `src/*.ps1` libraries are dot-sourced and have **no top-level side effects**. Only `DiscWatcher.ps1`, `Upscale-Worker.ps1`, `setup.ps1` run top-level logic, guarded by `if ($MyInvocation.InvocationName -ne '.')` so tests can dot-source their functions.
+- `src/*.ps1` libraries are dot-sourced and have **no top-level side effects**. Only `DiscWatcher.ps1`, `Upscale-Worker.ps1`, `WebUi.ps1`, `setup.ps1` run top-level logic, guarded by `if ($MyInvocation.InvocationName -ne '.')` so tests can dot-source their functions.
 - Filenames: always sanitize via `ConvertTo-ArmSafeFileName` (the single canonical rule).
 - Upscale review state machine (by filename in `UpscaleQueueDir`): `.json` → `.awaiting-review` (sample made) → user renames to `.json` (approved → full run) → deleted on success / `.failed` on error.
 - Config: `config/config.psd1` (gitignored, real NAS paths/keys) loaded once via `Get-ArmConfig`; falls back to `config.example.psd1` with a WARN. New config keys go in `config.example.psd1` + SPEC.md "Config schema".
@@ -42,6 +42,9 @@ Invoke-ScriptAnalyzer -Path src -Recurse
 # Whole pipeline with no disc/NAS (stubs + fixtures)
 ./src/DiscWatcher.ps1 -Simulate -Once
 ./src/Upscale-Worker.ps1 -Simulate -Once
+
+# Web UI browser tests (Playwright; needs Node; CI job `browser`)
+cd tests/browser; npm ci; npx playwright test
 ```
 
 Plain `Invoke-Pester -Path tests` also picks up `tests/manual` — use the configuration form above.
@@ -62,13 +65,17 @@ Plain `Invoke-Pester -Path tests` also picks up `tests/manual` — use the confi
 | `src/Resolve-Title.ps1` | `Resolve-Title`, `Resolve-TitleOverride`, `Get-ArmCleanDiscLabel`, `ConvertTo-ArmTitleCase`, `Invoke-ArmTmdbSearch`, `Test-ArmTmdbAcceptance`, `Invoke-ArmLlmDisambiguation`, `ConvertTo-ArmFolderName` |
 | `src/Move-ToNas.ps1` | `Move-ToNas`, `Invoke-Robocopy` |
 | `src/Send-Notification.ps1` | `Send-ArmNotification` |
-| `src/Upscale-Video.ps1` | `Get-InterlaceType`, `Invoke-Upscale` |
+| `src/Upscale-Video.ps1` | `Get-InterlaceType`, `Get-VideoDisplayAspect`, `Get-UpscaleSetting`, `Invoke-Upscale` (engine per `-ContentType`: openproteus / anime4k / legacy realesrgan) |
+| `tools/ncnn_upscale.py` | ffmpeg → `upscale-ncnn-py` (custom ncnn model) → ffmpeg runner for the openproteus engine; deps pinned in `tools/requirements-ncnn.txt`, installed by `setup.ps1` (`Install-NcnnUpscaler`) |
 | `src/Upscale-Worker.ps1` | Entry point (`-ConfigPath -Simulate -Once`): `Test-ArmActiveWindow`, `Invoke-ArmUpscaleQueueItem`, `Invoke-ArmUpscaleQueuePass`, `Start-UpscaleWorker` |
+| `src/JobState.ps1` | Job-state store (one JSON file per job in `StateDirjobs`): `New-ArmJob`, `Update-ArmJob`, `Get-ArmJob`, `Get-ArmJobList`, `Remove-ArmStaleJobs`. Never throws. Field whitelist `$script:ArmJobFields` — new job fields must be added there and in `ConvertTo-ArmWebJob` |
+| `src/WebUi.ps1` + `src/webui/` | Entry point for task `wrm-webui` (localhost-only `HttpListener`, default port 8765): dashboard, `/api/jobs`, upscale approve/retry/cancel, manual metadata edit. Route table + `Invoke-ArmWebRequest`; POSTs need `X-WRM-Action: 1`. Static `app.js`/`app.css` (textContent only, strict CSP) |
+| `tests/browser/` | Playwright specs for the web UI (Node; CI job `browser`; run `npm ci && npx playwright test` there) |
 | `setup.ps1` | Installer: winget deps, dirs, writes `config.psd1`, registers tasks; `-NonInteractive`, `-Uninstall`. Needs admin (self-elevates); fails fast over SSH |
 | `tests/<Name>.Tests.ps1` | One per `src/<Name>.ps1` (+ `Setup.Tests.ps1`), success + failure paths |
-| `tests/EndToEnd.Tests.ps1` | Runs both entry points `-Simulate -Once`, asserts NAS-root folder layout |
+| `tests/EndToEnd.Tests.ps1` | Runs the watcher + worker entry points `-Simulate -Once`, asserts NAS-root folder layout |
 | `tests/manual/` | Live TMDb/LLM suite — excluded from CI |
-| `tests/stubs/stub-{makemkvcon,freaccmd,ffmpeg,video2x}.ps1` | Simulate-mode tool stubs used by `Invoke-ArmTool` |
+| `tests/stubs/stub-{makemkvcon,freaccmd,ffmpeg,video2x,ncnn}.ps1` | Simulate-mode tool stubs used by `Invoke-ArmTool` |
 | `tests/fixtures/` | Recorded makemkvcon robot output (incl. expired key), ffmpeg `idet` samples (interlaced/progressive/telecined), `tmdb-search.json` |
 
 Testing: no real tools or network in `tests/` — use stubs/fixtures or `Mock Invoke-RestMethod`.
@@ -76,6 +83,6 @@ Testing: no real tools or network in `tests/` — use stubs/fixtures or `Mock In
 ## Runtime facts (default config)
 
 - Logs: `C:\rips\logs\wrm-<yyyyMMdd>.log` · Staging: `C:\rips\staging` · Upscale queue: `C:\rips\upscale-queue`
-- Single-flight named mutex `wrm-rip`; Scheduled Tasks `wrm-watcher`, `wrm-upscaler` (at logon, hidden `pwsh`)
+- Single-flight named mutex `wrm-rip`; Scheduled Tasks `wrm-watcher`, `wrm-upscaler`, `wrm-webui` (at logon, hidden `pwsh`)
 - makemkvcon expired key → `Error='MAKEMKV_KEY_EXPIRED'` (special notification)
 - NAS move failures are not retried; staging dir is kept for manual re-trigger
