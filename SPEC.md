@@ -359,7 +359,11 @@ Get-UpscalePlan -InputFile <string> -SourceInfo <pscustomobject> -InterlaceType 
 #     Target            # @{ Width; Height; DisplayAspect }, Width = 2*round(Height*DAR/2); $null for realesrgan
 #     Upscale           # engine params: Model/Scale | Shader | Runner/ModelBase/Ffmpeg/Ffprobe/RequiredFiles
 #     Encode            # @{ Codec='libx265'; Crf; Preset='slow'; AudioCodec='copy'; ResetSar }
-#     Colour            # @{ Space; Primaries; Transfer; Range; Action='none' } - source tags carried for #29
+#     Colour            # @{ Space; Primaries; Transfer; Range; Action } - source tags; Action = 'convert-to-bt709' | 'tag-only'
+#     ColorInput        # 'bt601-6-525' | 'bt601-6-625' | $null - matrix of the engine output pixels (#29). Source tags
+#                       #   first: space/primaries smpte170m -> 525, bt470bg -> 625, bt709 -> $null. Untagged: height 480
+#                       #   -> 525, 576 -> 625; untagged >= 720 (or any other height) -> $null (assumed BT.709).
+#     ColorConvert      # [bool] = ColorInput is set
 #     Source; OutputFileName; Warnings; Error }
 #  Error is non-$null for an unknown engine or the realesrgan-plus x4-only mismatch;
 #  the plan never throws, Invoke-Upscale fails fast on it (before the slow preprocess).
@@ -368,7 +372,7 @@ Get-UpscalePlan -InputFile <string> -SourceInfo <pscustomobject> -InterlaceType 
 #    Get-UpscaleEngineArgumentList -Plan -InputFile -OutputFile     (Invoke-ArmTool -Name $Plan.EngineTool)
 #    Get-UpscaleEncodeArgumentList -Plan -UpscaledFile -OutputFile  (ffmpeg libx265 mux)
 #  tests/fixtures/golden-upscale-args.json pins the exact argument lists for 26
-#  scenarios (captured before the plan refactor); tests assert the plan-built args
+#  scenarios (re-captured for the #29 colour args) (captured before the plan refactor); tests assert the plan-built args
 #  equal them. Changing an ffmpeg/runner argument means regenerating that file on purpose.
 
 Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
@@ -395,7 +399,12 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #        anime4k     -> video2x -p libplacebo --libplacebo-shader $UpscaleShader -w W -h H
 #        realesrgan  -> legacy video2x realesrgan (model/scale from config)
 #  (d) ffmpeg mux: libx265 -crf $UpscaleCrf -preset slow, copy original audio;
-#      `-vf setsar=1` for openproteus/anime4k (not legacy realesrgan).
+#      `-vf` is ONE chain: `setsar=1` for openproteus/anime4k (not legacy realesrgan), then, when
+#      the plan's ColorConvert is set, `colorspace=all=bt709:iall=<ColorInput>:irange=tv:range=tv` (engine outputs
+#      carry the source's BT.601 matrix; the filter runs at the intermediates' 8-bit yuv420p, the
+#      encode sets no -pix_fmt). Every engine's output is always tagged
+#      `-colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv` (libx265 writes
+#      them to the HEVC VUI), including bt709/untagged-HD sources, which get tags only (#29).
 #  Output name: "<basename> [AI upscale 1080p].mkv". Temp files cleaned on any exit.
 
 # DiscWatcher.ps1 (entry point)

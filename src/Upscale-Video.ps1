@@ -463,7 +463,12 @@ function Get-VideoFrameRate {
                                (openproteus)
       Encode                   @{ Codec; Crf; Preset; AudioCodec; ResetSar }
       Colour                   @{ Space; Primaries; Transfer; Range; Action } - the source's
-                               colour tags; Action is 'none' (tags are not touched today).
+                               colour tags; Action is 'convert-to-bt709' or 'tag-only'.
+      ColorInput               'bt601-6-525' | 'bt601-6-625' | $null - the matrix the engine
+                               output pixels are in (source tags first, else height 480/576;
+                               bt709-tagged or untagged >= 720 is $null)
+      ColorConvert             [bool] - add colorspace=all=bt709:iall=<ColorInput>:irange=tv:range=tv to the
+                               final encode (output is always tagged BT.709 regardless)
       Source                   the Get-VideoSourceInfo object
       OutputFileName           '<basename> [AI upscale 1080p].mkv'
       Warnings                 [string[]] for the caller to log at WARN
@@ -584,6 +589,25 @@ function Get-UpscalePlan {
         $planError = "Unknown upscale engine '$engine' for ContentType $ContentType (expected openproteus, anime4k, or realesrgan)"
     }
 
+    # Colour policy (#29). Engine outputs carry the SOURCE's matrix (DVD = BT.601) in
+    # their pixels but the final file used to be untagged, which players read as BT.709.
+    # Decide the input matrix here; the final encode converts to BT.709 and always tags.
+    $colorInput = $null
+    $heightValue = if ($null -ne $SourceInfo.Height) { [int]$SourceInfo.Height } else { 0 }
+    $tags = @($SourceInfo.ColorSpace, $SourceInfo.ColorPrimaries) | Where-Object { $_ } | ForEach-Object { "$_".ToLowerInvariant() }
+    if ($tags -contains 'smpte170m') {
+        $colorInput = 'bt601-6-525'
+    } elseif ($tags -contains 'bt470bg') {
+        $colorInput = 'bt601-6-625'
+    } elseif ($tags -contains 'bt709') {
+        $colorInput = $null
+    } elseif ($heightValue -eq 480) {
+        $colorInput = 'bt601-6-525'
+    } elseif ($heightValue -eq 576) {
+        $colorInput = 'bt601-6-625'
+    }   # untagged >= 720 (or any other size): assume BT.709, tag only
+    $colorConvert = [bool]$colorInput
+
     return [pscustomobject][ordered]@{
         InputFile      = $InputFile
         BaseName       = $baseName
@@ -611,8 +635,10 @@ function Get-UpscalePlan {
             Primaries  = $SourceInfo.ColorPrimaries
             Transfer   = $SourceInfo.ColorTransfer
             Range      = $SourceInfo.ColorRange
-            Action     = 'none'
+            Action     = if ($colorConvert) { 'convert-to-bt709' } else { 'tag-only' }
         }
+        ColorInput     = $colorInput
+        ColorConvert   = $colorConvert
         Source         = $SourceInfo
         OutputFileName = "$baseName [AI upscale 1080p].mkv"
         Warnings       = @($warnings)
@@ -728,9 +754,17 @@ function Get-UpscaleEncodeArgumentList {
         '-map', '0:v:0',
         '-map', '1:a'
     )
-    if ($Plan.Encode.ResetSar) {
-        $muxArgs += @('-vf', 'setsar=1')
+    # One filter chain: SAR reset, then the BT.601 -> BT.709 matrix conversion. The
+    # intermediates are 8-bit yuv420p and the encode sets no -pix_fmt, so the filter
+    # runs at the encoder's own depth.
+    $vfParts = @()
+    if ($Plan.Encode.ResetSar) { $vfParts += 'setsar=1' }
+    if ($Plan.ColorConvert) { $vfParts += "colorspace=all=bt709:iall=$($Plan.ColorInput):irange=tv:range=tv" }
+    if ($vfParts.Count -gt 0) {
+        $muxArgs += @('-vf', ($vfParts -join ','))
     }
+    # Always tag the output so libx265 writes BT.709 into the HEVC VUI.
+    $muxArgs += @('-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-color_range', 'tv')
     $muxArgs += @(
         '-c:v', $Plan.Encode.Codec,
         '-crf', "$($Plan.Encode.Crf)",

@@ -668,14 +668,95 @@ Describe 'Get-UpscalePlan' {
         $p.Encode.ResetSar | Should -Be $false
     }
 
-    It 'carries the source colour tags for later colour handling, touching nothing today' {
-        $p = New-TestPlan
+    It 'carries the source colour tags and plans a BT.601 -> BT.709 conversion for an NTSC-tagged DVD' {
+        $p = New-TestPlan -Override @{ NcnnModelDir = $script:TestDir }
         $p.Colour.Space | Should -Be 'smpte170m'
         $p.Colour.Primaries | Should -Be 'smpte170m'
         $p.Colour.Transfer | Should -Be 'smpte170m'
         $p.Colour.Range | Should -Be 'tv'
-        $p.Colour.Action | Should -Be 'none'
+        $p.Colour.Action | Should -Be 'convert-to-bt709'
+        $p.ColorInput | Should -Be 'bt601-6-525'
+        $p.ColorConvert | Should -Be $true
         $p.Source.Width | Should -Be 720
+    }
+
+    Context 'colour policy (#29)' {
+        BeforeAll {
+            # NcnnModelDir under the temp dir so the openproteus branch's Join-Path works on any OS.
+            function New-ColourPlan {
+                param([hashtable] $Override = @{}, $ContentType = 'LiveAction', $Source = $script:Source)
+                $Override['NcnnModelDir'] = $script:TestDir
+                New-TestPlan -Override $Override -ContentType $ContentType -Source $Source
+            }
+            # Re-tag / re-size the recorded smpte170m 720x480 fixture.
+            function New-ColourSource([string] $Space, [string] $Primaries, [string] $Transfer, [int] $Height = 480) {
+                $t = (Get-FixtureLines 'ffprobe-dvd-source.json') -join "`n"
+                foreach ($k in @(@('color_space', $Space), @('color_primaries', $Primaries), @('color_transfer', $Transfer))) {
+                    $old = '"' + $k[0] + '": "smpte170m"'
+                    $new = if ($k[1]) { '"' + $k[0] + '": "' + $k[1] + '"' } else { '"' + $k[0] + '": "unknown"' }
+                    $t = $t.Replace($old, $new)
+                }
+                ConvertTo-VideoSourceInfo -Json $t.Replace('"height": 480, "sample_aspect_ratio"', "`"height`": $Height, `"sample_aspect_ratio`"")
+            }
+        }
+
+        It 'exposes the source colour tags, null when ffprobe says unknown' {
+            $s = New-ColourSource -Space $null -Primaries $null -Transfer $null
+            $s.ColorSpace | Should -BeNullOrEmpty
+            $s.ColorPrimaries | Should -BeNullOrEmpty
+            $s.ColorTransfer | Should -BeNullOrEmpty
+            $s.ColorRange | Should -Be 'tv'
+            $script:Source.ColorSpace | Should -Be 'smpte170m'
+        }
+
+        It 'PAL-tagged (bt470bg) converts from bt601-6-625' {
+            $p = New-ColourPlan -Source (New-ColourSource 'bt470bg' 'bt470bg' 'gamma28' 576)
+            $p.ColorInput | Should -Be 'bt601-6-625'
+            $p.ColorConvert | Should -Be $true
+        }
+
+        It 'untagged 480 assumes NTSC bt601-6-525 and untagged 576 assumes PAL bt601-6-625' {
+            $n = New-ColourPlan -Source (New-ColourSource $null $null $null 480)
+            $n.ColorInput | Should -Be 'bt601-6-525'
+            $n.ColorConvert | Should -Be $true
+            $pal = New-ColourPlan -Source (New-ColourSource $null $null $null 576)
+            $pal.ColorInput | Should -Be 'bt601-6-625'
+            $pal.ColorConvert | Should -Be $true
+        }
+
+        It 'untagged >= 720 is assumed BT.709: tag only, no conversion' {
+            $p = New-ColourPlan -Source (New-ColourSource $null $null $null 720)
+            $p.ColorInput | Should -BeNullOrEmpty
+            $p.ColorConvert | Should -Be $false
+            $p.Colour.Action | Should -Be 'tag-only'
+        }
+
+        It 'bt709-tagged source is tag only even at 480 lines' {
+            $p = New-ColourPlan -Source (New-ColourSource 'bt709' 'bt709' 'bt709' 480)
+            $p.ColorInput | Should -BeNullOrEmpty
+            $p.ColorConvert | Should -Be $false
+        }
+
+        It 'puts colorspace after setsar in ONE -vf chain and always tags the output (openproteus, anime4k)' {
+            foreach ($ct in 'LiveAction', 'Animation') {
+                $a = Get-UpscaleEncodeArgumentList -Plan (New-ColourPlan -ContentType $ct) -UpscaledFile 'T:\u.mkv' -OutputFile 'O:\out.mkv'
+                ($a -join ' ') | Should -Be '-y -i T:\u.mkv -i C:\rips\movie.mkv -map 0:v:0 -map 1:a -vf setsar=1,colorspace=all=bt709:iall=bt601-6-525:irange=tv:range=tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv -c:v libx265 -crf 16 -preset slow -c:a copy -shortest O:\out.mkv'
+                @($a | Where-Object { $_ -eq '-vf' }).Count | Should -Be 1
+            }
+        }
+
+        It 'legacy realesrgan gets colorspace without setsar' {
+            $a = Get-UpscaleEncodeArgumentList -Plan (New-ColourPlan -Override @{ UpscaleLiveAction = 'realesrgan' }) -UpscaledFile 'T:\u.mkv' -OutputFile 'O:\out.mkv'
+            ($a -join ' ') | Should -Match '-vf colorspace=all=bt709:iall=bt601-6-525:irange=tv:range=tv -colorspace bt709 '
+            ($a -join ' ') | Should -Not -Match 'setsar'
+        }
+
+        It 'bt709 source: no colorspace filter but tags still set' {
+            $plan = New-ColourPlan -Source (New-ColourSource 'bt709' 'bt709' 'bt709' 480)
+            $a = (Get-UpscaleEncodeArgumentList -Plan $plan -UpscaledFile 'T:\u.mkv' -OutputFile 'O:\out.mkv') -join ' '
+            $a | Should -Match '-vf setsar=1 -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv -c:v libx265'
+            $a | Should -Not -Match 'colorspace='
+        }
     }
 
     It 'uses the built-in default engines when the config has no engine keys' {
@@ -740,9 +821,9 @@ Describe 'Upscale stage argument builders' {
 
     It 'builds the mux arguments, trimming the audio input for a sample and resetting SAR' {
         (Get-UpscaleEncodeArgumentList -Plan (New-TestPlan -Sample) -UpscaledFile 'T:\u.mkv' -OutputFile 'O:\out.mkv') -join ' ' |
-            Should -Be '-y -i T:\u.mkv -ss 600 -t 120 -i C:\in\movie.mkv -map 0:v:0 -map 1:a -vf setsar=1 -c:v libx265 -crf 16 -preset slow -c:a copy -shortest O:\out.mkv'
+            Should -Be '-y -i T:\u.mkv -ss 600 -t 120 -i C:\in\movie.mkv -map 0:v:0 -map 1:a -vf setsar=1,colorspace=all=bt709:iall=bt601-6-525:irange=tv:range=tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv -c:v libx265 -crf 16 -preset slow -c:a copy -shortest O:\out.mkv'
         (Get-UpscaleEncodeArgumentList -Plan (New-TestPlan -Override @{ UpscaleLiveAction = 'realesrgan' }) -UpscaledFile 'T:\u.mkv' -OutputFile 'O:\out.mkv') -join ' ' |
-            Should -Be '-y -i T:\u.mkv -i C:\in\movie.mkv -map 0:v:0 -map 1:a -c:v libx265 -crf 16 -preset slow -c:a copy -shortest O:\out.mkv'
+            Should -Be '-y -i T:\u.mkv -i C:\in\movie.mkv -map 0:v:0 -map 1:a -vf colorspace=all=bt709:iall=bt601-6-525:irange=tv:range=tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv -c:v libx265 -crf 16 -preset slow -c:a copy -shortest O:\out.mkv'
     }
 }
 
