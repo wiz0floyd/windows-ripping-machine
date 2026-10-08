@@ -368,3 +368,100 @@ Describe 'Invoke-ArmUpscaleQueueItem job state' {
         Should -Invoke Remove-ArmStaleJobs -Times 1
     }
 }
+
+Describe 'Invoke-ArmUpscaleQueueItem Jellyfin version names' {
+    BeforeEach {
+        $script:Root = Join-Path $TestDrive (New-Guid)
+        $script:QueueDir = (New-Item -ItemType Directory -Path (Join-Path $script:Root 'queue')).FullName
+        $script:DestDir = (New-Item -ItemType Directory -Path (Join-Path $script:Root 'Grease (1978)')).FullName
+        $script:SourceFile = Join-Path $script:DestDir 'Grease (1978).mkv'
+        $script:OutFile = Join-Path $script:DestDir 'Grease (1978) [AI upscale 1080p].mkv'
+        Set-Content -LiteralPath $script:SourceFile -Value 'raw'
+
+        $script:Config = @{
+            Simulate        = $true
+            LogDir          = Join-Path $script:Root 'logs'
+            StateDir        = Join-Path $script:Root 'state'
+            UpscaleQueueDir = $script:QueueDir
+            AutoUpscale     = $true
+        }
+        $script:QueueFile = Join-Path $script:QueueDir 'Grease (1978).json'
+        $script:JobId = New-ArmJob -Kind Upscale -Properties @{ Title = 'Grease (1978)'; QueueFile = $script:QueueFile; DestDir = $script:DestDir } -Config $script:Config
+        ([ordered]@{ Source = $script:SourceFile; DestDir = $script:DestDir; JobId = $script:JobId } | ConvertTo-Json) |
+            Set-Content -LiteralPath $script:QueueFile
+
+        Mock Send-ArmNotification { }
+        Mock Invoke-Upscale {
+            Set-Content -LiteralPath $script:OutFile -Value 'upscaled'
+            [pscustomobject]@{ Success = $true; OutputFile = $script:OutFile; InterlaceType = 'Progressive'; Engine = 'openproteus'; Error = $null }
+        }
+    }
+
+    It 'renames the upscale to "- 1080p" and the <Height>-line source to "- <Label>", and records the final output' -ForEach @(
+        @{ Height = 480; Label = '480p' }
+        @{ Height = 576; Label = '576p' }
+    ) {
+        Mock Get-VideoSourceInfo { [pscustomobject]@{ Success = $true; Height = $Height; Width = 720 } }.GetNewClosure()
+
+        Invoke-ArmUpscaleQueueItem -QueueFile $script:QueueFile -Config $script:Config
+
+        $expectedOut = Join-Path $script:DestDir 'Grease (1978) - 1080p.mkv'
+        @(Get-ChildItem -LiteralPath $script:DestDir -File).Name | Sort-Object |
+            Should -Be @(@('Grease (1978) - 1080p.mkv', "Grease (1978) - $Label.mkv") | Sort-Object)
+        (Get-Content -LiteralPath $expectedOut -Raw).Trim() | Should -Be 'upscaled'
+        $job = Get-ArmJob -JobId $script:JobId -Config $script:Config
+        $job.State | Should -Be 'Complete'
+        $job.OutputFile | Should -Be $expectedOut
+        Should -Invoke Send-ArmNotification -Times 1 -ParameterFilter { $Level -eq 'Info' -and $Message -like "*$([WildcardPattern]::Escape($expectedOut))*" }
+        Test-Path -LiteralPath $script:QueueFile | Should -BeFalse
+    }
+
+    It 'labels the source "DVD" when the height is unknown' {
+        Mock Get-VideoSourceInfo { [pscustomobject]@{ Success = $false; Height = $null } }
+
+        Invoke-ArmUpscaleQueueItem -QueueFile $script:QueueFile -Config $script:Config
+
+        @(Get-ChildItem -LiteralPath $script:DestDir -File).Name | Sort-Object |
+            Should -Be @(@('Grease (1978) - 1080p.mkv', 'Grease (1978) - DVD.mkv') | Sort-Object)
+        (Get-ArmJob -JobId $script:JobId -Config $script:Config).State | Should -Be 'Complete'
+    }
+
+    It 'prefers a height carried by the Invoke-Upscale result over probing' {
+        Mock Get-VideoSourceInfo { throw 'must not probe' }
+        Mock Invoke-Upscale {
+            Set-Content -LiteralPath $script:OutFile -Value 'upscaled'
+            [pscustomobject]@{ Success = $true; OutputFile = $script:OutFile; SourceHeight = 576; Error = $null }
+        }
+
+        Invoke-ArmUpscaleQueueItem -QueueFile $script:QueueFile -Config $script:Config
+
+        Test-Path -LiteralPath (Join-Path $script:DestDir 'Grease (1978) - 576p.mkv') | Should -BeTrue
+        Should -Invoke Get-VideoSourceInfo -Times 0
+    }
+
+    It 'survives a failed source rename: WARN logged, job still Complete, upscale still renamed' {
+        Mock Get-VideoSourceInfo { [pscustomobject]@{ Success = $true; Height = 480 } }
+        Set-Content -LiteralPath (Join-Path $script:DestDir 'Grease (1978) - 480p.mkv') -Value 'squatter'
+        Mock Write-ArmLog { }
+
+        Invoke-ArmUpscaleQueueItem -QueueFile $script:QueueFile -Config $script:Config
+
+        $job = Get-ArmJob -JobId $script:JobId -Config $script:Config
+        $job.State | Should -Be 'Complete'
+        $job.OutputFile | Should -Be (Join-Path $script:DestDir 'Grease (1978) - 1080p.mkv')
+        Test-Path -LiteralPath $script:SourceFile | Should -BeTrue
+        Should -Invoke Write-ArmLog -ParameterFilter { $Level -eq 'WARN' }
+        Test-Path -LiteralPath ($script:QueueFile -replace '\.json$', '.failed') | Should -BeFalse
+    }
+
+    It 'sample-only runs write into the queue dir, never DestDir' {
+        $script:Config.AutoUpscale = $false
+        Mock Invoke-Upscale {
+            [pscustomobject]@{ Success = $true; OutputFile = (Join-Path $OutputDir 'Grease (1978) [AI upscale 1080p].mkv'); Error = $null }
+        }
+
+        Invoke-ArmUpscaleQueueItem -QueueFile $script:QueueFile -Config $script:Config
+
+        Should -Invoke Invoke-Upscale -Times 1 -ParameterFilter { $SampleOnly -and $OutputDir -eq $script:QueueDir }
+    }
+}

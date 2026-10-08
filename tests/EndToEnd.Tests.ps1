@@ -332,12 +332,18 @@ Describe 'End-to-end: Upscale-Worker.ps1 -Simulate -Once (AutoUpscale on)' {
     It 'runs the full upscale, deletes the queue file, and marks the job Complete' {
         & $script:UpscaleWorkerScript -ConfigPath $script:E2eConfig.ConfigPath -Simulate -Once
 
-        $expectedOutput = Join-Path $script:SourceMovieDir 'title1 [AI upscale 1080p].mkv'
+        # Jellyfin version names: upscale '<Folder> - 1080p.mkv', raw source '<Folder> - <H>p.mkv'
+        # (the ffprobe stub reports a 480-line DVD source).
+        $expectedOutput = Join-Path $script:SourceMovieDir 'Sample Movie (2020) - 1080p.mkv'
+        $expectedSource = Join-Path $script:SourceMovieDir 'Sample Movie (2020) - 480p.mkv'
         Test-Path -LiteralPath $script:QueueFile | Should -BeFalse
         Test-Path -LiteralPath $expectedOutput | Should -BeTrue
+        Test-Path -LiteralPath $expectedSource | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $script:SourceMovieDir 'title1.mkv') | Should -BeFalse
 
         $job = Get-ArmJob -JobId $script:JobId -Config $script:E2eConfig.JobConfig
         $job.State | Should -Be 'Complete'
+        $job.OutputFile | Should -Be $expectedOutput
         @($job.History).State | Should -Be @('Queued', 'Upscaling', 'Complete')
     }
 }

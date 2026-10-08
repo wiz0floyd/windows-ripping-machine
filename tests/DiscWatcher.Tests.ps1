@@ -108,7 +108,7 @@ Describe 'Invoke-DiscDispatch' {
 
             $expectedDest = Join-Path $script:NasVideoRoot 'My Movie (2020)'
             Test-Path $expectedDest | Should -BeTrue
-            Test-Path (Join-Path $expectedDest 'title1.mkv') | Should -BeTrue
+            Test-Path (Join-Path $expectedDest 'My Movie (2020).mkv') | Should -BeTrue
             Should -Invoke Send-ArmNotification -Times 1 -ParameterFilter { $Level -eq 'Info' }
             Should -Invoke Invoke-DiscEject -Times 1
         }
@@ -130,7 +130,7 @@ Describe 'Invoke-DiscDispatch' {
             Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Video' -Config $script:Config
 
             $dest = Join-Path $script:NasVideoRoot 'Extras Movie (2020)'
-            Test-Path (Join-Path $dest 'main.mkv') | Should -BeTrue
+            Test-Path (Join-Path $dest 'Extras Movie (2020).mkv') | Should -BeTrue
             Test-Path (Join-Path $dest 'extras' 'bonus.mkv') | Should -BeTrue
             Test-Path (Join-Path $dest 'bonus.mkv') | Should -BeFalse
         }
@@ -155,7 +155,7 @@ Describe 'Invoke-DiscDispatch' {
             $queueFile = Join-Path $script:QueueDir 'DVD Movie (1999).json'
             Test-Path $queueFile | Should -BeTrue
             $entry = Get-Content $queueFile -Raw | ConvertFrom-Json
-            $entry.Source | Should -Match 'big\.mkv$'
+            $entry.Source | Should -Match 'DVD Movie \(1999\)\.mkv$'
             $entry.DestDir | Should -Match 'DVD Movie \(1999\)$'
         }
 
@@ -176,6 +176,38 @@ Describe 'Invoke-DiscDispatch' {
             Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Video' -Config $script:Config
 
             @(Get-ChildItem $script:QueueDir -Filter '*.json').Count | Should -Be 0
+        }
+
+        It 'renames the main feature to the folder name before Move-ToNas and queues only a top-level mkv (extras ignored)' {
+            $script:Config.UpscaleDvds = $true
+            $ripOutputDir = Join-Path $script:StagingDir 'RAW_LABEL'
+            New-Item -ItemType Directory -Force -Path $ripOutputDir | Out-Null
+            'x' * 500 | Set-Content (Join-Path $ripOutputDir 'B1_t00.mkv')
+            'x' * 50 | Set-Content (Join-Path $ripOutputDir 'B1_t01.mkv')
+
+            Mock Invoke-VideoRip {
+                [pscustomobject]@{
+                    Success = $true; DiscLabel = 'RAW_LABEL'; DiscType = 'DVD'
+                    OutputDir = $ripOutputDir; TitleCount = 2; Error = $null
+                    Resolved = [pscustomobject]@{ FolderName = 'Grease (1978)'; Matched = $true; Title = 'Grease'; Year = 1978 }
+                }
+            }
+            # Fake NAS destination: a bigger file in extras/ must never be picked.
+            $fakeDest = Join-Path $script:NasVideoRoot 'Grease (1978)'
+            $script:StagedAtMove = $null
+            Mock Move-ToNas {
+                $script:StagedAtMove = @(Get-ChildItem -LiteralPath $SourceDir -Recurse -File | ForEach-Object { $_.FullName.Substring($SourceDir.Length).TrimStart('\', '/') } | Sort-Object)
+                $null = New-Item -ItemType Directory -Force -Path (Join-Path $fakeDest 'extras')
+                'x' * 100 | Set-Content -LiteralPath (Join-Path $fakeDest 'Grease (1978).mkv')
+                'x' * 900 | Set-Content -LiteralPath (Join-Path $fakeDest 'extras' 'huge-extra.mkv')
+                [pscustomobject]@{ Success = $true; DestDir = $fakeDest; Error = $null }
+            }
+
+            Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Video' -Config $script:Config
+
+            ($script:StagedAtMove -join '|') | Should -Be ((@('Grease (1978).mkv', (Join-Path 'extras' 'B1_t01.mkv')) | Sort-Object) -join '|')
+            $entry = Get-Content -LiteralPath (Join-Path $script:QueueDir 'Grease (1978).json') -Raw | ConvertFrom-Json
+            $entry.Source | Should -Be (Join-Path $fakeDest 'Grease (1978).mkv')
         }
 
         It 'sends a dedicated MAKEMKV_KEY_EXPIRED notification and keeps staging on key expiry' {
@@ -456,7 +488,7 @@ Describe 'Invoke-DiscDispatch' {
 
             Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Video' -Config $script:Config
 
-            Test-Path (Join-Path $script:NasVideoRoot 'My Movie (2020)' 'big.mkv') | Should -BeTrue
+            Test-Path (Join-Path $script:NasVideoRoot 'My Movie (2020)' 'My Movie (2020).mkv') | Should -BeTrue
             Should -Invoke Send-ArmNotification -Times 1 -ParameterFilter { $Level -eq 'Info' }
         }
     }

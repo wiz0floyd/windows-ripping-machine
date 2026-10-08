@@ -235,3 +235,174 @@ function Move-ArmExtrasToSubdir {
         return New-ArmResult -Success $false -Properties ([ordered]@{ Moved = 0 }) -Error $errorMsg
     }
 }
+
+<#
+.SYNOPSIS
+    Rename the main feature in a staged video directory to '<FolderName>.mkv'.
+
+.DESCRIPTION
+    Jellyfin only groups several files as versions of one movie when every file
+    name starts with the folder name. A file named exactly like the folder is the
+    primary version. MakeMKV names (B1_t00.mkv) would otherwise show up as a
+    separate movie titled 'b1_t00', and so would the later upscale next to it.
+
+    Call this after Move-ArmExtrasToSubdir: the largest top-level .mkv is the main
+    feature and is renamed to '<leaf of Dir>.mkv'. Does nothing when the name
+    already matches (case-insensitive) or Dir holds no top-level .mkv. When a
+    different file already has the target name it logs WARN and keeps the original
+    name. extras/ is never touched. Never throws.
+
+.PARAMETER Dir
+    Staging directory (leaf = resolved folder name, which is also the NAS leaf).
+
+.PARAMETER Config
+    Configuration hashtable (for logging).
+
+.OUTPUTS
+    [pscustomobject] with Success [bool], Renamed [bool], Path [string] (main
+    feature path after the call, or $null when there is none), Error [string].
+#>
+function Rename-ArmMainFeature {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Dir,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable] $Config
+    )
+
+    try {
+        $folderName = Split-Path -Leaf ($Dir.TrimEnd('\', '/'))
+        $main = @(Get-ChildItem -LiteralPath $Dir -File -Filter '*.mkv' |
+            Sort-Object -Property Length -Descending) | Select-Object -First 1
+        if (-not $main) {
+            return New-ArmResult -Success $true -Properties ([ordered]@{ Renamed = $false; Path = $null }) -Error $null
+        }
+
+        $targetName = "$folderName.mkv"
+        if ($main.Name -ieq $targetName) {
+            return New-ArmResult -Success $true -Properties ([ordered]@{ Renamed = $false; Path = $main.FullName }) -Error $null
+        }
+
+        $targetPath = Join-Path $Dir $targetName
+        if (Test-Path -LiteralPath $targetPath) {
+            Write-ArmLog -Level WARN -Message "Not renaming main feature '$($main.Name)': '$targetName' already exists in '$Dir'" -Config $Config
+            return New-ArmResult -Success $true -Properties ([ordered]@{ Renamed = $false; Path = $main.FullName }) -Error $null
+        }
+
+        Move-Item -LiteralPath $main.FullName -Destination $targetPath
+        Write-ArmLog -Level INFO -Message "Renamed main feature '$($main.Name)' -> '$targetName'" -Config $Config
+        return New-ArmResult -Success $true -Properties ([ordered]@{ Renamed = $true; Path = $targetPath }) -Error $null
+    } catch {
+        $errorMsg = "Exception in Rename-ArmMainFeature: $_"
+        Write-ArmLog -Level ERROR -Message $errorMsg -Config $Config
+        return New-ArmResult -Success $false -Properties ([ordered]@{ Renamed = $false; Path = $null }) -Error $errorMsg
+    }
+}
+
+<#
+.SYNOPSIS
+    Rename a finished upscale and its source so Jellyfin groups them as two
+    versions of one movie and plays the upscale by default.
+
+.DESCRIPTION
+    Jellyfin treats files named '<FolderName><separator><label>.mkv' as versions of
+    the movie in <FolderName>. Versions whose label ends in 'p' sort by resolution,
+    highest first, and the first one plays by default. So:
+      - the upscale becomes '<FolderName> - 1080p.mkv'  (renamed first)
+      - the source  becomes '<FolderName> - <H>p.mkv'   (H = SourceHeight, or
+        'DVD' when the height is unknown or not positive)
+
+    Never throws and never fails an upscale that already succeeded: a rename that
+    cannot happen (target exists, file missing, IO error) logs WARN and leaves that
+    file under its current name. Every path is used with -LiteralPath because the
+    upscale name contains '[' and ']'.
+
+.PARAMETER FolderName
+    Movie folder leaf (e.g. 'Grease (1978)').
+
+.PARAMETER UpscaledFile
+    Full path of the upscale Invoke-Upscale produced.
+
+.PARAMETER SourceFile
+    Full path of the raw source .mkv.
+
+.PARAMETER SourceHeight
+    Source frame height in pixels (480 or 576); $null/0 when unknown.
+
+.OUTPUTS
+    [pscustomobject] with Success [bool], OutputFile [string] and SourceFile [string]
+    (final paths, unchanged where a rename was skipped), OutputRenamed [bool],
+    SourceRenamed [bool], Error [string] (first WARN, informational only).
+#>
+function Rename-ArmUpscaleVersions {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $FolderName,
+
+        [Parameter(Mandatory = $true)]
+        [string] $UpscaledFile,
+
+        [Parameter(Mandatory = $true)]
+        [string] $SourceFile,
+
+        [Nullable[int]] $SourceHeight,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable] $Config
+    )
+
+    $state = [ordered]@{ OutputFile = $UpscaledFile; SourceFile = $SourceFile; OutputRenamed = $false; SourceRenamed = $false }
+    $warning = $null
+
+    $renameOne = {
+        param([string] $Path, [string] $NewName)
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+            return [pscustomobject]@{ Path = $Path; Renamed = $false; Warning = "'$Path' not found, cannot rename to '$NewName'" }
+        }
+        $item = Get-Item -LiteralPath $Path
+        if ($item.Name -ieq $NewName) {
+            return [pscustomobject]@{ Path = $Path; Renamed = $false; Warning = $null }
+        }
+        $target = Join-Path $item.DirectoryName $NewName
+        if (Test-Path -LiteralPath $target) {
+            return [pscustomobject]@{ Path = $Path; Renamed = $false; Warning = "'$NewName' already exists in '$($item.DirectoryName)'; keeping '$($item.Name)'" }
+        }
+        Move-Item -LiteralPath $Path -Destination $target
+        return [pscustomobject]@{ Path = $target; Renamed = $true; Warning = $null }
+    }
+
+    $label = if ($SourceHeight -and $SourceHeight -gt 0) { "$($SourceHeight)p" } else { 'DVD' }
+
+    try {
+        $out = & $renameOne $UpscaledFile "$FolderName - 1080p.mkv"
+        $state.OutputFile = $out.Path
+        $state.OutputRenamed = $out.Renamed
+        if ($out.Warning) {
+            $warning = $out.Warning
+            Write-ArmLog -Level WARN -Message "Jellyfin naming (upscale): $($out.Warning)" -Config $Config
+        }
+    } catch {
+        $warning = "Could not rename upscale '$UpscaledFile': $_"
+        Write-ArmLog -Level WARN -Message $warning -Config $Config
+    }
+
+    try {
+        $src = & $renameOne $SourceFile "$FolderName - $label.mkv"
+        $state.SourceFile = $src.Path
+        $state.SourceRenamed = $src.Renamed
+        if ($src.Warning) {
+            if (-not $warning) { $warning = $src.Warning }
+            Write-ArmLog -Level WARN -Message "Jellyfin naming (source): $($src.Warning)" -Config $Config
+        }
+    } catch {
+        if (-not $warning) { $warning = "Could not rename source '$SourceFile': $_" }
+        Write-ArmLog -Level WARN -Message "Could not rename source '$SourceFile': $_" -Config $Config
+    }
+
+    return New-ArmResult -Success $true -Properties $state -Error $warning
+}

@@ -279,6 +279,19 @@ Move-ToNas -SourceDir <string> -DestRoot <string> -Config <hashtable> -> [pscust
 Move-ArmExtrasToSubdir -Dir <string> -Config <hashtable> -> [pscustomobject] { Success, Moved, Error }
 # Called by Invoke-VideoDispatch before Move-ToNas: keeps the largest top-level .mkv in place and moves
 # the other top-level .mkv files into <Dir>\extras\ (Jellyfin extras folder). No-op for <2 .mkv files.
+Rename-ArmMainFeature -Dir <string> -Config <hashtable> -> [pscustomobject] { Success, Renamed, Path, Error }
+# Called right after Move-ArmExtrasToSubdir (video rips only): renames the largest top-level .mkv to
+# '<leaf of Dir>.mkv' (leaf = resolved folder name = NAS folder name, since Move-ToNas uses the source
+# leaf). Jellyfin groups files as versions of one movie only when each name starts with the folder name.
+# No-op when the name already matches (case-insensitive); if another file already has the target name,
+# WARN and keep the original name. extras/ untouched. Never throws.
+Rename-ArmUpscaleVersions -FolderName <string> -UpscaledFile <string> -SourceFile <string>
+                          [-SourceHeight <int>] -Config <hashtable> -> [pscustomobject]
+#  { Success, OutputFile, SourceFile, OutputRenamed, SourceRenamed, Error } (final paths).
+#  Upscale -> '<Folder> - 1080p.mkv' (first), source -> '<Folder> - <H>p.mkv' ('DVD' when height unknown).
+#  Labels ending in 'p' sort by resolution, highest first, so the upscale plays by default. A rename that
+#  cannot happen (target exists, file missing) logs WARN and leaves that file; never throws, never fails the job.
+#  All paths via -LiteralPath ('[' ']' in the old name).
 #  @{ Success; DestDir; Error }
 #  robocopy <src> <dest> /E /Z /NP /R:3 /W:10; exit codes 0-7 = success, ≥8 = failure.
 #  Verify: every source file exists at dest with equal Length. Delete source dir
@@ -286,6 +299,14 @@ Move-ArmExtrasToSubdir -Dir <string> -Config <hashtable> -> [pscustomobject] { S
 #  mismatch) are NOT automatically retried or re-queued by design; the source
 #  dir is preserved and the caller (DiscWatcher.ps1) logs/notifies for manual
 #  re-trigger.
+
+# tools/Repair-ArmJellyfinNames.ps1 -Path <movies root> [-ConfigPath] [-Simulate] [-WhatIf]
+#  One-off repair of existing libraries (SupportsShouldProcess; Repair-ArmJellyfinNames function returns
+#  rows Folder, File, Action Renamed|WouldRename|Skipped, NewName, Reason). Per movie folder, top-level
+#  .mkv only: a single raw file not starting with the folder name -> '<Folder>.mkv'; one '* [AI upscale
+#  1080p].mkv' -> '<Folder> - 1080p.mkv' and its raw source -> '<Folder> - <H>p.mkv' (H via Get-VideoSourceInfo,
+#  'DVD' if unknown). Ambiguous (several raw files, unidentifiable source, target exists) -> skipped + listed.
+#  -WhatIf changes nothing. Guarded by InvocationName -ne '.' so tests dot-source it.
 
 # Send-Notification.ps1
 Send-ArmNotification -Title <string> -Message <string> -Level <Info|Error>
@@ -406,7 +427,8 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #    Video  → Invoke-VideoRip (captures Resolve-Title result on .Resolved before
 #             the rip runs) → Resolve-TitleOverride (re-reads metadata.json for
 #             a user Title/Year/ContentType edit, else falls back to .Resolved) → rename
-#             staging dir → Move-ToNas (NasVideoPath) → if DVD && UpscaleDvds: copy main mkv path into
+#             staging dir → Move-ArmExtrasToSubdir → Rename-ArmMainFeature → Move-ToNas (NasVideoPath) → if DVD &&
+#             UpscaleDvds: copy main mkv path (largest TOP-LEVEL .mkv in DestDir; extras/ never considered) into
 #             UpscaleQueueDir queue file via New-UpscaleQueueEntry (<name>.json:
 #             {Source;DestDir;JobId;ContentType}, JobId = a new Upscale job in State=Queued
 #             (with the same ContentType), $null if job state is unavailable) → eject+notify
@@ -445,6 +467,11 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #  sample path, rename queue file → .awaiting-review (user renames back to .json
 #  after approving; document in README). Else full run → move result to DestDir,
 #  notify, delete queue file. Failures → .failed + Error notification.
+#  After a successful full run the worker calls Rename-ArmUpscaleVersions with the leaf of DestDir
+#  (Jellyfin version names; source height from the Invoke-Upscale result's SourceHeight/Height, else
+#  Get-VideoSourceInfo, else 'DVD'). The notification text and the Complete job record (OutputFile)
+#  carry the final output path. Sample-only runs write to UpscaleQueueDir (never DestDir), so a sample
+#  can't show up as a third Jellyfin version.
 #  Job state per item: resolve the queue file's JobId (a missing/unknown JobId gets
 #  a new Upscale job, persisted into the queue file). Set State=Sampling /
 #  Upscaling BEFORE Invoke-Upscale (so queued vs. running is distinguishable; also
@@ -465,7 +492,7 @@ Remove-ArmStaleJobs -Config <hashtable> -> [int] removed
 #  (generated, never derived from input); every lookup validates that exact
 #  pattern, so an Id can never address a path outside the jobs dir.
 #  Record: { Id; Kind; State; Title; DiscLabel; DiscType; Drive; StagingDir;
-#            DestDir; QueueFile; SamplePath; ContentType; Engine; InterlaceType;
+#            DestDir; QueueFile; SamplePath; OutputFile; ContentType; Engine; InterlaceType;
 #            Error; Created; Updated; History[] }
 #  ContentType/Engine/InterlaceType are set on Upscale jobs only; the web UI shows them
 #  next to the sample path so a reviewer sees which engine produced the sample.

@@ -99,7 +99,7 @@ Describe 'GET /api/jobs' {
         $raw = $r.Body | ConvertFrom-Json -DateKind String
         $job = @($raw)[0]
         $job.PSObject.Properties.Name | Should -Be @('Id', 'Kind', 'State', 'Title', 'DiscLabel', 'DiscType', 'Drive',
-            'StagingDir', 'DestDir', 'QueueFile', 'SamplePath', 'ContentType', 'Engine', 'InterlaceType', 'Error', 'Created', 'Updated', 'History', 'Actions')
+            'StagingDir', 'DestDir', 'QueueFile', 'SamplePath', 'OutputFile', 'ContentType', 'Engine', 'InterlaceType', 'Error', 'Created', 'Updated', 'History', 'Actions')
         $job.Created | Should -Match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+[+-]\d{2}:\d{2}$'
         @($job.History).State | Should -Be @('Detected', 'Ripping')
         @($job.History)[1].At | Should -Match '^\d{4}-\d{2}-\d{2}T'

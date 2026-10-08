@@ -11,6 +11,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'JobState.ps1')
 . (Join-Path $PSScriptRoot 'Send-Notification.ps1')
 . (Join-Path $PSScriptRoot 'Upscale-Video.ps1')
+. (Join-Path $PSScriptRoot 'Move-ToNas.ps1')
 
 <#
 .SYNOPSIS
@@ -89,6 +90,46 @@ function Get-ArmUpscaleRunInfo {
         }
     }
     return $info
+}
+
+<#
+.SYNOPSIS
+    Source frame height for the Jellyfin version label, or $null when unknown.
+
+.DESCRIPTION
+    Uses SourceHeight/Height from the Invoke-Upscale result when it carries one,
+    otherwise probes the source with Get-VideoSourceInfo (ffprobe via Invoke-ArmTool).
+    Never throws.
+#>
+function Get-ArmUpscaleSourceHeight {
+    [CmdletBinding()]
+    [OutputType([object])]
+    param(
+        [Parameter(Mandatory = $true)]
+        $Result,
+
+        [Parameter(Mandatory = $true)]
+        [string] $SourceFile,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable] $Config
+    )
+
+    try {
+        $names = $Result.PSObject.Properties.Name
+        foreach ($key in @('SourceHeight', 'Height')) {
+            if ($names -contains $key -and $Result.$key -and [int] $Result.$key -gt 0) {
+                return [int] $Result.$key
+            }
+        }
+        $info = Get-VideoSourceInfo -InputFile $SourceFile -Config $Config
+        if ($info.Success -and $info.Height -and [int] $info.Height -gt 0) {
+            return [int] $info.Height
+        }
+    } catch {
+        Write-ArmLog -Level WARN -Message "Could not determine source height of $SourceFile : $_" -Config $Config
+    }
+    return $null
 }
 
 <#
@@ -208,13 +249,25 @@ function Invoke-ArmUpscaleQueueItem {
                 throw "Upscale failed: $($result.Error)"
             }
 
+            # Jellyfin: name both files '<Folder> - <label>.mkv' so they group as versions
+            # of one movie and the 1080p upscale plays by default. Never fails the job.
+            $finalOutput = [string] $result.OutputFile
+            try {
+                $sourceHeight = Get-ArmUpscaleSourceHeight -Result $result -SourceFile $source -Config $Config
+                $named = Rename-ArmUpscaleVersions -FolderName (Split-Path -Leaf ([string] $destDir).TrimEnd('\', '/')) `
+                    -UpscaledFile $finalOutput -SourceFile $source -SourceHeight $sourceHeight -Config $Config
+                $finalOutput = [string] $named.OutputFile
+            } catch {
+                Write-ArmLog -Level WARN -Message "Could not apply Jellyfin version names in $destDir : $_" -Config $Config
+            }
+
             Send-ArmNotification -Title 'Upscale complete' `
-                -Message "Upscaled: $($result.OutputFile)" `
+                -Message "Upscaled: $finalOutput" `
                 -Level Info -Config $Config
 
             Remove-Item -LiteralPath $QueueFile -Force
 
-            $completeProps = @{ State = 'Complete'; DestDir = $destDir }
+            $completeProps = @{ State = 'Complete'; DestDir = $destDir; OutputFile = $finalOutput }
             $completeProps += Get-ArmUpscaleRunInfo -Result $result
             $null = Update-ArmJob -JobId $jobId -Properties $completeProps -Config $Config
         }
