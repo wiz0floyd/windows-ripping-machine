@@ -297,3 +297,80 @@ Describe 'Invoke-ArmElevatedRelaunch' {
             Should -Throw -ExpectedMessage '*exit code 1*'
     }
 }
+
+Describe 'Install-NcnnUpscaler' {
+    BeforeEach {
+        $script:Root = Join-Path $env:TEMP "wrm-ncnn-setup-test-$(New-Guid)"
+        $script:Py = Join-Path $script:Root 'venv\Scripts\python.exe'
+        $script:Models = Join-Path $script:Root 'models'
+        $script:Req = Join-Path $script:Root 'req.txt'
+        $null = New-Item -ItemType Directory -Force -Path $script:Root
+        Set-Content -Path $script:Req -Value 'upscale-ncnn-py==1.2.0'
+
+        Mock Invoke-ArmPython { 0 }
+        Mock Invoke-WebRequest { Set-Content -LiteralPath $OutFile -Value 'archive' }
+        Mock Get-FileHash { [pscustomobject]@{ Hash = '0D96689273650613726EBAE4482CDC56943F46E819F99109054D0CA325D6A7C7' } }
+        Mock Expand-ArmTarGz {
+            $inner = Join-Path $Destination 'm'
+            $null = New-Item -ItemType Directory -Force -Path $inner
+            Set-Content -LiteralPath (Join-Path $inner 'x.param') -Value 'param'
+            Set-Content -LiteralPath (Join-Path $inner 'x.bin') -Value 'bin'
+            0
+        }
+        Mock Write-Warning {}
+    }
+
+    AfterEach {
+        Remove-Item -Path $script:Root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'creates the venv, installs requirements, and installs the verified model' {
+        # venv creation must produce the python.exe the function then re-checks
+        Mock Invoke-ArmPython {
+            if ($Arguments -contains 'venv') {
+                $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $script:Py)
+                Set-Content -LiteralPath $script:Py -Value 'py'
+            }
+            0
+        }
+
+        Install-NcnnUpscaler -RequirementsPath $script:Req -PythonPath $script:Py -ModelDir $script:Models
+
+        Should -Invoke Invoke-ArmPython -ParameterFilter { $Arguments -contains 'venv' } -Times 1
+        Should -Invoke Invoke-ArmPython -ParameterFilter { $Arguments -contains 'pip' -and $Arguments -contains $script:Req } -Times 1
+        Test-Path (Join-Path $script:Models 'openproteus-x2.param') | Should -Be $true
+        Test-Path (Join-Path $script:Models 'openproteus-x2.bin') | Should -Be $true
+    }
+
+    It 'skips venv creation and the download when everything is already installed' {
+        $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $script:Py), $script:Models
+        Set-Content -LiteralPath $script:Py -Value 'py'
+        Set-Content -LiteralPath (Join-Path $script:Models 'openproteus-x2.param') -Value 'p'
+        Set-Content -LiteralPath (Join-Path $script:Models 'openproteus-x2.bin') -Value 'b'
+
+        Install-NcnnUpscaler -RequirementsPath $script:Req -PythonPath $script:Py -ModelDir $script:Models
+
+        Should -Invoke Invoke-ArmPython -ParameterFilter { $Arguments -contains 'venv' } -Times 0
+        Should -Invoke Invoke-WebRequest -Times 0
+    }
+
+    It 'refuses to install a model whose SHA256 does not match the pin' {
+        $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $script:Py)
+        Set-Content -LiteralPath $script:Py -Value 'py'
+        Mock Get-FileHash { [pscustomobject]@{ Hash = 'DEADBEEF' } }
+
+        Install-NcnnUpscaler -RequirementsPath $script:Req -PythonPath $script:Py -ModelDir $script:Models
+
+        Test-Path (Join-Path $script:Models 'openproteus-x2.param') | Should -Be $false
+        Should -Invoke Write-Warning -ParameterFilter { $Message -match 'SHA256 mismatch' }
+    }
+
+    It 'warns and stops (no throw) when the venv cannot be created' {
+        Mock Invoke-ArmPython { 1 }
+
+        { Install-NcnnUpscaler -RequirementsPath $script:Req -PythonPath $script:Py -ModelDir $script:Models } | Should -Not -Throw
+
+        Should -Invoke Write-Warning -ParameterFilter { $Message -match 'Could not create the Python venv' }
+        Should -Invoke Invoke-WebRequest -Times 0
+    }
+}

@@ -178,7 +178,7 @@ function ConvertTo-ArmWebJob {
     $names = $Job.PSObject.Properties.Name
     $out = [ordered]@{}
     foreach ($field in @('Id', 'Kind', 'State', 'Title', 'DiscLabel', 'DiscType', 'Drive', 'StagingDir',
-            'DestDir', 'QueueFile', 'SamplePath', 'Error')) {
+            'DestDir', 'QueueFile', 'SamplePath', 'ContentType', 'Engine', 'InterlaceType', 'Error')) {
         $out[$field] = if ($names -contains $field -and $null -ne $Job.$field) { [string]$Job.$field } else { $null }
     }
     $out.Created = if ($names -contains 'Created') { ConvertTo-ArmIsoTimestamp -Value $Job.Created } else { $null }
@@ -434,7 +434,9 @@ function Format-ArmWebDashboard {
         $showSample = $job.SamplePath -and $job.State -eq 'AwaitingReview'
         $detail = if ($job.State -eq 'Failed') { $job.Error } elseif ($showSample) { $job.SamplePath } else { $job.DestDir }
         $copy = if ($showSample) { ' <button type="button" class="copy" data-action="copy" data-testid="copy-sample">Copy path</button>' } else { '' }
-        $null = $sb.Append("<tr data-testid=`"job`" data-job-id=`"$(& $h $job.Id)`"><td data-testid=`"job-title`">$(& $h (Get-ArmWebJobDisplayTitle -Job $job))</td><td>$(Format-ArmWebStateBadge -State $job.State)</td><td class=`"path`"><span class=`"path-text`">$(& $h $detail)</span>$copy</td><td>$(& $h $job.Updated)</td><td class=`"actions`">$(Format-ArmWebActionButtons -Actions $job.Actions)</td></tr>`n")
+        $metaParts = @($job.Engine, $job.ContentType, $job.InterlaceType) | Where-Object { $_ }
+        $meta = if ($metaParts) { " <span class=`"upscale-meta`" data-testid=`"upscale-meta`">$(& $h ($metaParts -join ' / '))</span>" } else { '' }
+        $null = $sb.Append("<tr data-testid=`"job`" data-job-id=`"$(& $h $job.Id)`"><td data-testid=`"job-title`">$(& $h (Get-ArmWebJobDisplayTitle -Job $job))</td><td>$(Format-ArmWebStateBadge -State $job.State)</td><td class=`"path`"><span class=`"path-text`">$(& $h $detail)</span>$copy$meta</td><td>$(& $h $job.Updated)</td><td class=`"actions`">$(Format-ArmWebActionButtons -Actions $job.Actions)</td></tr>`n")
     }
 
     $null = $sb.Append(@'

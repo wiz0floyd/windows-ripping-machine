@@ -26,6 +26,20 @@ if ($isIdet) {
     exit 0
 }
 
+# Stream-info probe (`ffmpeg -hide_banner -i <file>`, no output file): like the real
+# tool, print the stream line on stderr and exit 1. Never touch the input file.
+if ($argList -contains '-hide_banner' -and $argList -notcontains '-f' -and $argList -notcontains '-c:v') {
+    [Console]::Error.WriteLine('  Stream #0:0: Video: ffv1, yuv420p, 720x480, SAR 853:720 DAR 853:480, 23.98 fps, 23.98 tbr, 1k tbn')
+    exit 1
+}
+
+# Null-sink invocations (`-f null -`, e.g. the frame-rate probe): nothing is written;
+# emit a realistic final progress line for a 60s window of 23.976 fps film.
+if ($argList[$argList.Count - 1] -eq '-') {
+    [Console]::Error.WriteLine('frame= 1439 fps=0.0 q=-0.0 Lsize=N/A time=00:01:00.02 bitrate=N/A speed= 300x')
+    exit 0
+}
+
 $outputFile = $argList[$argList.Count - 1]
 
 $outDir = Split-Path -Parent $outputFile

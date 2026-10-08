@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/wiz0floyd/windows-ripping-machine/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/wiz0floyd/windows-ripping-machine/actions/workflows/ci.yml)
 
-A native Windows replacement for the Linux Automatic Ripping Machine: insert a disc → rips automatically → results land on your NAS, tray ejects, you're notified. Optional stage 2 upscales DVD rips using AI (Real-ESRGAN on your GPU).
+A native Windows replacement for the Linux Automatic Ripping Machine: insert a disc → rips automatically → results land on your NAS, tray ejects, you're notified. Optional stage 2 upscales DVD rips using AI (OpenProteus / Anime4K on your GPU).
 
 ## Architecture
 
@@ -10,7 +10,7 @@ A native Windows replacement for the Linux Automatic Ripping Machine: insert a d
   - **Video discs** (DVD/Blu-ray): passes through `makemkvcon` → metadata lookup (TMDb) → staged rip copies to NAS video share.
   - **Audio CDs**: through `freaccmd` → FLAC with MusicBrainz tags → NAS music share.
   - **Data discs**: logged as a warning and you get a notification ("Data Disc Detected"); no rip is attempted.
-- **Upscale-Worker** (optional, separate task): processes queued DVD rips with ffmpeg deinterlacing (IVTC or bwdif) → AI upscaling (video2x Real-ESRGAN ncnn/Vulkan) on the GPU → high-bitrate x265 encode → sample-first review gate or automatic.
+- **Upscale-Worker** (optional, separate task): processes queued DVD rips with ffmpeg deinterlacing (IVTC or bwdif) → AI upscaling on the GPU (OpenProteus 2x via ncnn/Vulkan for live action, Anime4K via video2x for animation) → high-bitrate x265 encode → sample-first review gate or automatic.
 - **Web UI** (separate task `wrm-webui`): a status page at `http://localhost:8765/` on this machine — see [Web UI](#web-ui).
 - All work respects the logged-in user's NAS SMB credentials and audio stack (nothing touches Windows audio).
 
@@ -32,7 +32,7 @@ A native Windows replacement for the Linux Automatic Ripping Machine: insert a d
      to prompt on), `setup.ps1` fails fast with guidance instead of hanging — re-run it from an
      elevated local/RDP pwsh session instead.
 
-2. **Manual step (Upscale stage only):** Download and install [Video2X 6.x](https://github.com/k4yt3x/video2x/releases) from GitHub (CLI installer; adds `video2x.exe` to PATH). Targets Video2X 6.4+ (verify flags match your release).
+2. **Upscale stage only:** `setup.ps1` creates a Python venv (needs Python 3.10+ on PATH) at `C:\ProgramData\wrm\venv` and downloads the OpenProteus 2x model (SHA256-verified) to `C:\ProgramData\wrm\models`. For the animation engine (Anime4K) also download and install [Video2X 6.x](https://github.com/k4yt3x/video2x/releases) from GitHub (CLI installer; adds `video2x.exe` to PATH). Targets Video2X 6.4+ (verify flags match your release). Engines are chosen per content type with `UpscaleLiveAction` / `UpscaleAnimation` in `config.psd1`; a queue item (`<name>.json`) can set `"ContentType": "Animation"` to use the animation engine (TMDb-based auto-detection is not wired yet).
 
 3. **Verify installation** (simulate mode — no disc or NAS required):
    ```powershell
@@ -143,7 +143,7 @@ When a DVD rip completes and `UpscaleDvds=true`, the Upscale-Worker daemon proce
 
 **Sample-first review (default: `AutoUpscale=false`):**
 1. A 2-minute sample is extracted from 10:00–12:00 in the ripped video
-2. Sample is preprocessed (deinterlaced if interlaced/telecined via ffmpeg), then upscaled via video2x Real-ESRGAN 
+2. Sample is preprocessed (deinterlaced if interlaced/telecined via ffmpeg), then upscaled with the configured engine (OpenProteus for live action, Anime4K for animation) 
 3. Upscale-Worker renames the queue file from `.json` to `.awaiting-review` and notifies you with the sample path
 4. You review the sample for quality (deinterlace method, upscale artifacts, audio sync)
 5. If approved: rename `.awaiting-review` back to `.json` in the queue folder (`C:\rips\upscale-queue\` by default)

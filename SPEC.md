@@ -9,8 +9,8 @@ Full product context: see `docs/PLAN.md`.
 A Windows-native "Automatic Ripping Machine" replacement: a disc-watcher drives
 `makemkvcon` (video) / `freaccmd` (audio CD), stages rips locally, names video via
 TMDb, moves results to a NAS SMB share, ejects, notifies. Optional stage 2 upscales
-DVD rips with Video2X (Real-ESRGAN, ncnn/Vulkan — AMD RX 7800 XT) after ffmpeg
-deinterlace/IVTC. WSL/VMs were ruled out (no optical SCSI passthrough); everything
+DVD rips (OpenProteus 2x via ncnn/Vulkan for live action, Anime4K via Video2X
+libplacebo for animation — AMD RX 7800 XT) after ffmpeg deinterlace/IVTC. WSL/VMs were ruled out (no optical SCSI passthrough); everything
 runs natively on Windows in the logged-in user's session.
 
 ## Conventions (all files)
@@ -48,7 +48,7 @@ wrm/
 ├── setup.ps1
 ├── tests/
 │   ├── *.Tests.ps1              # Pester 5, one per src module
-│   ├── stubs/                   # stub-makemkvcon.ps1, stub-freaccmd.ps1, stub-video2x.ps1
+│   ├── stubs/                   # stub-makemkvcon.ps1, stub-freaccmd.ps1, stub-video2x.ps1, stub-ncnn.ps1
 │   ├── fixtures/                # makemkvcon robot output, TMDb JSON, ffmpeg idet output samples
 │   └── browser/                 # Playwright specs for the web UI (Node, test-only)
 ├── .gitignore                   # config/config.psd1, logs/, *.log
@@ -71,6 +71,8 @@ wrm/
     FreacCmdPath      = 'C:\Program Files\fre-ac\freaccmd.exe'
     FfmpegPath        = 'ffmpeg'
     Video2xPath       = 'C:\Program Files\Video2X\video2x.exe'
+    NcnnPath          = 'C:\ProgramData\wrm\venv\Scripts\python.exe'   # venv python running tools/ncnn_upscale.py
+    NcnnModelDir      = 'C:\ProgramData\wrm\models'                      # openproteus-x2.param/.bin
     # --- Behavior ---
     MinTitleLengthSec = 600
     RipAllTitles      = $true          # else main title only
@@ -78,11 +80,16 @@ wrm/
     TmdbApiKey        = ''             # blank => label+date naming
     HaWebhookUrl      = ''             # blank => toast only
     # --- Upscale stage ---
+    # (engine choice, speeds, VRAM and encoder measurements behind these defaults: docs/upscaler-spike-2026-10.md)
     UpscaleDvds       = $false
     AutoUpscale       = $false         # $false => stop after -SampleOnly clip, notify for review
     UpscaleActiveHours= @('23:00','08:00')
-    UpscaleModel      = 'realesrgan-plus'      # video2x 6.4 RealESRGAN models: realesr-animevideov3, realesrgan-plus-anime, realesrgan-plus
-    UpscaleScale      = 4                      # realesrgan-plus/-anime only ship x4 models; use realesr-animevideov3 for x2/x3
+    UpscaleLiveAction = 'openproteus'  # openproteus | anime4k | realesrgan (legacy)
+    UpscaleAnimation  = 'anime4k'      # engine when the queue item has ContentType='Animation'
+    UpscaleHeight     = 1080           # output height; width = round(height * source DAR / 2) * 2
+    UpscaleShader     = 'anime4k-v4-a+a'   # libplacebo shader for the anime4k engine
+    UpscaleModel      = 'realesrgan-plus'  # legacy realesrgan engine only (video2x 6.4 models)
+    UpscaleScale      = 4                  # legacy realesrgan engine only; plus/-anime ship x4 only
     UpscaleCrf        = 16
     # --- Web UI (http://localhost:<WebUiPort>/, this machine only) ---
     WebUiEnabled      = $true          # $false => WebUi.ps1 exits immediately
@@ -108,10 +115,12 @@ Write-ArmLog -Level <INFO|WARN|ERROR> -Message <string> [-Config <hashtable>]
 #  Timestamped line to console AND $Config.LogDir\wrm-<yyyyMMdd>.log.
 #  Must never throw (log dir auto-created; falls back to console-only).
 
-Invoke-ArmTool -Name <makemkvcon|freaccmd|ffmpeg|video2x> -Arguments <string[]>
+Invoke-ArmTool -Name <makemkvcon|freaccmd|ffmpeg|video2x|ncnn> -Arguments <string[]>
                -Config <hashtable> [-TimeoutSec <int>] -> [pscustomobject]
 #  Returns @{ ExitCode=[int]; StdOut=[string[]]; StdErr=[string[]] }.
 #  When $Config.Simulate: runs tests/stubs/stub-<name>.ps1 with same args instead.
+#  `ncnn` runs $Config.NcnnPath (the venv python.exe); its Arguments start with
+#  `-I <repo>\tools\ncnn_upscale.py`. Default -TimeoutSec is 3600; Invoke-Upscale passes 86400.
 #  Streams stdout lines to Write-ArmLog at INFO level (prefix "[<name>]").
 
 Get-DiscType -DriveLetter <char> -> 'AudioCD'|'Video'|'Data'|'None'
@@ -249,16 +258,34 @@ Get-InterlaceType -InputFile <string> -Config <hashtable>
 #  TFF+BFF vs Progressive counts: >80% progressive → Progressive; repeated-field
 #  pattern (idet repeat counts) → Telecined; else Interlaced.
 
+Get-VideoFrameRate -InputFile <string> -Config <hashtable> [-Seek 600] [-Duration 60] -> [string]|$null
+#  Decodes a short window (`ffmpeg -ss -t -i -map 0:v:0 -f null -`; retries from 0),
+#  snaps frames/time to a standard rate ('24000/1001', '30000/1001', ...; within 2%).
+#  Needed because soft-telecined DVD rips decode at 23.976 but carry a 29.97 header.
+
+Get-VideoDisplayAspect -InputFile <string> -Config <hashtable> -> [double]
+#  `ffmpeg -hide_banner -i` stderr; last `DAR a:b` on the Video: line (bracketed or
+#  trailing form), else frame-size ratio, else 16:9 with a WARN.
+
 Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
-               [-SampleOnly] -> [pscustomobject]
-#  @{ Success; OutputFile; InterlaceType; Error }
+               [-ContentType <LiveAction|Animation>] [-SampleOnly] -> [pscustomobject]
+#  @{ Success; OutputFile; InterlaceType; Engine; Error }   # Engine = openproteus|anime4k|realesrgan ($null if failed before engine selection)
 #  Chain: (a) classify; (b) preprocess with ffmpeg:
 #     Telecined  → -vf fieldmatch,yadif=deint=interlaced,decimate  (→23.976p)
 #     Interlaced → -vf bwdif=mode=send_frame
 #     Progressive→ passthrough
 #     encode intermediate ffv1|x264 crf 10 to temp;  -SampleOnly: -ss 600 -t 120.
-#  (c) video2x -i temp -o upscaled --processor realesrgan (model/scale from config);
-#  (d) ffmpeg mux: libx265 -crf $UpscaleCrf -preset slow, copy original audio.
+#     Non-Telecined sources also get `-fps_mode cfr -r <Get-VideoFrameRate>` so the
+#     intermediate's header rate matches its timestamps (else downstream tools
+#     re-time soft-telecined 23.976 frames at 29.97: video ~25% fast, audio clipped).
+#  (c) engine = UpscaleAnimation (ContentType Animation) or UpscaleLiveAction, at
+#      W x H where H=UpscaleHeight, W=round(H*DAR/2)*2 (anamorphic-safe):
+#        openproteus -> ncnn tool: tools/ncnn_upscale.py (ffmpeg -> upscale-ncnn-py
+#                       OpenProteus 2x -> ffmpeg lanczos to WxH, setsar=1, x264 crf12 temp)
+#        anime4k     -> video2x -p libplacebo --libplacebo-shader $UpscaleShader -w W -h H
+#        realesrgan  -> legacy video2x realesrgan (model/scale from config)
+#  (d) ffmpeg mux: libx265 -crf $UpscaleCrf -preset slow, copy original audio;
+#      `-vf setsar=1` for openproteus/anime4k (not legacy realesrgan).
 #  Output name: "<basename> [AI upscale 1080p].mkv". Temp files cleaned on any exit.
 
 # DiscWatcher.ps1 (entry point)
@@ -270,7 +297,7 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #             the rip runs) → Resolve-TitleOverride (re-reads metadata.json for
 #             a user Title/Year edit, else falls back to .Resolved) → rename
 #             staging dir → Move-ToNas (NasVideoPath) → if DVD && UpscaleDvds: copy main mkv path into
-#             UpscaleQueueDir queue file (<name>.json: {Source;DestDir;JobId}, JobId =
+#             UpscaleQueueDir queue file (<name>.json: {Source;DestDir[;ContentType];JobId}, JobId =
 #             a new Upscale job in State=Queued, $null if job state is unavailable) → eject+notify
 #    AudioCD→ Invoke-AudioRip → Move-ToNas (NasMusicPath) → eject+notify
 #    Data   → log WARN + notify, no action (no job record).
@@ -289,8 +316,10 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #  notify, delete queue file. Failures → .failed + Error notification.
 #  Job state per item: resolve the queue file's JobId (a missing/unknown JobId gets
 #  a new Upscale job, persisted into the queue file). Set State=Sampling /
-#  Upscaling BEFORE Invoke-Upscale (so queued vs. running is distinguishable), then
-#  AwaitingReview (+SamplePath, QueueFile=<.awaiting-review>) / Complete / Failed
+#  Upscaling BEFORE Invoke-Upscale (so queued vs. running is distinguishable; also
+#  record ContentType from the queue item), then AwaitingReview (+SamplePath,
+#  QueueFile=<.awaiting-review>, Engine, InterlaceType from the Invoke-Upscale result)
+#  / Complete (+Engine, InterlaceType) / Failed
 #  (+Error, QueueFile=<.failed>). An unparseable queue file becomes a new Failed
 #  job. Job-state writes never throw and can never turn a good upscale into .failed.
 #  Each pass (inside or outside active hours) first calls Remove-ArmStaleJobs.
@@ -305,7 +334,10 @@ Remove-ArmStaleJobs -Config <hashtable> -> [int] removed
 #  (generated, never derived from input); every lookup validates that exact
 #  pattern, so an Id can never address a path outside the jobs dir.
 #  Record: { Id; Kind; State; Title; DiscLabel; DiscType; Drive; StagingDir;
-#            DestDir; QueueFile; SamplePath; Error; Created; Updated; History[] }
+#            DestDir; QueueFile; SamplePath; ContentType; Engine; InterlaceType;
+#            Error; Created; Updated; History[] }
+#  ContentType/Engine/InterlaceType are set on Upscale jobs only; the web UI shows them
+#  next to the sample path so a reviewer sees which engine produced the sample.
 #  History = [{ State; At }], appended on every State change. Timestamps are
 #  ISO 8601 round-trip strings (PS 7 ConvertFrom-Json reads them back as [datetime]).
 #  States: Rip     Detected → Ripping → Moving → Complete | Failed
@@ -385,8 +417,10 @@ Invoke-ArmWebRequest -Method <string> -Path <string> [-Query <hashtable>] [-Body
 
 # setup.ps1
 #  Idempotent. winget install GuinpinSoft.MakeMKV, enzo1982.freac, Gyan.FFmpeg
-#  (skip present); print manual step for Video2X (GitHub release). Create dirs
-#  (StagingDir, UpscaleQueueDir, LogDir, StateDir).
+#  (skip present); print manual step for Video2X (GitHub release, needed for the
+#  anime4k/legacy engines). Install-NcnnUpscaler: venv at NcnnPath + pinned
+#  tools/requirements-ncnn.txt + SHA256-verified OpenProteus model into NcnnModelDir
+#  (warn-only on failure). Create dirs (StagingDir, UpscaleQueueDir, LogDir, StateDir).
 #  Prompt for NAS paths/TMDb key/HA URL → write config/config.psd1 (skip prompts
 #  with -NonInteractive; copies example). Register hidden Scheduled Tasks
 #  'wrm-watcher', 'wrm-upscaler' and 'wrm-webui' (at logon, current user,
@@ -416,7 +450,7 @@ Invoke-ArmWebRequest -Method <string> -Path <string> [-Query <hashtable>] [-Body
   `Invoke-ArmTool`, or run with `Simulate=$true`).
 - Stubs (`tests/stubs/stub-*.ps1`) accept the real CLI argument shapes and emit
   realistic output: makemkvcon robot lines + create fake .mkv (a few KB of random
-  bytes); freaccmd creates tagged-path .flac placeholder; video2x copies input to
+  bytes); freaccmd creates tagged-path .flac placeholder; video2x and ncnn copy input to
   output. Fixtures include at least one real-format makemkvcon `-r` transcript
   (info + rip), a TMDb search JSON, and ffmpeg idet stderr samples for all three
   interlace classes.
