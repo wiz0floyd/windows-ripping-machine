@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 
 BeforeAll {
     . (Join-Path $PSScriptRoot '..' 'src' 'Common.ps1')
+    . (Join-Path $PSScriptRoot '..' 'src' 'JobState.ps1')
     . (Join-Path $PSScriptRoot '..' 'src' 'Send-Notification.ps1')
     . (Join-Path $PSScriptRoot '..' 'src' 'Upscale-Video.ps1')
     . (Join-Path $PSScriptRoot '..' 'src' 'Upscale-Worker.ps1')
@@ -45,6 +46,7 @@ Describe 'Start-UpscaleWorker -Once' {
             @{
                 Simulate           = $true
                 LogDir             = $script:LogDir
+                StateDir           = Join-Path $script:TestDir 'state'
                 UpscaleQueueDir    = $script:QueueDir.FullName
                 AutoUpscale        = $AutoUpscale
                 UpscaleActiveHours = @('23:00', '08:00')
@@ -161,5 +163,127 @@ Describe 'Start-UpscaleWorker -Once' {
 
         Test-Path -LiteralPath $queueFile | Should -Be $true
         Should -Invoke Invoke-Upscale -Times 0
+    }
+}
+
+Describe 'Invoke-ArmUpscaleQueueItem job state' {
+    BeforeEach {
+        $script:TestDir = (New-Item -ItemType Directory -Path (Join-Path $env:TEMP "wrm-worker-jobs-$(New-Guid)")).FullName
+        $script:QueueDir = (New-Item -ItemType Directory -Path (Join-Path $script:TestDir 'queue')).FullName
+        $script:DestDir = (New-Item -ItemType Directory -Path (Join-Path $script:TestDir 'dest')).FullName
+        $script:SourceFile = Join-Path $script:TestDir 'movie.mkv'
+        Set-Content -Path $script:SourceFile -Value 'fake source bytes'
+
+        $script:Config = @{
+            Simulate        = $true
+            LogDir          = Join-Path $script:TestDir 'logs'
+            StateDir        = Join-Path $script:TestDir 'state'
+            UpscaleQueueDir = $script:QueueDir
+            AutoUpscale     = $false
+        }
+        $script:QueueFile = Join-Path $script:QueueDir 'movie.json'
+        $script:JobId = New-ArmJob -Kind Upscale -Properties @{ Title = 'movie'; QueueFile = $script:QueueFile; DestDir = $script:DestDir } -Config $script:Config
+        ([ordered]@{ Source = $script:SourceFile; DestDir = $script:DestDir; JobId = $script:JobId } | ConvertTo-Json) |
+            Set-Content -Path $script:QueueFile
+
+        Mock Send-ArmNotification { }
+    }
+
+    AfterEach {
+        Remove-Item -Path $script:TestDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'marks the job Sampling before Invoke-Upscale runs, then AwaitingReview with SamplePath' {
+        $script:StateDuringUpscale = $null
+        Mock Invoke-Upscale {
+            $script:StateDuringUpscale = (Get-ArmJob -JobId $script:JobId -Config $script:Config).State
+            [pscustomobject]@{ Success = $true; OutputFile = (Join-Path $script:QueueDir 'movie [AI upscale 1080p].mkv'); InterlaceType = 'Progressive'; Error = $null }
+        }
+
+        Invoke-ArmUpscaleQueueItem -QueueFile $script:QueueFile -Config $script:Config
+
+        $script:StateDuringUpscale | Should -Be 'Sampling'
+        $job = Get-ArmJob -JobId $script:JobId -Config $script:Config
+        $job.State | Should -Be 'AwaitingReview'
+        $job.SamplePath | Should -Be (Join-Path $script:QueueDir 'movie [AI upscale 1080p].mkv')
+        $job.QueueFile | Should -Be (Join-Path $script:QueueDir 'movie.awaiting-review')
+        @($job.History).State | Should -Be @('Queued', 'Sampling', 'AwaitingReview')
+    }
+
+    It 'marks the job Upscaling before the full run, then Complete' {
+        $script:Config.AutoUpscale = $true
+        $script:StateDuringUpscale = $null
+        Mock Invoke-Upscale {
+            $script:StateDuringUpscale = (Get-ArmJob -JobId $script:JobId -Config $script:Config).State
+            [pscustomobject]@{ Success = $true; OutputFile = (Join-Path $script:DestDir 'movie [AI upscale 1080p].mkv'); InterlaceType = 'Progressive'; Error = $null }
+        }
+
+        Invoke-ArmUpscaleQueueItem -QueueFile $script:QueueFile -Config $script:Config
+
+        $script:StateDuringUpscale | Should -Be 'Upscaling'
+        (Get-ArmJob -JobId $script:JobId -Config $script:Config).State | Should -Be 'Complete'
+    }
+
+    It 'marks the job Failed with the error and the .failed queue path' {
+        Mock Invoke-Upscale { [pscustomobject]@{ Success = $false; OutputFile = $null; InterlaceType = 'Interlaced'; Error = 'video2x exploded' } }
+
+        Invoke-ArmUpscaleQueueItem -QueueFile $script:QueueFile -Config $script:Config
+
+        $job = Get-ArmJob -JobId $script:JobId -Config $script:Config
+        $job.State | Should -Be 'Failed'
+        $job.Error | Should -Match 'video2x exploded'
+        $job.QueueFile | Should -Be (Join-Path $script:QueueDir 'movie.failed')
+    }
+
+    It 'creates a job for a legacy queue file without JobId and persists the id into it' {
+        Remove-Item -LiteralPath $script:QueueFile
+        $legacy = Join-Path $script:QueueDir 'Old Movie (1990).json'
+        (@{ Source = $script:SourceFile; DestDir = $script:DestDir } | ConvertTo-Json) | Set-Content -Path $legacy
+        Mock Invoke-Upscale { [pscustomobject]@{ Success = $true; OutputFile = 'x'; InterlaceType = 'Progressive'; Error = $null } }
+
+        Invoke-ArmUpscaleQueueItem -QueueFile $legacy -Config $script:Config
+
+        $reviewFile = Join-Path $script:QueueDir 'Old Movie (1990).awaiting-review'
+        $persisted = Get-Content -LiteralPath $reviewFile -Raw | ConvertFrom-Json
+        $persisted.JobId | Should -Match '^\d{8}-\d{6}-[0-9a-f]{6}$'
+        $persisted.SampleGenerated | Should -BeTrue
+        $job = Get-ArmJob -JobId $persisted.JobId -Config $script:Config
+        $job.Title | Should -Be 'Old Movie (1990)'
+        $job.State | Should -Be 'AwaitingReview'
+    }
+
+    It 'surfaces an unparseable queue file as a Failed job' {
+        Set-Content -LiteralPath $script:QueueFile -Value '{ not json'
+        Mock Invoke-Upscale { }
+
+        Invoke-ArmUpscaleQueueItem -QueueFile $script:QueueFile -Config $script:Config
+
+        $failed = @(Get-ArmJobList -Kind Upscale -Config $script:Config | Where-Object { $_.Id -ne $script:JobId })
+        $failed.Count | Should -Be 1
+        $failed[0].State | Should -Be 'Failed'
+        $failed[0].QueueFile | Should -Be (Join-Path $script:QueueDir 'movie.failed')
+    }
+
+    It 'still completes the upscale when job state is unavailable' {
+        $blocker = Join-Path $script:TestDir 'blocker'
+        Set-Content -Path $blocker -Value 'x'
+        $script:Config.StateDir = $blocker
+        $script:Config.AutoUpscale = $true
+        Mock Invoke-Upscale { [pscustomobject]@{ Success = $true; OutputFile = 'x'; InterlaceType = 'Progressive'; Error = $null } }
+
+        Invoke-ArmUpscaleQueueItem -QueueFile $script:QueueFile -Config $script:Config
+
+        Test-Path -LiteralPath $script:QueueFile | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $script:QueueDir 'movie.failed') | Should -BeFalse
+        Should -Invoke Send-ArmNotification -Times 1 -ParameterFilter { $Level -eq 'Info' }
+    }
+
+    It 'runs job-history retention once per pass, even outside active hours' {
+        Mock Remove-ArmStaleJobs { 0 }
+        Mock Test-ArmActiveWindow { $false }
+
+        Invoke-ArmUpscaleQueuePass -Config $script:Config
+
+        Should -Invoke Remove-ArmStaleJobs -Times 1
     }
 }

@@ -21,6 +21,10 @@ $ErrorActionPreference = 'Stop'
 .PARAMETER Config
     Configuration hashtable containing StagingDir and FreacCmdPath (or Simulate mode).
 
+.PARAMETER JobId
+    Optional job-state ID (JobState.ps1); moved to State=Ripping with the
+    staging dir once the rip starts.
+
 .OUTPUTS
     [pscustomobject] with properties:
     - Success [bool]: $true if rip completed successfully
@@ -44,7 +48,9 @@ function Invoke-AudioRip {
         [char] $DriveLetter,
 
         [Parameter(Mandatory = $true)]
-        [hashtable] $Config
+        [hashtable] $Config,
+
+        [string] $JobId
     )
 
     try {
@@ -57,6 +63,10 @@ function Invoke-AudioRip {
         $null = New-Item -ItemType Directory -Path $stagingDir -Force
 
         Write-ArmLog -Level INFO -Message "Starting audio rip from drive $($DriveLetter): to $stagingDir" -Config $Config
+
+        if ($JobId) {
+            $null = Update-ArmJob -JobId $JobId -Properties @{ State = 'Ripping'; StagingDir = $stagingDir; DiscType = 'AudioCD' } -Config $Config
+        }
 
         # Build freaccmd arguments with CDDB/MusicBrainz enabled
         $driveArg = "$($DriveLetter):"

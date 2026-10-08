@@ -34,7 +34,8 @@ wrm/
 ├── config/config.example.psd1   # template; real config.psd1 is gitignored
 ├── src/
 │   ├── Common.ps1               # Get-ArmConfig, Write-ArmLog, Invoke-ArmTool, Get-DiscType
-│   ├── Rip-VideoDisc.ps1        # Invoke-VideoRip
+│   ├── JobState.ps1             # New-ArmJob, Update-ArmJob, Get-ArmJob, Get-ArmJobList, Remove-ArmStaleJobs
+│   ├── Rip-VideoDisc.ps1        # Invoke-VideoRip, Set-ArmMetadataFile
 │   ├── Rip-AudioCd.ps1          # Invoke-AudioRip
 │   ├── Resolve-Title.ps1        # Resolve-Title
 │   ├── Move-ToNas.ps1           # Move-ToNas
@@ -62,6 +63,7 @@ wrm/
     StagingDir        = 'C:\rips\staging'
     UpscaleQueueDir   = 'C:\rips\upscale-queue'
     LogDir            = 'C:\rips\logs'
+    StateDir          = 'C:\rips\state'    # job-state records (<StateDir>\jobs\<id>.json)
     MakeMkvConPath    = 'C:\Program Files (x86)\MakeMKV\makemkvcon64.exe'
     FreacCmdPath      = 'C:\Program Files\fre-ac\freaccmd.exe'
     FfmpegPath        = 'ffmpeg'
@@ -79,6 +81,8 @@ wrm/
     UpscaleModel      = 'realesrgan-plus'      # video2x 6.4 RealESRGAN models: realesr-animevideov3, realesrgan-plus-anime, realesrgan-plus
     UpscaleScale      = 4                      # realesrgan-plus/-anime only ship x4 models; use realesr-animevideov3 for x2/x3
     UpscaleCrf        = 16
+    # --- Job history ---
+    JobHistoryDays    = 30             # prune Complete/Failed/Cancelled job records older than this
     # --- Test/dev ---
     Simulate          = $false         # route Invoke-ArmTool to tests/stubs/
 }
@@ -113,8 +117,11 @@ Get-DiscType -DriveLetter <char> -> 'AudioCD'|'Video'|'Data'|'None'
 
 ```powershell
 # Rip-VideoDisc.ps1
-Invoke-VideoRip -DriveLetter <char> -Config <hashtable> -> [pscustomobject]
+Invoke-VideoRip -DriveLetter <char> -Config <hashtable> [-JobId <string>] -> [pscustomobject]
 #  @{ Success; DiscLabel; DiscType('DVD'|'BD'); OutputDir; TitleCount; Error; Resolved }
+#  -JobId: optional Rip job (JobState.ps1). Right after metadata.json is written
+#  (the only point the staging dir is known mid-rip) the job is updated to
+#  State=Ripping with StagingDir, Title (= Resolved.FolderName), DiscLabel, DiscType.
 #  1. `makemkvcon -r info disc:9999` output → map drive letter to makemkvcon index
 #     (DRV: lines), read disc label + type.
 #  2. As soon as the disc label is known (before the long rip runs), calls
@@ -128,10 +135,17 @@ Invoke-VideoRip -DriveLetter <char> -Config <hashtable> -> [pscustomobject]
 #  4. Parse robot output: MSG codes, PRGV progress (log every ~10%), TINFO/CINFO.
 #  5. Detect expired/absent key (MSG 5021/"registration key" text) → Success=$false,
 #     Error='MAKEMKV_KEY_EXPIRED' (watcher notifies specially).
+#
+#  Set-ArmMetadataFile -OutputDir <string> -Title <string> -Year <string> -Config <hashtable>
+#  Writes a hand-editable metadata.json ({Title;Year}) into a rip's staging
+#  OutputDir once the disc label is resolved (called from Invoke-VideoRip).
+#  Skips the write if metadata.json already exists. Never throws (logs WARN).
 
 # Rip-AudioCd.ps1
-Invoke-AudioRip -DriveLetter <char> -Config <hashtable> -> [pscustomobject]
+Invoke-AudioRip -DriveLetter <char> -Config <hashtable> [-JobId <string>] -> [pscustomobject]
 #  @{ Success; OutputDir; Artist; Album; Error }
+#  -JobId: optional Rip job; set to State=Ripping, StagingDir, DiscType='AudioCD'
+#  once the staging dir is created.
 #  freaccmd <drive> -e flac -o "<staging>\audio\<guid>\<artist> - <album>\..." (no
 #  explicit CDDB/MusicBrainz flags are passed — this relies on freaccmd's own
 #  configured defaults); parse resulting tags/dir for Artist/Album; fallback
@@ -184,10 +198,8 @@ Resolve-Title -DiscLabel <string> -Config <hashtable> -> [pscustomobject]
 #  WARN when it overrides TMDb, disambiguates an ambiguous set, or declines) so
 #  the match path stays auditable, same as the truncation-retry log.
 #
-#  Set-ArmMetadataFile -OutputDir <string> -Title <string> -Year <string> -Config <hashtable>
-#  Writes a hand-editable metadata.json ({Title;Year}) into a rip's staging
-#  OutputDir once the disc label is resolved (called from Invoke-VideoRip).
-#  Skips the write if metadata.json already exists. Never throws (logs WARN).
+#  (Set-ArmMetadataFile, which writes the metadata.json read below, lives in
+#  Rip-VideoDisc.ps1 - see that section.)
 #
 #  Resolve-TitleOverride -OutputDir <string> -FallbackResolved <pscustomobject>
 #                        -Config <hashtable> -> [pscustomobject]
@@ -249,10 +261,15 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #             the rip runs) → Resolve-TitleOverride (re-reads metadata.json for
 #             a user Title/Year edit, else falls back to .Resolved) → rename
 #             staging dir → Move-ToNas (NasVideoPath) → if DVD && UpscaleDvds: copy main mkv path into
-#             UpscaleQueueDir queue file (<name>.json: {Source;DestDir}) → eject+notify
+#             UpscaleQueueDir queue file (<name>.json: {Source;DestDir;JobId}, JobId =
+#             a new Upscale job in State=Queued, $null if job state is unavailable) → eject+notify
 #    AudioCD→ Invoke-AudioRip → Move-ToNas (NasMusicPath) → eject+notify
-#    Data   → log WARN + notify, no action.
+#    Data   → log WARN + notify, no action (no job record).
 #  Every failure path: Send-ArmNotification Level Error; staging kept for forensics.
+#  Job state: Invoke-DiscDispatch creates a Rip job (State=Detected, Drive, DiscType)
+#  for Video/AudioCD and passes -JobId down; dispatch advances it
+#  Detected → Ripping (set inside the rip function) → Moving → Complete (DestDir),
+#  or Failed (Error) on any failure path, including unhandled exceptions.
 
 # Upscale-Worker.ps1 (entry point)
 #  Param: [-ConfigPath] [-Simulate] [-Once]. Poll UpscaleQueueDir every 60s for
@@ -261,10 +278,45 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #  sample path, rename queue file → .awaiting-review (user renames back to .json
 #  after approving; document in README). Else full run → move result to DestDir,
 #  notify, delete queue file. Failures → .failed + Error notification.
+#  Job state per item: resolve the queue file's JobId (a missing/unknown JobId gets
+#  a new Upscale job, persisted into the queue file). Set State=Sampling /
+#  Upscaling BEFORE Invoke-Upscale (so queued vs. running is distinguishable), then
+#  AwaitingReview (+SamplePath, QueueFile=<.awaiting-review>) / Complete / Failed
+#  (+Error, QueueFile=<.failed>). An unparseable queue file becomes a new Failed
+#  job. Job-state writes never throw and can never turn a good upscale into .failed.
+#  Each pass (inside or outside active hours) first calls Remove-ArmStaleJobs.
+
+# JobState.ps1 (job-state store; read by the web UI)
+New-ArmJob     -Kind <Rip|Upscale> [-Properties <hashtable>] -Config <hashtable> -> [string] JobId | $null
+Update-ArmJob  -JobId <string> -Properties <hashtable> -Config <hashtable> -> [bool]
+Get-ArmJob     -JobId <string> -Config <hashtable> -> [pscustomobject] | $null
+Get-ArmJobList [-Kind <Rip|Upscale>] -Config <hashtable> -> [pscustomobject] (pipeline; wrap in @())
+Remove-ArmStaleJobs -Config <hashtable> -> [int] removed
+#  One file per job: <StateDir>\jobs\<id>.json. Id = 'yyyyMMdd-HHmmss-<6 hex>'
+#  (generated, never derived from input); every lookup validates that exact
+#  pattern, so an Id can never address a path outside the jobs dir.
+#  Record: { Id; Kind; State; Title; DiscLabel; DiscType; Drive; StagingDir;
+#            DestDir; QueueFile; SamplePath; Error; Created; Updated; History[] }
+#  History = [{ State; At }], appended on every State change. Timestamps are
+#  ISO 8601 round-trip strings (PS 7 ConvertFrom-Json reads them back as [datetime]).
+#  States: Rip     Detected → Ripping → Moving → Complete | Failed
+#          Upscale Queued → Sampling → AwaitingReview → (Queued →) Upscaling → Complete | Failed
+#                  (Cancelled reserved for the web UI's cancel action)
+#  New-ArmJob: State defaults to Detected (Rip) / Queued (Upscale); Id/Kind/
+#  Created/Updated/History are managed, not settable. Update-ArmJob merges
+#  known fields (unknown keys and the managed ones are ignored) and stamps Updated.
+#  Writes are atomic: unique <id>.json.<guid>.tmp then File.Move(overwrite).
+#  Get-ArmJobList is newest first (by Id) and skips unreadable/foreign files.
+#  Remove-ArmStaleJobs deletes Complete/Failed/Cancelled records whose Updated
+#  is older than JobHistoryDays (default 30 when the key is missing), plus
+#  stray .tmp files older than a day.
+#  Never throws: missing/blank StateDir (logged WARN once), unwritable dir,
+#  or corrupt records → WARN + no-op ($null / $false / nothing / 0).
 
 # setup.ps1
 #  Idempotent. winget install GuinpinSoft.MakeMKV, enzo1982.freac, Gyan.FFmpeg
-#  (skip present); print manual step for Video2X (GitHub release). Create dirs.
+#  (skip present); print manual step for Video2X (GitHub release). Create dirs
+#  (StagingDir, UpscaleQueueDir, LogDir, StateDir).
 #  Prompt for NAS paths/TMDb key/HA URL → write config/config.psd1 (skip prompts
 #  with -NonInteractive; copies example). Register hidden Scheduled Tasks
 #  'wrm-watcher' and 'wrm-upscaler' (at logon, current user,

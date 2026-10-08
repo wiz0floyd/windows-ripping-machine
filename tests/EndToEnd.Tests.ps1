@@ -27,15 +27,22 @@ BeforeAll {
     $script:UpscaleWorkerScript = Join-Path $script:RepoRoot 'src' 'Upscale-Worker.ps1'
     $script:StubDir = Join-Path $PSScriptRoot 'stubs'
 
+    # Job-state assertions read the records the child scripts wrote.
+    . (Join-Path $script:RepoRoot 'src' 'Common.ps1')
+    . (Join-Path $script:RepoRoot 'src' 'JobState.ps1')
+    . (Join-Path $PSScriptRoot 'TestHelpers.ps1')
+
     function New-ArmE2eConfig {
         param(
-            [Parameter(Mandatory = $true)] [string] $Root
+            [Parameter(Mandatory = $true)] [string] $Root,
+            [switch] $AutoUpscale
         )
 
         $paths = @{
             StagingDir      = Join-Path $Root 'staging'
             UpscaleQueueDir = Join-Path $Root 'queue'
             LogDir          = Join-Path $Root 'logs'
+            StateDir        = Join-Path $Root 'state'
             NasVideoPath    = Join-Path $Root 'nas-video'
             NasMusicPath    = Join-Path $Root 'nas-music'
         }
@@ -51,6 +58,7 @@ BeforeAll {
     StagingDir        = '$($paths.StagingDir -replace "'", "''")'
     UpscaleQueueDir   = '$($paths.UpscaleQueueDir -replace "'", "''")'
     LogDir            = '$($paths.LogDir -replace "'", "''")'
+    StateDir          = '$($paths.StateDir -replace "'", "''")'
     MakeMkvConPath    = 'C:\does-not-exist\makemkvcon64.exe'
     FreacCmdPath      = 'C:\does-not-exist\freaccmd.exe'
     FfmpegPath        = 'ffmpeg'
@@ -61,7 +69,7 @@ BeforeAll {
     TmdbApiKey        = ''
     HaWebhookUrl      = ''
     UpscaleDvds       = `$false
-    AutoUpscale       = `$false
+    AutoUpscale       = `$$($AutoUpscale.IsPresent.ToString().ToLower())
     UpscaleActiveHours = @('00:00','23:59')
     UpscaleModel      = 'realesr-generalv3'
     UpscaleScale      = 3
@@ -70,7 +78,12 @@ BeforeAll {
 }
 "@ | Set-Content -Path $configPath -Encoding utf8
 
-        return [pscustomobject]@{ ConfigPath = $configPath; Paths = $paths }
+        return [pscustomobject]@{
+            ConfigPath = $configPath
+            Paths      = $paths
+            # Just enough config for JobState.ps1 reads from the test process.
+            JobConfig  = @{ StateDir = $paths.StateDir; LogDir = $paths.LogDir }
+        }
     }
 }
 
@@ -115,6 +128,13 @@ Describe 'End-to-end: DiscWatcher.ps1 -Simulate -Once (Video)' {
         $namedDirs = @(Get-ChildItem -Path $script:E2eConfig.Paths.NasVideoPath -Directory -ErrorAction SilentlyContinue)
         $namedDirs.Count | Should -BeGreaterThan 0
         $mkvFiles.Count | Should -BeGreaterThan 0
+
+        # Job state: one Rip job, Complete, pointing at the NAS folder.
+        $jobs = @(Get-ArmJobList -Kind Rip -Config $script:E2eConfig.JobConfig)
+        $jobs.Count | Should -Be 1
+        $jobs[0].State | Should -Be 'Complete'
+        ConvertTo-ArmLongPath $jobs[0].DestDir | Should -Be (ConvertTo-ArmLongPath $namedDirs[0].FullName)
+        @($jobs[0].History).State | Should -Be @('Detected', 'Ripping', 'Moving', 'Complete')
     }
 }
 
@@ -153,6 +173,11 @@ Describe 'End-to-end: DiscWatcher.ps1 -Simulate -Once (AudioCD)' {
         }
 
         $flacFiles.Count | Should -BeGreaterThan 0
+
+        $jobs = @(Get-ArmJobList -Kind Rip -Config $script:E2eConfig.JobConfig)
+        $jobs.Count | Should -Be 1
+        $jobs[0].State | Should -Be 'Complete'
+        $jobs[0].DiscType | Should -Be 'AudioCD'
     }
 }
 
@@ -220,6 +245,14 @@ Describe 'End-to-end: Upscale-Worker.ps1 -Simulate -Once' {
         Test-Path $reviewFile | Should -BeTrue
         Test-Path -LiteralPath $expectedSamplePath | Should -BeTrue
 
+        # The pre-job-tracking queue file (no JobId) got a job on first touch.
+        $jobs = @(Get-ArmJobList -Kind Upscale -Config $script:E2eConfig.JobConfig)
+        $jobs.Count | Should -Be 1
+        $jobs[0].State | Should -Be 'AwaitingReview'
+        ConvertTo-ArmLongPath $jobs[0].SamplePath | Should -Be (ConvertTo-ArmLongPath $expectedSamplePath)
+        ConvertTo-ArmLongPath $jobs[0].QueueFile | Should -Be (ConvertTo-ArmLongPath $reviewFile)
+        (Get-Content -LiteralPath $reviewFile -Raw | ConvertFrom-Json).JobId | Should -Be $jobs[0].Id
+
         # Guards against the exact regression this test is here to catch: unquoted
         # spaced arguments in Invoke-ArmTool splitting "...[AI upscale 1080p].mkv"
         # so a stray fragment (e.g. "1080p].mkv") lands in the current working
@@ -227,5 +260,44 @@ Describe 'End-to-end: Upscale-Worker.ps1 -Simulate -Once' {
         $cwdMkvAfter = @(Get-ChildItem -Path (Get-Location) -Filter '*.mkv' -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)
         $strayMkv = @($cwdMkvAfter | Where-Object { $_ -notin $cwdMkvBefore })
         $strayMkv | Should -BeNullOrEmpty -Because "no .mkv output should ever land in the current working directory: $($strayMkv -join ', ')"
+    }
+}
+
+Describe 'End-to-end: Upscale-Worker.ps1 -Simulate -Once (AutoUpscale on)' {
+    BeforeAll {
+        $script:E2eRoot = Join-Path $env:TEMP "wrm-e2e-upscale-auto-$(New-Guid)"
+        New-Item -ItemType Directory -Force -Path $script:E2eRoot | Out-Null
+        $script:E2eConfig = New-ArmE2eConfig -Root $script:E2eRoot -AutoUpscale
+
+        $script:SourceMovieDir = Join-Path $script:E2eConfig.Paths.NasVideoPath 'Sample Movie (2020)'
+        New-Item -ItemType Directory -Force -Path $script:SourceMovieDir | Out-Null
+        $script:SourceMkv = Join-Path $script:SourceMovieDir 'title1.mkv'
+        [System.IO.File]::WriteAllBytes($script:SourceMkv, (New-Object byte[] 4096))
+
+        # Seeded the way DiscWatcher writes it now: {Source;DestDir;JobId}.
+        $script:QueueFile = Join-Path $script:E2eConfig.Paths.UpscaleQueueDir 'Sample Movie (2020).json'
+        $script:JobId = New-ArmJob -Kind Upscale -Properties @{
+            Title     = 'Sample Movie (2020)'
+            DestDir   = $script:SourceMovieDir
+            QueueFile = $script:QueueFile
+        } -Config $script:E2eConfig.JobConfig
+        [ordered]@{ Source = $script:SourceMkv; DestDir = $script:SourceMovieDir; JobId = $script:JobId } |
+            ConvertTo-Json | Set-Content -Path $script:QueueFile -Encoding utf8
+    }
+
+    AfterAll {
+        Remove-Item -Path $script:E2eRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'runs the full upscale, deletes the queue file, and marks the job Complete' {
+        & $script:UpscaleWorkerScript -ConfigPath $script:E2eConfig.ConfigPath -Simulate -Once
+
+        $expectedOutput = Join-Path $script:SourceMovieDir 'title1 [AI upscale 1080p].mkv'
+        Test-Path -LiteralPath $script:QueueFile | Should -BeFalse
+        Test-Path -LiteralPath $expectedOutput | Should -BeTrue
+
+        $job = Get-ArmJob -JobId $script:JobId -Config $script:E2eConfig.JobConfig
+        $job.State | Should -Be 'Complete'
+        @($job.History).State | Should -Be @('Queued', 'Upscaling', 'Complete')
     }
 }
