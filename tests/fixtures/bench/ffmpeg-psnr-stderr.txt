@@ -1,0 +1,1 @@
+[Parsed_psnr_0 @ 000001b2c4d00000] PSNR y:50.111 u:52.001 v:51.876 average:50.093 min:45.000 max:inf

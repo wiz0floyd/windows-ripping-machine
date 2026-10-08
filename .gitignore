@@ -10,3 +10,7 @@ CLAUDE.local.md
 tests/browser/node_modules/
 tests/browser/test-results/
 tests/browser/playwright-report/
+
+# Upscale benchmark harness (tools/bench, issue #33): local sample manifest and outputs
+tools/bench/samples.local.psd1
+tools/bench/out/
