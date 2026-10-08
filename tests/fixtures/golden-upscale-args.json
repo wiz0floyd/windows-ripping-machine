@@ -1,0 +1,2708 @@
+{
+  "Progressive-openproteus-full": {
+    "InterlaceType": "Progressive",
+    "Engine": "openproteus",
+    "Calls": [
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "2000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "600",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<InputFile>",
+          "-fps_mode",
+          "cfr",
+          "-r",
+          "24000/1001",
+          "-c:v",
+          "ffv1",
+          "-an",
+          "<TMP>\\preprocessed.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ncnn",
+        "Args": [
+          "-I",
+          "<RepoRoot>\\src\\..\\tools\\ncnn_upscale.py",
+          "--input",
+          "<TMP>\\preprocessed.mkv",
+          "--param",
+          "C:\\models\\openproteus-x2.param",
+          "--bin",
+          "C:\\models\\openproteus-x2.bin",
+          "--scale",
+          "2",
+          "--out-width",
+          "1920",
+          "--out-height",
+          "1080",
+          "--ffmpeg",
+          "ffmpeg",
+          "--ffprobe",
+          "ffprobe",
+          "--output",
+          "<TMP>\\upscaled.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<TMP>\\upscaled.mkv",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-map",
+          "1:a",
+          "-vf",
+          "setsar=1",
+          "-c:v",
+          "libx265",
+          "-crf",
+          "16",
+          "-preset",
+          "slow",
+          "-c:a",
+          "copy",
+          "-shortest",
+          "<OutputDir>\\movie [AI upscale 1080p].mkv"
+        ],
+        "TimeoutSec": 86400
+      }
+    ]
+  },
+  "Progressive-openproteus-sample": {
+    "InterlaceType": "Progressive",
+    "Engine": "openproteus",
+    "Calls": [
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "2000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "600",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<InputFile>",
+          "-ss",
+          "600",
+          "-t",
+          "120",
+          "-fps_mode",
+          "cfr",
+          "-r",
+          "24000/1001",
+          "-c:v",
+          "ffv1",
+          "-an",
+          "<TMP>\\preprocessed.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ncnn",
+        "Args": [
+          "-I",
+          "<RepoRoot>\\src\\..\\tools\\ncnn_upscale.py",
+          "--input",
+          "<TMP>\\preprocessed.mkv",
+          "--param",
+          "C:\\models\\openproteus-x2.param",
+          "--bin",
+          "C:\\models\\openproteus-x2.bin",
+          "--scale",
+          "2",
+          "--out-width",
+          "1920",
+          "--out-height",
+          "1080",
+          "--ffmpeg",
+          "ffmpeg",
+          "--ffprobe",
+          "ffprobe",
+          "--output",
+          "<TMP>\\upscaled.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<TMP>\\upscaled.mkv",
+          "-ss",
+          "600",
+          "-t",
+          "120",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-map",
+          "1:a",
+          "-vf",
+          "setsar=1",
+          "-c:v",
+          "libx265",
+          "-crf",
+          "16",
+          "-preset",
+          "slow",
+          "-c:a",
+          "copy",
+          "-shortest",
+          "<OutputDir>\\movie [AI upscale 1080p].mkv"
+        ],
+        "TimeoutSec": 86400
+      }
+    ]
+  },
+  "Progressive-anime4k-full": {
+    "InterlaceType": "Progressive",
+    "Engine": "anime4k",
+    "Calls": [
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "2000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "600",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<InputFile>",
+          "-fps_mode",
+          "cfr",
+          "-r",
+          "24000/1001",
+          "-c:v",
+          "ffv1",
+          "-an",
+          "<TMP>\\preprocessed.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "video2x",
+        "Args": [
+          "-i",
+          "<TMP>\\preprocessed.mkv",
+          "-p",
+          "libplacebo",
+          "--libplacebo-shader",
+          "anime4k-v4-a+a",
+          "-w",
+          "1920",
+          "-h",
+          "1080",
+          "-o",
+          "<TMP>\\upscaled.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<TMP>\\upscaled.mkv",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-map",
+          "1:a",
+          "-vf",
+          "setsar=1",
+          "-c:v",
+          "libx265",
+          "-crf",
+          "16",
+          "-preset",
+          "slow",
+          "-c:a",
+          "copy",
+          "-shortest",
+          "<OutputDir>\\movie [AI upscale 1080p].mkv"
+        ],
+        "TimeoutSec": 86400
+      }
+    ]
+  },
+  "Progressive-anime4k-sample": {
+    "InterlaceType": "Progressive",
+    "Engine": "anime4k",
+    "Calls": [
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "2000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "600",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<InputFile>",
+          "-ss",
+          "600",
+          "-t",
+          "120",
+          "-fps_mode",
+          "cfr",
+          "-r",
+          "24000/1001",
+          "-c:v",
+          "ffv1",
+          "-an",
+          "<TMP>\\preprocessed.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "video2x",
+        "Args": [
+          "-i",
+          "<TMP>\\preprocessed.mkv",
+          "-p",
+          "libplacebo",
+          "--libplacebo-shader",
+          "anime4k-v4-a+a",
+          "-w",
+          "1920",
+          "-h",
+          "1080",
+          "-o",
+          "<TMP>\\upscaled.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<TMP>\\upscaled.mkv",
+          "-ss",
+          "600",
+          "-t",
+          "120",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-map",
+          "1:a",
+          "-vf",
+          "setsar=1",
+          "-c:v",
+          "libx265",
+          "-crf",
+          "16",
+          "-preset",
+          "slow",
+          "-c:a",
+          "copy",
+          "-shortest",
+          "<OutputDir>\\movie [AI upscale 1080p].mkv"
+        ],
+        "TimeoutSec": 86400
+      }
+    ]
+  },
+  "Progressive-realesrgan-full": {
+    "InterlaceType": "Progressive",
+    "Engine": "realesrgan",
+    "Calls": [
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "2000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "600",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<InputFile>",
+          "-fps_mode",
+          "cfr",
+          "-r",
+          "24000/1001",
+          "-c:v",
+          "ffv1",
+          "-an",
+          "<TMP>\\preprocessed.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "video2x",
+        "Args": [
+          "-i",
+          "<TMP>\\preprocessed.mkv",
+          "-p",
+          "realesrgan",
+          "--realesrgan-model",
+          "realesr-animevideov3",
+          "-s",
+          "2",
+          "-o",
+          "<TMP>\\upscaled.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<TMP>\\upscaled.mkv",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-map",
+          "1:a",
+          "-c:v",
+          "libx265",
+          "-crf",
+          "16",
+          "-preset",
+          "slow",
+          "-c:a",
+          "copy",
+          "-shortest",
+          "<OutputDir>\\movie [AI upscale 1080p].mkv"
+        ],
+        "TimeoutSec": 86400
+      }
+    ]
+  },
+  "Progressive-realesrgan-sample": {
+    "InterlaceType": "Progressive",
+    "Engine": "realesrgan",
+    "Calls": [
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "2000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "600",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<InputFile>",
+          "-ss",
+          "600",
+          "-t",
+          "120",
+          "-fps_mode",
+          "cfr",
+          "-r",
+          "24000/1001",
+          "-c:v",
+          "ffv1",
+          "-an",
+          "<TMP>\\preprocessed.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "video2x",
+        "Args": [
+          "-i",
+          "<TMP>\\preprocessed.mkv",
+          "-p",
+          "realesrgan",
+          "--realesrgan-model",
+          "realesr-animevideov3",
+          "-s",
+          "2",
+          "-o",
+          "<TMP>\\upscaled.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<TMP>\\upscaled.mkv",
+          "-ss",
+          "600",
+          "-t",
+          "120",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-map",
+          "1:a",
+          "-c:v",
+          "libx265",
+          "-crf",
+          "16",
+          "-preset",
+          "slow",
+          "-c:a",
+          "copy",
+          "-shortest",
+          "<OutputDir>\\movie [AI upscale 1080p].mkv"
+        ],
+        "TimeoutSec": 86400
+      }
+    ]
+  },
+  "Interlaced-openproteus-full": {
+    "InterlaceType": "Interlaced",
+    "Engine": "openproteus",
+    "Calls": [
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "2000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "600",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<InputFile>",
+          "-vf",
+          "bwdif=mode=send_frame",
+          "-fps_mode",
+          "cfr",
+          "-r",
+          "24000/1001",
+          "-c:v",
+          "ffv1",
+          "-an",
+          "<TMP>\\preprocessed.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ncnn",
+        "Args": [
+          "-I",
+          "<RepoRoot>\\src\\..\\tools\\ncnn_upscale.py",
+          "--input",
+          "<TMP>\\preprocessed.mkv",
+          "--param",
+          "C:\\models\\openproteus-x2.param",
+          "--bin",
+          "C:\\models\\openproteus-x2.bin",
+          "--scale",
+          "2",
+          "--out-width",
+          "1920",
+          "--out-height",
+          "1080",
+          "--ffmpeg",
+          "ffmpeg",
+          "--ffprobe",
+          "ffprobe",
+          "--output",
+          "<TMP>\\upscaled.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<TMP>\\upscaled.mkv",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-map",
+          "1:a",
+          "-vf",
+          "setsar=1",
+          "-c:v",
+          "libx265",
+          "-crf",
+          "16",
+          "-preset",
+          "slow",
+          "-c:a",
+          "copy",
+          "-shortest",
+          "<OutputDir>\\movie [AI upscale 1080p].mkv"
+        ],
+        "TimeoutSec": 86400
+      }
+    ]
+  },
+  "Interlaced-openproteus-sample": {
+    "InterlaceType": "Interlaced",
+    "Engine": "openproteus",
+    "Calls": [
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "2000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "600",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<InputFile>",
+          "-ss",
+          "600",
+          "-t",
+          "120",
+          "-vf",
+          "bwdif=mode=send_frame",
+          "-fps_mode",
+          "cfr",
+          "-r",
+          "24000/1001",
+          "-c:v",
+          "ffv1",
+          "-an",
+          "<TMP>\\preprocessed.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ncnn",
+        "Args": [
+          "-I",
+          "<RepoRoot>\\src\\..\\tools\\ncnn_upscale.py",
+          "--input",
+          "<TMP>\\preprocessed.mkv",
+          "--param",
+          "C:\\models\\openproteus-x2.param",
+          "--bin",
+          "C:\\models\\openproteus-x2.bin",
+          "--scale",
+          "2",
+          "--out-width",
+          "1920",
+          "--out-height",
+          "1080",
+          "--ffmpeg",
+          "ffmpeg",
+          "--ffprobe",
+          "ffprobe",
+          "--output",
+          "<TMP>\\upscaled.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<TMP>\\upscaled.mkv",
+          "-ss",
+          "600",
+          "-t",
+          "120",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-map",
+          "1:a",
+          "-vf",
+          "setsar=1",
+          "-c:v",
+          "libx265",
+          "-crf",
+          "16",
+          "-preset",
+          "slow",
+          "-c:a",
+          "copy",
+          "-shortest",
+          "<OutputDir>\\movie [AI upscale 1080p].mkv"
+        ],
+        "TimeoutSec": 86400
+      }
+    ]
+  },
+  "Interlaced-anime4k-full": {
+    "InterlaceType": "Interlaced",
+    "Engine": "anime4k",
+    "Calls": [
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "2000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "600",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<InputFile>",
+          "-vf",
+          "bwdif=mode=send_frame",
+          "-fps_mode",
+          "cfr",
+          "-r",
+          "24000/1001",
+          "-c:v",
+          "ffv1",
+          "-an",
+          "<TMP>\\preprocessed.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "video2x",
+        "Args": [
+          "-i",
+          "<TMP>\\preprocessed.mkv",
+          "-p",
+          "libplacebo",
+          "--libplacebo-shader",
+          "anime4k-v4-a+a",
+          "-w",
+          "1920",
+          "-h",
+          "1080",
+          "-o",
+          "<TMP>\\upscaled.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<TMP>\\upscaled.mkv",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-map",
+          "1:a",
+          "-vf",
+          "setsar=1",
+          "-c:v",
+          "libx265",
+          "-crf",
+          "16",
+          "-preset",
+          "slow",
+          "-c:a",
+          "copy",
+          "-shortest",
+          "<OutputDir>\\movie [AI upscale 1080p].mkv"
+        ],
+        "TimeoutSec": 86400
+      }
+    ]
+  },
+  "Interlaced-anime4k-sample": {
+    "InterlaceType": "Interlaced",
+    "Engine": "anime4k",
+    "Calls": [
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "2000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "600",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<InputFile>",
+          "-ss",
+          "600",
+          "-t",
+          "120",
+          "-vf",
+          "bwdif=mode=send_frame",
+          "-fps_mode",
+          "cfr",
+          "-r",
+          "24000/1001",
+          "-c:v",
+          "ffv1",
+          "-an",
+          "<TMP>\\preprocessed.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "video2x",
+        "Args": [
+          "-i",
+          "<TMP>\\preprocessed.mkv",
+          "-p",
+          "libplacebo",
+          "--libplacebo-shader",
+          "anime4k-v4-a+a",
+          "-w",
+          "1920",
+          "-h",
+          "1080",
+          "-o",
+          "<TMP>\\upscaled.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<TMP>\\upscaled.mkv",
+          "-ss",
+          "600",
+          "-t",
+          "120",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-map",
+          "1:a",
+          "-vf",
+          "setsar=1",
+          "-c:v",
+          "libx265",
+          "-crf",
+          "16",
+          "-preset",
+          "slow",
+          "-c:a",
+          "copy",
+          "-shortest",
+          "<OutputDir>\\movie [AI upscale 1080p].mkv"
+        ],
+        "TimeoutSec": 86400
+      }
+    ]
+  },
+  "Interlaced-realesrgan-full": {
+    "InterlaceType": "Interlaced",
+    "Engine": "realesrgan",
+    "Calls": [
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "2000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "600",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<InputFile>",
+          "-vf",
+          "bwdif=mode=send_frame",
+          "-fps_mode",
+          "cfr",
+          "-r",
+          "24000/1001",
+          "-c:v",
+          "ffv1",
+          "-an",
+          "<TMP>\\preprocessed.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "video2x",
+        "Args": [
+          "-i",
+          "<TMP>\\preprocessed.mkv",
+          "-p",
+          "realesrgan",
+          "--realesrgan-model",
+          "realesr-animevideov3",
+          "-s",
+          "2",
+          "-o",
+          "<TMP>\\upscaled.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<TMP>\\upscaled.mkv",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-map",
+          "1:a",
+          "-c:v",
+          "libx265",
+          "-crf",
+          "16",
+          "-preset",
+          "slow",
+          "-c:a",
+          "copy",
+          "-shortest",
+          "<OutputDir>\\movie [AI upscale 1080p].mkv"
+        ],
+        "TimeoutSec": 86400
+      }
+    ]
+  },
+  "Interlaced-realesrgan-sample": {
+    "InterlaceType": "Interlaced",
+    "Engine": "realesrgan",
+    "Calls": [
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "2000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "600",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<InputFile>",
+          "-ss",
+          "600",
+          "-t",
+          "120",
+          "-vf",
+          "bwdif=mode=send_frame",
+          "-fps_mode",
+          "cfr",
+          "-r",
+          "24000/1001",
+          "-c:v",
+          "ffv1",
+          "-an",
+          "<TMP>\\preprocessed.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "video2x",
+        "Args": [
+          "-i",
+          "<TMP>\\preprocessed.mkv",
+          "-p",
+          "realesrgan",
+          "--realesrgan-model",
+          "realesr-animevideov3",
+          "-s",
+          "2",
+          "-o",
+          "<TMP>\\upscaled.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<TMP>\\upscaled.mkv",
+          "-ss",
+          "600",
+          "-t",
+          "120",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-map",
+          "1:a",
+          "-c:v",
+          "libx265",
+          "-crf",
+          "16",
+          "-preset",
+          "slow",
+          "-c:a",
+          "copy",
+          "-shortest",
+          "<OutputDir>\\movie [AI upscale 1080p].mkv"
+        ],
+        "TimeoutSec": 86400
+      }
+    ]
+  },
+  "Telecined-openproteus-full": {
+    "InterlaceType": "Telecined",
+    "Engine": "openproteus",
+    "Calls": [
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "2000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<InputFile>",
+          "-vf",
+          "fieldmatch,yadif=deint=interlaced,decimate",
+          "-c:v",
+          "ffv1",
+          "-an",
+          "<TMP>\\preprocessed.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ncnn",
+        "Args": [
+          "-I",
+          "<RepoRoot>\\src\\..\\tools\\ncnn_upscale.py",
+          "--input",
+          "<TMP>\\preprocessed.mkv",
+          "--param",
+          "C:\\models\\openproteus-x2.param",
+          "--bin",
+          "C:\\models\\openproteus-x2.bin",
+          "--scale",
+          "2",
+          "--out-width",
+          "1920",
+          "--out-height",
+          "1080",
+          "--ffmpeg",
+          "ffmpeg",
+          "--ffprobe",
+          "ffprobe",
+          "--output",
+          "<TMP>\\upscaled.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<TMP>\\upscaled.mkv",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-map",
+          "1:a",
+          "-vf",
+          "setsar=1",
+          "-c:v",
+          "libx265",
+          "-crf",
+          "16",
+          "-preset",
+          "slow",
+          "-c:a",
+          "copy",
+          "-shortest",
+          "<OutputDir>\\movie [AI upscale 1080p].mkv"
+        ],
+        "TimeoutSec": 86400
+      }
+    ]
+  },
+  "Telecined-openproteus-sample": {
+    "InterlaceType": "Telecined",
+    "Engine": "openproteus",
+    "Calls": [
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "2000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<InputFile>",
+          "-ss",
+          "600",
+          "-t",
+          "120",
+          "-vf",
+          "fieldmatch,yadif=deint=interlaced,decimate",
+          "-c:v",
+          "ffv1",
+          "-an",
+          "<TMP>\\preprocessed.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ncnn",
+        "Args": [
+          "-I",
+          "<RepoRoot>\\src\\..\\tools\\ncnn_upscale.py",
+          "--input",
+          "<TMP>\\preprocessed.mkv",
+          "--param",
+          "C:\\models\\openproteus-x2.param",
+          "--bin",
+          "C:\\models\\openproteus-x2.bin",
+          "--scale",
+          "2",
+          "--out-width",
+          "1920",
+          "--out-height",
+          "1080",
+          "--ffmpeg",
+          "ffmpeg",
+          "--ffprobe",
+          "ffprobe",
+          "--output",
+          "<TMP>\\upscaled.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<TMP>\\upscaled.mkv",
+          "-ss",
+          "600",
+          "-t",
+          "120",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-map",
+          "1:a",
+          "-vf",
+          "setsar=1",
+          "-c:v",
+          "libx265",
+          "-crf",
+          "16",
+          "-preset",
+          "slow",
+          "-c:a",
+          "copy",
+          "-shortest",
+          "<OutputDir>\\movie [AI upscale 1080p].mkv"
+        ],
+        "TimeoutSec": 86400
+      }
+    ]
+  },
+  "Telecined-anime4k-full": {
+    "InterlaceType": "Telecined",
+    "Engine": "anime4k",
+    "Calls": [
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "2000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<InputFile>",
+          "-vf",
+          "fieldmatch,yadif=deint=interlaced,decimate",
+          "-c:v",
+          "ffv1",
+          "-an",
+          "<TMP>\\preprocessed.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "video2x",
+        "Args": [
+          "-i",
+          "<TMP>\\preprocessed.mkv",
+          "-p",
+          "libplacebo",
+          "--libplacebo-shader",
+          "anime4k-v4-a+a",
+          "-w",
+          "1920",
+          "-h",
+          "1080",
+          "-o",
+          "<TMP>\\upscaled.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<TMP>\\upscaled.mkv",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-map",
+          "1:a",
+          "-vf",
+          "setsar=1",
+          "-c:v",
+          "libx265",
+          "-crf",
+          "16",
+          "-preset",
+          "slow",
+          "-c:a",
+          "copy",
+          "-shortest",
+          "<OutputDir>\\movie [AI upscale 1080p].mkv"
+        ],
+        "TimeoutSec": 86400
+      }
+    ]
+  },
+  "Telecined-anime4k-sample": {
+    "InterlaceType": "Telecined",
+    "Engine": "anime4k",
+    "Calls": [
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "2000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<InputFile>",
+          "-ss",
+          "600",
+          "-t",
+          "120",
+          "-vf",
+          "fieldmatch,yadif=deint=interlaced,decimate",
+          "-c:v",
+          "ffv1",
+          "-an",
+          "<TMP>\\preprocessed.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "video2x",
+        "Args": [
+          "-i",
+          "<TMP>\\preprocessed.mkv",
+          "-p",
+          "libplacebo",
+          "--libplacebo-shader",
+          "anime4k-v4-a+a",
+          "-w",
+          "1920",
+          "-h",
+          "1080",
+          "-o",
+          "<TMP>\\upscaled.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<TMP>\\upscaled.mkv",
+          "-ss",
+          "600",
+          "-t",
+          "120",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-map",
+          "1:a",
+          "-vf",
+          "setsar=1",
+          "-c:v",
+          "libx265",
+          "-crf",
+          "16",
+          "-preset",
+          "slow",
+          "-c:a",
+          "copy",
+          "-shortest",
+          "<OutputDir>\\movie [AI upscale 1080p].mkv"
+        ],
+        "TimeoutSec": 86400
+      }
+    ]
+  },
+  "Telecined-realesrgan-full": {
+    "InterlaceType": "Telecined",
+    "Engine": "realesrgan",
+    "Calls": [
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "2000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<InputFile>",
+          "-vf",
+          "fieldmatch,yadif=deint=interlaced,decimate",
+          "-c:v",
+          "ffv1",
+          "-an",
+          "<TMP>\\preprocessed.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "video2x",
+        "Args": [
+          "-i",
+          "<TMP>\\preprocessed.mkv",
+          "-p",
+          "realesrgan",
+          "--realesrgan-model",
+          "realesr-animevideov3",
+          "-s",
+          "2",
+          "-o",
+          "<TMP>\\upscaled.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<TMP>\\upscaled.mkv",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-map",
+          "1:a",
+          "-c:v",
+          "libx265",
+          "-crf",
+          "16",
+          "-preset",
+          "slow",
+          "-c:a",
+          "copy",
+          "-shortest",
+          "<OutputDir>\\movie [AI upscale 1080p].mkv"
+        ],
+        "TimeoutSec": 86400
+      }
+    ]
+  },
+  "Telecined-realesrgan-sample": {
+    "InterlaceType": "Telecined",
+    "Engine": "realesrgan",
+    "Calls": [
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "2000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<InputFile>",
+          "-ss",
+          "600",
+          "-t",
+          "120",
+          "-vf",
+          "fieldmatch,yadif=deint=interlaced,decimate",
+          "-c:v",
+          "ffv1",
+          "-an",
+          "<TMP>\\preprocessed.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "video2x",
+        "Args": [
+          "-i",
+          "<TMP>\\preprocessed.mkv",
+          "-p",
+          "realesrgan",
+          "--realesrgan-model",
+          "realesr-animevideov3",
+          "-s",
+          "2",
+          "-o",
+          "<TMP>\\upscaled.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<TMP>\\upscaled.mkv",
+          "-ss",
+          "600",
+          "-t",
+          "120",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-map",
+          "1:a",
+          "-c:v",
+          "libx265",
+          "-crf",
+          "16",
+          "-preset",
+          "slow",
+          "-c:a",
+          "copy",
+          "-shortest",
+          "<OutputDir>\\movie [AI upscale 1080p].mkv"
+        ],
+        "TimeoutSec": 86400
+      }
+    ]
+  },
+  "Progressive-rate-unmeasured": {
+    "InterlaceType": "Progressive",
+    "Engine": "openproteus",
+    "Calls": [
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "2000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "600",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "0",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<InputFile>",
+          "-c:v",
+          "ffv1",
+          "-an",
+          "<TMP>\\preprocessed.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ncnn",
+        "Args": [
+          "-I",
+          "<RepoRoot>\\src\\..\\tools\\ncnn_upscale.py",
+          "--input",
+          "<TMP>\\preprocessed.mkv",
+          "--param",
+          "C:\\models\\openproteus-x2.param",
+          "--bin",
+          "C:\\models\\openproteus-x2.bin",
+          "--scale",
+          "2",
+          "--out-width",
+          "1920",
+          "--out-height",
+          "1080",
+          "--ffmpeg",
+          "ffmpeg",
+          "--ffprobe",
+          "ffprobe",
+          "--output",
+          "<TMP>\\upscaled.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<TMP>\\upscaled.mkv",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-map",
+          "1:a",
+          "-vf",
+          "setsar=1",
+          "-c:v",
+          "libx265",
+          "-crf",
+          "16",
+          "-preset",
+          "slow",
+          "-c:a",
+          "copy",
+          "-shortest",
+          "<OutputDir>\\movie [AI upscale 1080p].mkv"
+        ],
+        "TimeoutSec": 86400
+      }
+    ]
+  },
+  "Interlaced-true-30fps": {
+    "InterlaceType": "Interlaced",
+    "Engine": "openproteus",
+    "Calls": [
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "2000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "600",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<InputFile>",
+          "-vf",
+          "bwdif=mode=send_frame",
+          "-fps_mode",
+          "cfr",
+          "-r",
+          "30000/1001",
+          "-c:v",
+          "ffv1",
+          "-an",
+          "<TMP>\\preprocessed.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ncnn",
+        "Args": [
+          "-I",
+          "<RepoRoot>\\src\\..\\tools\\ncnn_upscale.py",
+          "--input",
+          "<TMP>\\preprocessed.mkv",
+          "--param",
+          "C:\\models\\openproteus-x2.param",
+          "--bin",
+          "C:\\models\\openproteus-x2.bin",
+          "--scale",
+          "2",
+          "--out-width",
+          "1920",
+          "--out-height",
+          "1080",
+          "--ffmpeg",
+          "ffmpeg",
+          "--ffprobe",
+          "ffprobe",
+          "--output",
+          "<TMP>\\upscaled.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<TMP>\\upscaled.mkv",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-map",
+          "1:a",
+          "-vf",
+          "setsar=1",
+          "-c:v",
+          "libx265",
+          "-crf",
+          "16",
+          "-preset",
+          "slow",
+          "-c:a",
+          "copy",
+          "-shortest",
+          "<OutputDir>\\movie [AI upscale 1080p].mkv"
+        ],
+        "TimeoutSec": 86400
+      }
+    ]
+  },
+  "dar-4x3-openproteus": {
+    "InterlaceType": "Progressive",
+    "Engine": "openproteus",
+    "Calls": [
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "2000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "600",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<InputFile>",
+          "-fps_mode",
+          "cfr",
+          "-r",
+          "24000/1001",
+          "-c:v",
+          "ffv1",
+          "-an",
+          "<TMP>\\preprocessed.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ncnn",
+        "Args": [
+          "-I",
+          "<RepoRoot>\\src\\..\\tools\\ncnn_upscale.py",
+          "--input",
+          "<TMP>\\preprocessed.mkv",
+          "--param",
+          "C:\\models\\openproteus-x2.param",
+          "--bin",
+          "C:\\models\\openproteus-x2.bin",
+          "--scale",
+          "2",
+          "--out-width",
+          "1440",
+          "--out-height",
+          "1080",
+          "--ffmpeg",
+          "ffmpeg",
+          "--ffprobe",
+          "ffprobe",
+          "--output",
+          "<TMP>\\upscaled.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<TMP>\\upscaled.mkv",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-map",
+          "1:a",
+          "-vf",
+          "setsar=1",
+          "-c:v",
+          "libx265",
+          "-crf",
+          "16",
+          "-preset",
+          "slow",
+          "-c:a",
+          "copy",
+          "-shortest",
+          "<OutputDir>\\movie [AI upscale 1080p].mkv"
+        ],
+        "TimeoutSec": 86400
+      }
+    ]
+  },
+  "dar-4x3-anime4k": {
+    "InterlaceType": "Progressive",
+    "Engine": "anime4k",
+    "Calls": [
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "2000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "600",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<InputFile>",
+          "-fps_mode",
+          "cfr",
+          "-r",
+          "24000/1001",
+          "-c:v",
+          "ffv1",
+          "-an",
+          "<TMP>\\preprocessed.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "video2x",
+        "Args": [
+          "-i",
+          "<TMP>\\preprocessed.mkv",
+          "-p",
+          "libplacebo",
+          "--libplacebo-shader",
+          "anime4k-v4-a+a",
+          "-w",
+          "1440",
+          "-h",
+          "1080",
+          "-o",
+          "<TMP>\\upscaled.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<TMP>\\upscaled.mkv",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-map",
+          "1:a",
+          "-vf",
+          "setsar=1",
+          "-c:v",
+          "libx265",
+          "-crf",
+          "16",
+          "-preset",
+          "slow",
+          "-c:a",
+          "copy",
+          "-shortest",
+          "<OutputDir>\\movie [AI upscale 1080p].mkv"
+        ],
+        "TimeoutSec": 86400
+      }
+    ]
+  },
+  "ffmpeg-dir-openproteus": {
+    "InterlaceType": "Progressive",
+    "Engine": "openproteus",
+    "Calls": [
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "2000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "600",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<InputFile>",
+          "-fps_mode",
+          "cfr",
+          "-r",
+          "24000/1001",
+          "-c:v",
+          "ffv1",
+          "-an",
+          "<TMP>\\preprocessed.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ncnn",
+        "Args": [
+          "-I",
+          "<RepoRoot>\\src\\..\\tools\\ncnn_upscale.py",
+          "--input",
+          "<TMP>\\preprocessed.mkv",
+          "--param",
+          "C:\\models\\openproteus-x2.param",
+          "--bin",
+          "C:\\models\\openproteus-x2.bin",
+          "--scale",
+          "2",
+          "--out-width",
+          "1920",
+          "--out-height",
+          "1080",
+          "--ffmpeg",
+          "C:\\tools\\ffmpeg\\bin\\ffmpeg.exe",
+          "--ffprobe",
+          "C:\\tools\\ffmpeg\\bin\\ffprobe.exe",
+          "--output",
+          "<TMP>\\upscaled.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<TMP>\\upscaled.mkv",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-map",
+          "1:a",
+          "-vf",
+          "setsar=1",
+          "-c:v",
+          "libx265",
+          "-crf",
+          "16",
+          "-preset",
+          "slow",
+          "-c:a",
+          "copy",
+          "-shortest",
+          "<OutputDir>\\movie [AI upscale 1080p].mkv"
+        ],
+        "TimeoutSec": 86400
+      }
+    ]
+  },
+  "height-720-anime4k-sample": {
+    "InterlaceType": "Interlaced",
+    "Engine": "anime4k",
+    "Calls": [
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "2000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "600",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<InputFile>",
+          "-ss",
+          "600",
+          "-t",
+          "120",
+          "-vf",
+          "bwdif=mode=send_frame",
+          "-fps_mode",
+          "cfr",
+          "-r",
+          "24000/1001",
+          "-c:v",
+          "ffv1",
+          "-an",
+          "<TMP>\\preprocessed.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "video2x",
+        "Args": [
+          "-i",
+          "<TMP>\\preprocessed.mkv",
+          "-p",
+          "libplacebo",
+          "--libplacebo-shader",
+          "anime4k-v4-b",
+          "-w",
+          "1280",
+          "-h",
+          "720",
+          "-o",
+          "<TMP>\\upscaled.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<TMP>\\upscaled.mkv",
+          "-ss",
+          "600",
+          "-t",
+          "120",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-map",
+          "1:a",
+          "-vf",
+          "setsar=1",
+          "-c:v",
+          "libx265",
+          "-crf",
+          "16",
+          "-preset",
+          "slow",
+          "-c:a",
+          "copy",
+          "-shortest",
+          "<OutputDir>\\movie [AI upscale 1080p].mkv"
+        ],
+        "TimeoutSec": 86400
+      }
+    ]
+  },
+  "defaults-live": {
+    "InterlaceType": "Progressive",
+    "Engine": "openproteus",
+    "Calls": [
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "2000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "600",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<InputFile>",
+          "-fps_mode",
+          "cfr",
+          "-r",
+          "24000/1001",
+          "-c:v",
+          "ffv1",
+          "-an",
+          "<TMP>\\preprocessed.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ncnn",
+        "Args": [
+          "-I",
+          "<RepoRoot>\\src\\..\\tools\\ncnn_upscale.py",
+          "--input",
+          "<TMP>\\preprocessed.mkv",
+          "--param",
+          "C:\\models\\openproteus-x2.param",
+          "--bin",
+          "C:\\models\\openproteus-x2.bin",
+          "--scale",
+          "2",
+          "--out-width",
+          "1920",
+          "--out-height",
+          "1080",
+          "--ffmpeg",
+          "ffmpeg",
+          "--ffprobe",
+          "ffprobe",
+          "--output",
+          "<TMP>\\upscaled.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<TMP>\\upscaled.mkv",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-map",
+          "1:a",
+          "-vf",
+          "setsar=1",
+          "-c:v",
+          "libx265",
+          "-crf",
+          "16",
+          "-preset",
+          "slow",
+          "-c:a",
+          "copy",
+          "-shortest",
+          "<OutputDir>\\movie [AI upscale 1080p].mkv"
+        ],
+        "TimeoutSec": 86400
+      }
+    ]
+  },
+  "defaults-animation": {
+    "InterlaceType": "Progressive",
+    "Engine": "anime4k",
+    "Calls": [
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-i",
+          "<InputFile>",
+          "-filter:v",
+          "idet",
+          "-frames:v",
+          "2000",
+          "-an",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-hide_banner",
+          "-ss",
+          "600",
+          "-t",
+          "60",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-f",
+          "null",
+          "-"
+        ],
+        "TimeoutSec": 3600
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<InputFile>",
+          "-fps_mode",
+          "cfr",
+          "-r",
+          "24000/1001",
+          "-c:v",
+          "ffv1",
+          "-an",
+          "<TMP>\\preprocessed.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "video2x",
+        "Args": [
+          "-i",
+          "<TMP>\\preprocessed.mkv",
+          "-p",
+          "libplacebo",
+          "--libplacebo-shader",
+          "anime4k-v4-a+a",
+          "-w",
+          "1920",
+          "-h",
+          "1080",
+          "-o",
+          "<TMP>\\upscaled.mkv"
+        ],
+        "TimeoutSec": 86400
+      },
+      {
+        "Name": "ffmpeg",
+        "Args": [
+          "-y",
+          "-i",
+          "<TMP>\\upscaled.mkv",
+          "-i",
+          "<InputFile>",
+          "-map",
+          "0:v:0",
+          "-map",
+          "1:a",
+          "-vf",
+          "setsar=1",
+          "-c:v",
+          "libx265",
+          "-crf",
+          "16",
+          "-preset",
+          "slow",
+          "-c:a",
+          "copy",
+          "-shortest",
+          "<OutputDir>\\movie [AI upscale 1080p].mkv"
+        ],
+        "TimeoutSec": 86400
+      }
+    ]
+  }
+}
