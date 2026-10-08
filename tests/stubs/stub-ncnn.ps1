@@ -31,5 +31,12 @@ if ($outDir -and -not (Test-Path -LiteralPath $outDir)) {
 
 Copy-Item -LiteralPath $inputFile -Destination $outputFile -Force
 
+# The runner's periodic progress lines (key=value blocks, see tools/ncnn_upscale.py).
+foreach ($block in @(@{ Frame = 1000; State = 'continue' }, @{ Frame = 2878; State = 'end' })) {
+    [Console]::Out.WriteLine("frame=$($block.Frame)")
+    [Console]::Out.WriteLine('fps=22.00')
+    [Console]::Out.WriteLine("progress=$($block.State)")
+}
+
 Write-Output "stub-ncnn: upscaled $inputFile -> $outputFile"
 exit 0

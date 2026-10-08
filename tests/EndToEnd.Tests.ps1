@@ -261,6 +261,24 @@ Describe 'End-to-end: Upscale-Worker.ps1 -Simulate -Once' {
         $strayMkv = @($cwdMkvAfter | Where-Object { $_ -notin $cwdMkvBefore })
         $strayMkv | Should -BeNullOrEmpty -Because "no .mkv output should ever land in the current working directory: $($strayMkv -join ', ')"
     }
+
+    It 'logs no ffmpeg banner or stream-metadata lines at WARN, and logs per-stage progress (#32)' {
+        $logLines = @(Get-ChildItem -Path $script:E2eConfig.Paths.LogDir -Filter '*.log' | Get-Content)
+        if ($logLines.Count -eq 0) {
+            Set-ItResult -Skipped -Because 'the upscale run above produced no log'
+            return
+        }
+        # stub-ffmpeg prints a banner + input/chapter/tag dump unless the call is quieted, and
+        # the idet fixture carries a real banner: none of it may reach the log as WARN.
+        $noise = 'ffmpeg version|configuration:|Input #0|Metadata:|Chapter|_STATISTICS_TAGS|Stream #0|Stream mapping|Press \[q\]'
+        @($logLines | Where-Object { $_ -match '\[WARN\]' -and $_ -match $noise }) | Should -BeNullOrEmpty
+        @($logLines | Where-Object { $_ -match 'STDERR: ' -and $_ -match $noise }) | Should -BeNullOrEmpty
+        # Progress key=value lines are parsed, not logged raw.
+        @($logLines | Where-Object { $_ -match '\] \[ffmpeg\] (frame|out_time_us|progress)=' }) | Should -BeNullOrEmpty
+        foreach ($stage in 'preprocess', 'upscale', 'encode') {
+            @($logLines | Where-Object { $_ -match "\[INFO\] Upscale $stage progress: " }).Count | Should -BeGreaterThan 0 -Because "the $stage stage reports progress"
+        }
+    }
 }
 
 Describe 'End-to-end: ContentType=Animation queue entry -> Upscale-Worker.ps1 -Simulate -Once' {

@@ -456,6 +456,244 @@ exit 0
     }
 }
 
+# Characterisation of the pre-#32 behaviour that the streaming rewrite must keep.
+Describe 'Invoke-ArmTool exit code, timeout and default logging (unchanged by #32)' {
+    BeforeEach {
+        $script:StubDir32 = Join-Path $script:TestDir "stubs-$(New-Guid)"
+        $null = New-Item -ItemType Directory -Path $script:StubDir32 -Force
+        $script:Config32 = @{ Simulate = $true; LogDir = $script:LogDir; StubDir = $script:StubDir32 }
+    }
+
+    It 'returns the tool exit code and its output' {
+        Set-Content (Join-Path $script:StubDir32 'stub-freaccmd.ps1') -Value @'
+Write-Output 'out-a'
+[Console]::Error.WriteLine('err-a')
+exit 3
+'@
+        $result = Invoke-ArmTool -Name freaccmd -Arguments @('x') -Config $script:Config32
+        $result.ExitCode | Should -Be 3
+        @($result.StdOut) | Should -Be @('out-a')
+        @($result.StdErr) | Should -Be @('err-a')
+    }
+
+    It 'kills a tool that outlives -TimeoutSec, logs ERROR and returns ExitCode -1 without throwing' {
+        Set-Content (Join-Path $script:StubDir32 'stub-ffmpeg.ps1') -Value @'
+Write-Output 'started'
+Start-Sleep -Seconds 60
+Write-Output 'never'
+exit 0
+'@
+        Mock Write-ArmLog {}
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $result = Invoke-ArmTool -Name ffmpeg -Arguments @('x') -Config $script:Config32 -TimeoutSec 3
+        $sw.Stop()
+
+        $result.ExitCode | Should -Be -1
+        $sw.Elapsed.TotalSeconds | Should -BeLessThan 30
+        Should -Invoke Write-ArmLog -ParameterFilter { $Level -eq 'ERROR' -and $Message -match 'Invoke-ArmTool ffmpeg failed: Tool ffmpeg timed out after 3 seconds' }
+    }
+
+    It 'logs stdout at INFO as "[tool] line" and stderr at WARN as "[tool] STDERR: line" by default' {
+        Set-Content (Join-Path $script:StubDir32 'stub-makemkvcon.ps1') -Value @'
+Write-Output 'hello'
+[Console]::Error.WriteLine('banner line')
+exit 0
+'@
+        Mock Write-ArmLog {}
+        $null = Invoke-ArmTool -Name makemkvcon -Arguments @('x') -Config $script:Config32
+        Should -Invoke Write-ArmLog -Times 1 -ParameterFilter { $Level -eq 'INFO' -and $Message -eq '[makemkvcon] hello' }
+        Should -Invoke Write-ArmLog -Times 1 -ParameterFilter { $Level -eq 'WARN' -and $Message -eq '[makemkvcon] STDERR: banner line' }
+    }
+}
+
+Describe 'Invoke-ArmTool streaming, stderr level and progress (#32)' {
+    BeforeEach {
+        $script:StubDir32 = Join-Path $script:TestDir "stubs-$(New-Guid)"
+        $null = New-Item -ItemType Directory -Path $script:StubDir32 -Force
+        $script:Config32 = @{ Simulate = $true; LogDir = $script:LogDir; StubDir = $script:StubDir32 }
+    }
+
+    It 'delivers progress while the tool is still running (not buffered to exit)' {
+        Set-Content (Join-Path $script:StubDir32 'stub-ncnn.ps1') -Value @'
+[Console]::Out.WriteLine('frame=10')
+[Console]::Out.WriteLine('fps=5.0')
+[Console]::Out.WriteLine('progress=continue')
+Start-Sleep -Seconds 3
+[Console]::Out.WriteLine('frame=20')
+[Console]::Out.WriteLine('progress=end')
+exit 0
+'@
+        $script:Seen = [System.Collections.Generic.List[object]]::new()
+        $result = Invoke-ArmTool -Name ncnn -Arguments @('x') -Config $script:Config32 -ProgressHandler {
+            param($p) $script:Seen.Add([pscustomobject]@{ At = [datetime]::UtcNow; P = $p })
+        }
+        $done = [datetime]::UtcNow
+
+        $result.ExitCode | Should -Be 0
+        $script:Seen.Count | Should -Be 2
+        $script:Seen[0].P.Frame | Should -Be 10
+        $script:Seen[0].P.Fps | Should -Be 5.0
+        $script:Seen[0].P.Ended | Should -Be $false
+        $script:Seen[1].P.Frame | Should -Be 20
+        $script:Seen[1].P.Ended | Should -Be $true
+        # The first block arrived ~3 s before the tool exited.
+        ($done - $script:Seen[0].At).TotalSeconds | Should -BeGreaterThan 1.5
+    }
+
+    It 'consumes progress lines (not logged, not in StdOut) but keeps other stdout' {
+        Set-Content (Join-Path $script:StubDir32 'stub-ffmpeg.ps1') -Value @'
+[Console]::Out.WriteLine('frame=5')
+[Console]::Out.WriteLine('out_time_us=2000000')
+[Console]::Out.WriteLine('speed=1.5x')
+[Console]::Out.WriteLine('progress=end')
+[Console]::Out.WriteLine('a normal line')
+exit 0
+'@
+        Mock Write-ArmLog {}
+        $script:Seen = [System.Collections.Generic.List[object]]::new()
+        $result = Invoke-ArmTool -Name ffmpeg -Arguments @('x') -Config $script:Config32 -ProgressHandler { param($p) $script:Seen.Add($p) }
+
+        @($result.StdOut) | Should -Be @('a normal line')
+        $script:Seen[0].OutTimeSec | Should -Be 2.0
+        $script:Seen[0].Speed | Should -Be 1.5
+        $script:Seen[0].Tool | Should -Be 'ffmpeg'
+        Should -Invoke Write-ArmLog -Times 0 -ParameterFilter { $Message -match 'frame=|progress=' }
+        Should -Invoke Write-ArmLog -Times 1 -ParameterFilter { $Message -eq '[ffmpeg] a normal line' }
+    }
+
+    It 'leaves key=value stdout alone when no handler is passed' {
+        Set-Content (Join-Path $script:StubDir32 'stub-ffmpeg.ps1') -Value "[Console]::Out.WriteLine('frame=5')`nexit 0"
+        $result = Invoke-ArmTool -Name ffmpeg -Arguments @('x') -Config $script:Config32
+        @($result.StdOut) | Should -Be @('frame=5')
+    }
+
+    It 'never fails the run when the progress handler throws (logged once at WARN)' {
+        Set-Content (Join-Path $script:StubDir32 'stub-ffmpeg.ps1') -Value @'
+[Console]::Out.WriteLine('progress=continue')
+[Console]::Out.WriteLine('progress=end')
+exit 0
+'@
+        Mock Write-ArmLog {}
+        $result = Invoke-ArmTool -Name ffmpeg -Arguments @('x') -Config $script:Config32 -ProgressHandler { throw 'boom' }
+        $result.ExitCode | Should -Be 0
+        Should -Invoke Write-ArmLog -Times 1 -ParameterFilter { $Level -eq 'WARN' -and $Message -match 'progress handler failed' }
+    }
+
+    It 'StdErrLevel INFO logs stderr at INFO but error-looking lines at WARN' {
+        Set-Content (Join-Path $script:StubDir32 'stub-ffmpeg.ps1') -Value @'
+[Console]::Error.WriteLine('Input #0, matroska,webm, from x.mkv:')
+[Console]::Error.WriteLine('Error while decoding stream #0:0')
+exit 0
+'@
+        Mock Write-ArmLog {}
+        $result = Invoke-ArmTool -Name ffmpeg -Arguments @('x') -Config $script:Config32 -StdErrLevel INFO
+        @($result.StdErr).Count | Should -Be 2
+        Should -Invoke Write-ArmLog -Times 1 -ParameterFilter { $Level -eq 'INFO' -and $Message -eq '[ffmpeg] STDERR: Input #0, matroska,webm, from x.mkv:' }
+        Should -Invoke Write-ArmLog -Times 1 -ParameterFilter { $Level -eq 'WARN' -and $Message -match 'Error while decoding' }
+        Should -Invoke Write-ArmLog -Times 0 -ParameterFilter { $Level -eq 'WARN' -and $Message -match 'Input #0' }
+    }
+
+    It 'StdErrLevel None keeps stderr in the result without logging it, except error-looking lines' {
+        Set-Content (Join-Path $script:StubDir32 'stub-ffmpeg.ps1') -Value @'
+[Console]::Error.WriteLine('    title           : Chapter 01')
+[Console]::Error.WriteLine('[mpeg2video @ 0x1] Invalid frame dimensions 0x0.')
+exit 0
+'@
+        Mock Write-ArmLog {}
+        $result = Invoke-ArmTool -Name ffmpeg -Arguments @('x') -Config $script:Config32 -StdErrLevel None
+        @($result.StdErr).Count | Should -Be 2
+        Should -Invoke Write-ArmLog -Times 0 -ParameterFilter { $Message -match 'Chapter 01' }
+        Should -Invoke Write-ArmLog -Times 1 -ParameterFilter { $Level -eq 'WARN' -and $Message -match 'Invalid frame dimensions' }
+    }
+
+    It 'splits CR-separated ffmpeg stats into separate lines' {
+        Set-Content (Join-Path $script:StubDir32 'stub-ffmpeg.ps1') -Value @'
+[Console]::Error.Write("frame=  10 time=00:00:01.00`rframe=  20 time=00:00:02.00`n")
+exit 0
+'@
+        $result = Invoke-ArmTool -Name ffmpeg -Arguments @('x') -Config $script:Config32 -StdErrLevel None
+        @($result.StdErr) | Should -Be @('frame=  10 time=00:00:01.00', 'frame=  20 time=00:00:02.00')
+    }
+}
+
+Describe 'Update-ArmToolProgress' {
+    It 'accumulates keys until progress= and resets for the next block' {
+        $state = @{}
+        Update-ArmToolProgress -State $state -Key 'frame' -Value '120' | Should -BeNullOrEmpty
+        Update-ArmToolProgress -State $state -Key 'fps' -Value '23.98' | Should -BeNullOrEmpty
+        Update-ArmToolProgress -State $state -Key 'out_time_ms' -Value '5005000' | Should -BeNullOrEmpty
+        Update-ArmToolProgress -State $state -Key 'speed' -Value 'N/A' | Should -BeNullOrEmpty
+        $p = Update-ArmToolProgress -State $state -Key 'progress' -Value 'continue'
+        $p.Frame | Should -Be 120
+        $p.Fps | Should -Be 23.98
+        $p.OutTimeSec | Should -Be 5.005
+        $p.Speed | Should -BeNullOrEmpty
+        $p.Ended | Should -Be $false
+
+        $next = Update-ArmToolProgress -State $state -Key 'progress' -Value 'end'
+        $next.Frame | Should -BeNullOrEmpty
+        $next.Ended | Should -Be $true
+    }
+}
+
+Describe 'Write-ArmLog context tag and locked-file retry (#32)' {
+    BeforeEach {
+        $script:Dir32 = Join-Path $script:TestDir "log-$(New-Guid)"
+        $null = New-Item -ItemType Directory -Path $script:Dir32 -Force
+        $script:LogFile32 = Join-Path $script:Dir32 "wrm-$(Get-Date -Format 'yyyyMMdd').log"
+    }
+
+    It 'writes the -Context tag after the level' {
+        Write-ArmLog -Level INFO -Message 'tagged' -Config @{ LogDir = $script:Dir32 } -Context 'Movie (2001)'
+        Get-Content $script:LogFile32 -Raw | Should -Match '\] \[INFO\] \[Movie \(2001\)\] tagged'
+    }
+
+    It 'uses $Config.LogContext when -Context is not given, and no tag otherwise' {
+        Write-ArmLog -Level WARN -Message 'from config' -Config @{ LogDir = $script:Dir32; LogContext = 'item-a' }
+        Write-ArmLog -Level INFO -Message 'untagged' -Config @{ LogDir = $script:Dir32 }
+        $lines = Get-Content $script:LogFile32
+        $lines[0] | Should -Match '\[WARN\] \[item-a\] from config$'
+        $lines[1] | Should -Match '\[INFO\] untagged$'
+    }
+
+    It 'waits for a writer that briefly holds the log file instead of dropping the line' {
+        Set-Content -Path $script:LogFile32 -Value 'existing'
+        $ready = Join-Path $script:Dir32 'locked.flag'
+        $holder = Start-Process -FilePath (Get-Process -Id $PID).Path -PassThru -WindowStyle Hidden -ArgumentList @(
+            '-NoProfile', '-Command',
+            "`$fs = [System.IO.File]::Open('$script:LogFile32', 'Open', 'ReadWrite', 'None'); Set-Content '$ready' 1; Start-Sleep -Milliseconds 700; `$fs.Dispose()")
+        $deadline = [datetime]::UtcNow.AddSeconds(20)
+        while (-not (Test-Path $ready) -and [datetime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 50 }
+        Test-Path $ready | Should -Be $true
+
+        { [System.IO.File]::AppendAllText($script:LogFile32, 'probe') } | Should -Throw   # really locked
+        Write-ArmLog -Level INFO -Message 'survived the lock' -Config @{ LogDir = $script:Dir32 }
+        $holder.WaitForExit(10000) | Should -Be $true
+
+        Get-Content $script:LogFile32 -Raw | Should -Match 'survived the lock'
+        @(Get-ChildItem $script:Dir32 -Filter "*-pid$PID.log").Count | Should -Be 0
+    }
+
+    It 'keeps the line in a per-process side file when the shared log stays locked' {
+        Set-Content -Path $script:LogFile32 -Value 'existing'
+        $fs = [System.IO.File]::Open($script:LogFile32, 'Open', 'ReadWrite', 'None')
+        try {
+            { Write-ArmLog -Level ERROR -Message 'kept anyway' -Config @{ LogDir = $script:Dir32 } } | Should -Not -Throw
+        } finally {
+            $fs.Dispose()
+        }
+        $side = Join-Path $script:Dir32 "wrm-$(Get-Date -Format 'yyyyMMdd')-pid$PID.log"
+        $side | Should -Exist
+        Get-Content $side -Raw | Should -Match 'kept anyway.*was locked'
+    }
+
+    It 'Add-ArmLogLine returns $false (no throw) for a non-lock failure without retrying' {
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        Add-ArmLogLine -Path (Join-Path $script:Dir32 'no\such\dir\x.log') -Line 'x' | Should -Be $false
+        $sw.Elapsed.TotalSeconds | Should -BeLessThan 1
+    }
+}
+
 Describe 'New-ArmResult' {
     It 'builds a success result with extra properties in supplied order' {
         $result = New-ArmResult -Success $true -Properties ([ordered]@{ OutputDir = 'C:\out'; Artist = 'Artist'; Album = 'Album' })
