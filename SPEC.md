@@ -503,6 +503,13 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #  for Video/AudioCD and passes -JobId down; dispatch advances it
 #  Detected → Ripping (set inside the rip function) → Moving → Complete (DestDir),
 #  or Failed (Error) on any failure path, including unhandled exceptions.
+#  Already-processed marker (#37): <StateDir>\processed-discs.json = { "<DRIVE>": "<label>|<serial>|<size>" }.
+#  Get-ArmDiscIdentity (via Get-ArmVolumeInfo, Win32_LogicalDisk) is read by Invoke-DiscDispatch BEFORE
+#  dispatch (the dispatch ejects); Invoke-ArmProcessedDisc -Action Set records it only if the Rip job
+#  ended Complete. Update-ArmDiscWatcherState: a Video/AudioCD whose identity equals the marker is NOT
+#  dispatched (INFO "already processed; eject to re-rip"); observing Type=None for the drive Clears the
+#  marker, so eject/re-insert of the same disc rips again. Identity unreadable ($null; always under
+#  Simulate), no StateDir, or a failed rip = no marker = rip (fail open). -Once ignores the marker.
 
 # Upscale-Worker.ps1 (entry point)
 #  Param: [-ConfigPath] [-Simulate] [-Once]. Poll UpscaleQueueDir every 60s for

@@ -956,3 +956,109 @@ Describe 'Invoke-DiscDispatch web UI' {
         Should -Invoke Open-ArmWebUi -Times 2 -Exactly
     }
 }
+
+Describe 'Already-processed disc marker (#37: no re-rip after watcher restart)' {
+    BeforeEach {
+        $script:TestRoot = Join-Path $TestDrive (New-Guid)
+        New-Item -ItemType Directory -Force -Path $script:TestRoot | Out-Null
+        $script:Config = New-TestConfig -StagingDir (Join-Path $script:TestRoot 'staging') `
+            -NasVideoPath (Join-Path $script:TestRoot 'nas-video') `
+            -NasMusicPath (Join-Path $script:TestRoot 'nas-music') `
+            -UpscaleQueueDir (Join-Path $script:TestRoot 'queue')
+        $script:Config.StateDir = Join-Path $script:TestRoot 'state'
+        Mock Write-ArmLog { }
+    }
+
+    It 'skips a re-detect of a completed disc after a simulated restart (fresh LastState)' {
+        Mock Get-ArmDiscIdentity { 'GARDEN_STATE|1234ABCD|7000000000' }
+        Mock Invoke-DiscMutexDispatch { $true }
+        Invoke-ArmProcessedDisc -Action Set -DriveLetter 'F' -Identity 'GARDEN_STATE|1234ABCD|7000000000' -Config $script:Config
+
+        $lastState = @{}   # new process: nothing remembered in memory
+        Update-ArmDiscWatcherState -DriveLetter 'F' -Type 'Video' -LastState $lastState -Config $script:Config
+
+        Should -Invoke Invoke-DiscMutexDispatch -Times 0
+        Should -Invoke Write-ArmLog -ParameterFilter { $Message -like '*already processed; eject to re-rip*' }
+        $lastState[[char]'F'] | Should -Be 'Video'
+    }
+
+    It 'still rips a different disc in the same drive' {
+        Mock Get-ArmDiscIdentity { 'OTHER_DISC|99999999|4700000000' }
+        Mock Invoke-DiscMutexDispatch { $true }
+        Invoke-ArmProcessedDisc -Action Set -DriveLetter 'F' -Identity 'GARDEN_STATE|1234ABCD|7000000000' -Config $script:Config
+
+        Update-ArmDiscWatcherState -DriveLetter 'F' -Type 'Video' -LastState @{} -Config $script:Config
+
+        Should -Invoke Invoke-DiscMutexDispatch -Times 1
+    }
+
+    It 'rips when there is no marker (e.g. the previous rip failed)' {
+        Mock Get-ArmDiscIdentity { 'GARDEN_STATE|1234ABCD|7000000000' }
+        Mock Invoke-DiscMutexDispatch { $true }
+
+        Update-ArmDiscWatcherState -DriveLetter 'F' -Type 'Video' -LastState @{} -Config $script:Config
+
+        Should -Invoke Invoke-DiscMutexDispatch -Times 1
+    }
+
+    It 'rips when the identity is unreadable (fail open)' {
+        Mock Get-ArmDiscIdentity { $null }
+        Mock Invoke-DiscMutexDispatch { $true }
+        Invoke-ArmProcessedDisc -Action Set -DriveLetter 'F' -Identity 'X|1|2' -Config $script:Config
+
+        Update-ArmDiscWatcherState -DriveLetter 'F' -Type 'Video' -LastState @{} -Config $script:Config
+
+        Should -Invoke Invoke-DiscMutexDispatch -Times 1
+    }
+
+    It 'clears the marker when the disc is removed, so re-inserting the same disc rips again' {
+        Mock Get-ArmDiscIdentity { 'GARDEN_STATE|1234ABCD|7000000000' }
+        Mock Invoke-DiscMutexDispatch { $true }
+        Invoke-ArmProcessedDisc -Action Set -DriveLetter 'F' -Identity 'GARDEN_STATE|1234ABCD|7000000000' -Config $script:Config
+        $lastState = @{ [char]'F' = 'Video' }
+
+        Update-ArmDiscWatcherState -DriveLetter 'F' -Type 'None' -LastState $lastState -Config $script:Config
+        Invoke-ArmProcessedDisc -Action Get -DriveLetter 'F' -Config $script:Config | Should -BeNullOrEmpty
+
+        Update-ArmDiscWatcherState -DriveLetter 'F' -Type 'Video' -LastState $lastState -Config $script:Config
+        Should -Invoke Invoke-DiscMutexDispatch -Times 1
+    }
+
+    It 'is a no-op without StateDir' {
+        $cfg = New-TestConfig -StagingDir $script:TestRoot -NasVideoPath 'x' -NasMusicPath 'y' -UpscaleQueueDir 'z'
+        Invoke-ArmProcessedDisc -Action Set -DriveLetter 'F' -Identity 'A|1|2' -Config $cfg
+        Invoke-ArmProcessedDisc -Action Get -DriveLetter 'F' -Config $cfg | Should -BeNullOrEmpty
+    }
+
+    It 'Get-ArmDiscIdentity builds label|serial|size, and is $null under Simulate or when unreadable' {
+        Mock Get-ArmVolumeInfo { [pscustomobject]@{ Label = 'GARDEN_STATE'; Serial = '1234ABCD'; Size = '7000000000' } }
+        $real = @{ Simulate = $false }
+        Get-ArmDiscIdentity -DriveLetter 'F' -Config $real | Should -Be 'GARDEN_STATE|1234ABCD|7000000000'
+        Get-ArmDiscIdentity -DriveLetter 'F' -Config @{ Simulate = $true } | Should -BeNullOrEmpty
+        Mock Get-ArmVolumeInfo { $null }
+        Get-ArmDiscIdentity -DriveLetter 'F' -Config $real | Should -BeNullOrEmpty
+    }
+
+    Context 'Invoke-DiscDispatch recording' {
+        BeforeEach {
+            Mock Get-ArmDiscIdentity { 'GARDEN_STATE|1234ABCD|7000000000' }
+            Mock Open-ArmWebUi { $false }
+        }
+
+        It 'records the marker after a successful (Complete) video rip' {
+            Mock Invoke-VideoDispatch {
+                $null = Update-ArmJob -JobId $JobId -Properties @{ State = 'Complete' } -Config $Config
+            }
+            Invoke-DiscDispatch -DriveLetter 'F' -DiscType 'Video' -Config $script:Config
+            Invoke-ArmProcessedDisc -Action Get -DriveLetter 'F' -Config $script:Config | Should -Be 'GARDEN_STATE|1234ABCD|7000000000'
+        }
+
+        It 'does NOT record the marker when the rip failed' {
+            Mock Invoke-VideoDispatch {
+                $null = Update-ArmJob -JobId $JobId -Properties @{ State = 'Failed'; Error = 'boom' } -Config $Config
+            }
+            Invoke-DiscDispatch -DriveLetter 'F' -DiscType 'Video' -Config $script:Config
+            Invoke-ArmProcessedDisc -Action Get -DriveLetter 'F' -Config $script:Config | Should -BeNullOrEmpty
+        }
+    }
+}

@@ -649,6 +649,139 @@ function Open-ArmWebUi {
 
 <#
 .SYNOPSIS
+    Read the volume label, serial and size of the disc in a drive (CIM wrapper).
+
+.DESCRIPTION
+    Wrapper so tests never touch hardware. Returns $null when unreadable.
+#>
+function Get-ArmVolumeInfo {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [char] $DriveLetter
+    )
+
+    try {
+        $vol = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='$([char]::ToUpper($DriveLetter)):'" -ErrorAction Stop
+        if (-not $vol) { return $null }
+        return [pscustomobject]@{
+            Label  = "$($vol.VolumeName)"
+            Serial = "$($vol.VolumeSerialNumber)"
+            Size   = "$($vol.Size)"
+        }
+    } catch {
+        return $null
+    }
+}
+
+<#
+.SYNOPSIS
+    Stable identity string for the disc in a drive: label|serial|size.
+
+.DESCRIPTION
+    Returns $null (identity unknown) under Simulate, or when the volume cannot be
+    read, or when it has neither a label nor a serial. A $null identity disables
+    the already-processed check, so the disc is ripped (fail open).
+#>
+function Get-ArmDiscIdentity {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [char] $DriveLetter,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable] $Config
+    )
+
+    if ($Config.ContainsKey('Simulate') -and $Config.Simulate) { return $null }
+    $info = Get-ArmVolumeInfo -DriveLetter $DriveLetter
+    if (-not $info -or (-not $info.Label -and -not $info.Serial)) { return $null }
+    return "$($info.Label)|$($info.Serial)|$($info.Size)"
+}
+
+function Get-ArmProcessedDiscPath {
+    param([hashtable] $Config)
+    if (-not $Config.ContainsKey('StateDir') -or -not $Config.StateDir) { return $null }
+    return Join-Path $Config.StateDir 'processed-discs.json'
+}
+
+function Read-ArmProcessedDisc {
+    param([hashtable] $Config)
+    $path = Get-ArmProcessedDiscPath -Config $Config
+    $map = @{}
+    if (-not $path -or -not (Test-Path -LiteralPath $path)) { return $map }
+    try {
+        $json = Get-Content -LiteralPath $path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        foreach ($p in $json.PSObject.Properties) { $map[$p.Name] = "$($p.Value)" }
+    } catch {
+        Write-ArmLog -Level WARN -Message "Could not read ${path}: $_" -Config $Config
+    }
+    return $map
+}
+
+function Save-ArmProcessedDisc {
+    param([hashtable] $Map, [hashtable] $Config)
+    $path = Get-ArmProcessedDiscPath -Config $Config
+    if (-not $path) { return }
+    try {
+        $dir = Split-Path -Parent $path
+        if (-not (Test-Path -LiteralPath $dir)) { $null = New-Item -ItemType Directory -Force -Path $dir }
+        $tmp = "$path.$([guid]::NewGuid().ToString('N')).tmp"
+        $Map | ConvertTo-Json | Set-Content -LiteralPath $tmp -Encoding utf8
+        [System.IO.File]::Move($tmp, $path, $true)
+    } catch {
+        Write-ArmLog -Level WARN -Message "Could not write ${path}: $_" -Config $Config
+    }
+}
+
+<#
+.SYNOPSIS
+    Persisted "this disc was ripped successfully" marker, one per drive letter
+    (<StateDir>\processed-discs.json), so a watcher restart does not re-rip a
+    disc left in the drive (#37). Never throws; no StateDir = no-op.
+
+.PARAMETER Action
+    Get (returns the stored identity or $null), Set (needs -Identity), Clear.
+#>
+function Invoke-ArmProcessedDisc {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Get', 'Set', 'Clear')]
+        [string] $Action,
+
+        [Parameter(Mandatory = $true)]
+        [char] $DriveLetter,
+
+        [string] $Identity,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable] $Config
+    )
+
+    $key = "$([char]::ToUpper($DriveLetter))"
+    $map = Read-ArmProcessedDisc -Config $Config
+    switch ($Action) {
+        'Get' {
+            if ($map.ContainsKey($key)) { return $map[$key] }
+            return $null
+        }
+        'Set' {
+            $map[$key] = $Identity
+            Save-ArmProcessedDisc -Map $map -Config $Config
+        }
+        'Clear' {
+            if ($map.ContainsKey($key)) {
+                $map.Remove($key)
+                Save-ArmProcessedDisc -Map $map -Config $Config
+            }
+        }
+    }
+}
+
+<#
+.SYNOPSIS
     Route a detected disc to the appropriate rip/move/eject/notify pipeline.
 
 .DESCRIPTION
@@ -690,8 +823,11 @@ function Invoke-DiscDispatch {
     )
 
     $jobId = $null
+    $identity = $null
     try {
         if ($DiscType -in @('Video', 'AudioCD')) {
+            # Read before dispatch: the dispatch ejects the disc when it finishes.
+            $identity = Get-ArmDiscIdentity -DriveLetter $DriveLetter -Config $Config
             $jobId = New-ArmJob -Kind Rip -Properties @{ State = 'Detected'; Drive = "$DriveLetter`:"; DiscType = $DiscType } -Config $Config
             $null = Open-ArmWebUi -Config $Config
         }
@@ -713,6 +849,15 @@ function Invoke-DiscDispatch {
             }
             'None' {
                 # Nothing loaded; nothing to do.
+            }
+        }
+
+        # Remember a successful rip so a watcher restart with the disc still in the
+        # drive does not rip it again (#37). Failed rips are not recorded.
+        if ($identity -and $jobId) {
+            $job = Get-ArmJob -JobId $jobId -Config $Config
+            if ($job -and $job.State -eq 'Complete') {
+                Invoke-ArmProcessedDisc -Action Set -DriveLetter $DriveLetter -Identity $identity -Config $Config
             }
         }
     } catch {
@@ -826,6 +971,20 @@ function Update-ArmDiscWatcherState {
         [Parameter(Mandatory = $true)]
         [hashtable] $Config
     )
+
+    if ($Type -eq 'None') {
+        # Disc removed (eject or manual): a later insert of the same disc is a new rip.
+        Invoke-ArmProcessedDisc -Action Clear -DriveLetter $DriveLetter -Config $Config
+    }
+
+    if ($Type -in @('Video', 'AudioCD') -and $LastState[$DriveLetter] -ne $Type) {
+        $identity = Get-ArmDiscIdentity -DriveLetter $DriveLetter -Config $Config
+        if ($identity -and (Invoke-ArmProcessedDisc -Action Get -DriveLetter $DriveLetter -Config $Config) -eq $identity) {
+            Write-ArmLog -Level INFO -Message "Disc in $DriveLetter`: already processed; eject to re-rip." -Config $Config
+            $LastState[$DriveLetter] = $Type
+            return
+        }
+    }
 
     if ($Type -ne 'None' -and $LastState[$DriveLetter] -ne $Type) {
         $dispatched = Invoke-DiscMutexDispatch -DriveLetter $DriveLetter -DiscType $Type -Config $Config
