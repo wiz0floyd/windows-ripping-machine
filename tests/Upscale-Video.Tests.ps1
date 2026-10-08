@@ -915,6 +915,27 @@ Describe 'Invoke-Upscale engine routing' {
         $r = Invoke-Upscale -InputFile $script:InputFile -OutputDir $script:OutputDir -Config $script:Config
         $r.Success | Should -Be $false
         $r.Error | Should -Match "Unknown upscale engine 'bogus'"
+        $r.Engine | Should -Be 'bogus'
+        # fails before any encode: no preprocess/upscale/mux ran
+        Should -Invoke Invoke-ArmTool -Times 0 -ParameterFilter { $Name -in @('ncnn', 'video2x') -or ($Name -eq 'ffmpeg' -and ($Arguments -join ' ') -match 'ffv1|libx265') }
+    }
+
+    It 'leaves Engine null when the preprocess fails (before the engine is chosen)' {
+        Mock Invoke-ArmTool {
+            param($Name, $Arguments, $Config, $TimeoutSec)
+            if ($Name -eq 'ffprobe') { return [pscustomobject]@{ ExitCode = 0; StdOut = @(New-FfprobeJson); StdErr = @() } }
+            if ($Name -eq 'ffmpeg' -and ($Arguments -join ' ') -match 'idet') {
+                return [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = Get-FixtureLines 'ffmpeg-idet-progressive.txt' }
+            }
+            if ($Arguments[$Arguments.Count - 1] -eq '-') { return [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @($script:ProbeStderr) } }
+            [pscustomobject]@{ ExitCode = 1; StdOut = @(); StdErr = @('boom') }
+        }
+
+        $r = Invoke-Upscale -InputFile $script:InputFile -OutputDir $script:OutputDir -Config $script:Config
+        $r.Success | Should -Be $false
+        $r.Error | Should -Match 'ffmpeg preprocess failed'
+        $r.Engine | Should -BeNullOrEmpty
+        $r.InterlaceType | Should -Be 'Progressive'
     }
 
     It 'points at setup.ps1 when the OpenProteus model is missing (non-simulated run)' {

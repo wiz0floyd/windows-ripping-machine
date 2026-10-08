@@ -338,6 +338,9 @@ Get-VideoSourceInfo -InputFile <string> -Config <hashtable> -> [pscustomobject]
 #  Get-VideoFrameRate -Seek <int=600> -Duration <int=60>
 #  Invoke-Upscale does not pass a window to Get-InterlaceType yet (windowed/multi-sample
 #  classification is #30); the parameters exist so that change is a call-site edit.
+#  Unlike Get-VideoFrameRate, Get-InterlaceType does NOT retry from 0:00 when the seek
+#  lands past the end of a short file: idet then reports zero counts, which classifies
+#  as Interlaced with a WARN (the safe default). #30 owns adding that fallback.
 
 Get-UpscalePlan -InputFile <string> -SourceInfo <pscustomobject> -InterlaceType <Telecined|Interlaced|Progressive>
                 -FrameRate <string|$null> -Config <hashtable> [-ContentType <LiveAction|Animation>]
