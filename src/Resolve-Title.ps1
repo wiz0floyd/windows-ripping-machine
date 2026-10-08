@@ -142,6 +142,118 @@ function Test-ArmTmdbAcceptance {
     return ($top -ge (2 * $second))
 }
 
+# TMDb movie genre id -> name. The ids are stable (GET /genre/movie/list), so a
+# fixed table avoids an extra API call per lookup. Used to show the LLM genre names.
+$script:ArmTmdbMovieGenres = @{
+    28    = 'Action'
+    12    = 'Adventure'
+    16    = 'Animation'
+    35    = 'Comedy'
+    80    = 'Crime'
+    99    = 'Documentary'
+    18    = 'Drama'
+    10751 = 'Family'
+    14    = 'Fantasy'
+    36    = 'History'
+    27    = 'Horror'
+    10402 = 'Music'
+    9648  = 'Mystery'
+    10749 = 'Romance'
+    878   = 'Science Fiction'
+    10770 = 'TV Movie'
+    53    = 'Thriller'
+    10752 = 'War'
+    37    = 'Western'
+}
+
+<#
+.SYNOPSIS
+    Read a TMDb candidate's `genre_ids` as an int array (empty when absent/malformed).
+#>
+function Get-ArmTmdbGenreId {
+    [CmdletBinding()]
+    [OutputType([int[]])]
+    param(
+        [AllowNull()]
+        $Candidate
+    )
+
+    if ($null -eq $Candidate) { return [int[]]@() }
+    $raw = $null
+    if ($Candidate -is [System.Collections.IDictionary]) {
+        if ($Candidate.Contains('genre_ids')) { $raw = $Candidate['genre_ids'] }
+    } else {
+        $prop = $Candidate.PSObject.Properties['genre_ids']
+        if ($prop) { $raw = $prop.Value }
+    }
+
+    $ids = [System.Collections.Generic.List[int]]::new()
+    foreach ($g in @($raw)) {
+        $n = 0
+        if ($null -ne $g -and [int]::TryParse("$g", [ref]$n)) { $ids.Add($n) }
+    }
+    return [int[]]$ids.ToArray()
+}
+
+<#
+.SYNOPSIS
+    Derive ContentType ('Animation' | 'LiveAction') from a TMDb candidate's genres.
+
+.DESCRIPTION
+    'Animation' when `genre_ids` contains 16 (TMDb's Animation genre), else
+    'LiveAction' - including when the candidate has no `genre_ids` at all.
+#>
+function Get-ArmTmdbContentType {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [AllowNull()]
+        $Candidate
+    )
+
+    if (16 -in (Get-ArmTmdbGenreId -Candidate $Candidate)) { return 'Animation' }
+    return 'LiveAction'
+}
+
+<#
+.SYNOPSIS
+    Build the Resolve-Title / Resolve-TitleOverride result object in one place.
+#>
+function New-ArmResolvedTitle {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Pure object constructor; changes no state.')]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $FolderName,
+
+        [Parameter(Mandatory = $true)]
+        [bool] $Matched,
+
+        [AllowNull()]
+        $Title = $null,
+
+        [AllowNull()]
+        $Year = $null,
+
+        [ValidateSet('LiveAction', 'Animation')]
+        [string] $ContentType = 'LiveAction',
+
+        [AllowNull()]
+        [string] $ContentTypeNote = ''
+    )
+
+    return [pscustomobject]@{
+        FolderName      = $FolderName
+        Matched         = $Matched
+        Title           = $Title
+        Year            = $Year
+        ContentType     = $ContentType
+        ContentTypeNote = if ($ContentTypeNote) { $ContentTypeNote } else { '' }
+    }
+}
+
 <#
 .SYNOPSIS
     Ask a local OpenAI-compatible LLM to disambiguate a set of TMDb candidates
@@ -160,6 +272,11 @@ function Test-ArmTmdbAcceptance {
     against the real candidate list - the model can only pick a position in
     the array it was given, never invent a title/ID of its own.
 
+    Each candidate line also carries its TMDb genre names, and the reply may
+    include `"animated": true|false` about the picked candidate. Animated is
+    $true/$false when given as a valid boolean, else $null (absent, invalid, or
+    no index picked); a bad `animated` never invalidates a valid index.
+
 .PARAMETER DiscLabel
     Title-cased, cleaned disc label used as the disambiguation query context.
 
@@ -171,7 +288,7 @@ function Test-ArmTmdbAcceptance {
     Configuration hashtable (LlmEndpoint, LlmModel, LlmTimeoutSec).
 
 .OUTPUTS
-    [pscustomobject] @{ SelectedIndex = [int]$null or a valid index into $Candidates }
+    [pscustomobject] @{ SelectedIndex = [int]$null or a valid index into $Candidates; Animated = [bool]$null }
 
 .EXAMPLE
     $llmResult = Invoke-ArmLlmDisambiguation -DiscLabel 'Alpha' -Candidates $sorted -Config $config
@@ -198,10 +315,14 @@ function Invoke-ArmLlmDisambiguation {
                 try { $year = ([datetime]$c.release_date).Year } catch { $year = $null }
             }
             $overviewProp = $c.PSObject.Properties['overview']
+            $genreNames = @(Get-ArmTmdbGenreId -Candidate $c | ForEach-Object {
+                    if ($script:ArmTmdbMovieGenres.ContainsKey($_)) { $script:ArmTmdbMovieGenres[$_] }
+                })
             [pscustomobject]@{
                 index      = $i
                 title      = $c.title
                 year       = $year
+                genres     = $genreNames
                 popularity = $c.popularity
                 overview   = if ($overviewProp) { $overviewProp.Value } else { $null }
             }
@@ -213,8 +334,10 @@ Disc label: "$DiscLabel"
 Candidate movies (JSON array, "index" is the only valid identifier to answer with):
 $($candidateLines | ConvertTo-Json -Compress)
 
-Pick the single candidate that best matches the disc label. Respond with ONLY a
-JSON object: {"index": <candidate index>} or {"index": null} if none plausibly match.
+Pick the single candidate that best matches the disc label, and say whether that
+movie is animated (cartoon / CGI / anime feature, as opposed to live action).
+Respond with ONLY a JSON object: {"index": <candidate index>, "animated": true|false}
+or {"index": null} if none plausibly match.
 "@
 
         $body = @{
@@ -244,7 +367,8 @@ JSON object: {"index": <candidate index>} or {"index": null} if none plausibly m
         $parsed = $jsonMatch.Value | ConvertFrom-Json
         $indexProp = $parsed.PSObject.Properties['index']
         if (-not $indexProp -or $null -eq $indexProp.Value) {
-            return [pscustomobject]@{ SelectedIndex = $null }
+            # No pick: any `animated` answer has no candidate to attach to, so ignore it.
+            return [pscustomobject]@{ SelectedIndex = $null; Animated = $null }
         }
 
         $index = 0
@@ -255,11 +379,24 @@ JSON object: {"index": <candidate index>} or {"index": null} if none plausibly m
             throw "LLM returned an out-of-range index: $index (candidate count $($Candidates.Count))"
         }
 
-        return [pscustomobject]@{ SelectedIndex = $index }
+        # `animated` is advisory: missing or invalid never invalidates a valid index.
+        $animated = $null
+        $animatedProp = $parsed.PSObject.Properties['animated']
+        if ($animatedProp -and $null -ne $animatedProp.Value) {
+            if ($animatedProp.Value -is [bool]) {
+                $animated = $animatedProp.Value
+            } elseif ("$($animatedProp.Value)" -match '^(?i:true|false)$') {
+                $animated = [bool]::Parse("$($animatedProp.Value)")
+            } else {
+                Write-ArmLog -Level WARN -Message "LLM returned an invalid 'animated' value for '$DiscLabel' (ignored): $($animatedProp.Value)" -Config $Config
+            }
+        }
+
+        return [pscustomobject]@{ SelectedIndex = $index; Animated = $animated }
 
     } catch {
         Write-ArmLog -Level WARN -Message "LLM disambiguation failed/declined for '$DiscLabel': $_" -Config $Config
-        return [pscustomobject]@{ SelectedIndex = $null }
+        return [pscustomobject]@{ SelectedIndex = $null; Animated = $null }
     }
 }
 
@@ -327,7 +464,12 @@ function ConvertTo-ArmFolderName {
     LlmModel, LlmTimeoutSec).
 
 .OUTPUTS
-    [pscustomobject] @{ FolderName; Matched; Title; Year }
+    [pscustomobject] @{ FolderName; Matched; Title; Year; ContentType; ContentTypeNote }
+
+    ContentType is 'Animation' when the chosen TMDb candidate's genre_ids contain
+    16, else 'LiveAction' (every no-match / fallback path is 'LiveAction').
+    ContentTypeNote is '' unless the LLM's `animated` answer disagreed with
+    TMDb's genre, in which case TMDb's value is used and the note records both.
 
 .EXAMPLE
     $result = Resolve-Title -DiscLabel 'STAR_WARS_ANH' -Config $config
@@ -354,7 +496,7 @@ function Resolve-Title {
 
         if (-not $Config.TmdbApiKey) {
             Write-ArmLog -Level WARN -Message "No TmdbApiKey configured; using label+date naming for '$titleCaseLabel'" -Config $Config
-            return [pscustomobject]@{ FolderName = $fallbackName; Matched = $false; Title = $null; Year = $null }
+            return New-ArmResolvedTitle -FolderName $fallbackName -Matched $false
         }
 
         # Query TMDb with the full cleaned label; if that returns zero results (not
@@ -375,7 +517,7 @@ function Resolve-Title {
                 $response = Invoke-ArmTmdbSearch -Query $queryUsed -ApiKey $Config.TmdbApiKey
             } catch {
                 Write-ArmLog -Level WARN -Message "TMDb lookup failed for '$queryUsed': $_" -Config $Config
-                return [pscustomobject]@{ FolderName = $fallbackName; Matched = $false; Title = $null; Year = $null }
+                return New-ArmResolvedTitle -FolderName $fallbackName -Matched $false
             }
 
             $results = @($response.results)
@@ -388,7 +530,7 @@ function Resolve-Title {
         }
 
         if ($results.Count -eq 0) {
-            return [pscustomobject]@{ FolderName = $fallbackName; Matched = $false; Title = $null; Year = $null }
+            return New-ArmResolvedTitle -FolderName $fallbackName -Matched $false
         }
 
         $sortedResults = $results | Sort-Object -Property popularity -Descending
@@ -421,17 +563,32 @@ function Resolve-Title {
                     Write-ArmLog -Level WARN -Message "Matched '$llmTitle' via LLM disambiguation for ambiguous TMDb results ('$titleCaseLabel')" -Config $Config
                 }
 
+                # ContentType always comes from the candidate actually chosen (TMDb's
+                # genre for THAT title). The LLM's `animated` is only a cross-check:
+                # on disagreement TMDb wins and both values are recorded.
+                $llmContentType = Get-ArmTmdbContentType -Candidate $chosen
+                $contentTypeNote = ''
+                if ($null -ne $llmResult.Animated) {
+                    $llmSaysAnimation = [bool]$llmResult.Animated
+                    if ($llmSaysAnimation -ne ($llmContentType -eq 'Animation')) {
+                        $llmContentTypeText = if ($llmSaysAnimation) { 'animated' } else { 'not animated' }
+                        $contentTypeNote = "TMDb genres say $llmContentType but the LLM says $llmContentTypeText; using TMDb's $llmContentType"
+                        Write-ArmLog -Level WARN -Message "ContentType disagreement for '$llmTitle': $contentTypeNote" -Config $Config
+                    }
+                }
+
                 $llmFolderName = ConvertTo-ArmFolderName -Title $llmTitle -Year $llmYear
-                return [pscustomobject]@{ FolderName = $llmFolderName; Matched = $true; Title = $llmTitle; Year = $llmYear }
+                return New-ArmResolvedTitle -FolderName $llmFolderName -Matched $true -Title $llmTitle -Year $llmYear `
+                    -ContentType $llmContentType -ContentTypeNote $contentTypeNote
             }
 
             if (-not $accepted) {
                 Write-ArmLog -Level WARN -Message "LLM disambiguation declined/unavailable for '$titleCaseLabel'; using label+date naming" -Config $Config
-                return [pscustomobject]@{ FolderName = $fallbackName; Matched = $false; Title = $null; Year = $null }
+                return New-ArmResolvedTitle -FolderName $fallbackName -Matched $false
             }
             Write-ArmLog -Level WARN -Message "LLM validation declined/unavailable for '$titleCaseLabel'; using TMDb's top hit" -Config $Config
         } elseif (-not $accepted) {
-            return [pscustomobject]@{ FolderName = $fallbackName; Matched = $false; Title = $null; Year = $null }
+            return New-ArmResolvedTitle -FolderName $fallbackName -Matched $false
         }
 
         $top = $sortedResults[0]
@@ -447,32 +604,36 @@ function Resolve-Title {
 
         $folderName = ConvertTo-ArmFolderName -Title $title -Year $year
 
-        return [pscustomobject]@{ FolderName = $folderName; Matched = $true; Title = $title; Year = $year }
+        return New-ArmResolvedTitle -FolderName $folderName -Matched $true -Title $title -Year $year `
+            -ContentType (Get-ArmTmdbContentType -Candidate $top)
 
     } catch {
         Write-ArmLog -Level WARN -Message "Resolve-Title failed for '$DiscLabel': $_" -Config $Config
         $safeLabel = ConvertTo-ArmSafeFileName -Name $DiscLabel
         if (-not $safeLabel) { $safeLabel = 'Unknown Title' }
-        return [pscustomobject]@{
-            FolderName = "$($safeLabel)_$(Get-Date -Format 'yyyy-MM-dd')"
-            Matched    = $false
-            Title      = $null
-            Year       = $null
-        }
+        return New-ArmResolvedTitle -FolderName "$($safeLabel)_$(Get-Date -Format 'yyyy-MM-dd')" -Matched $false
     }
 }
 
 <#
 .SYNOPSIS
-    Re-read a rip's metadata.json for a user-supplied Title/Year override.
+    Re-read a rip's metadata.json for a user-supplied Title/Year/ContentType override.
 
 .DESCRIPTION
     Called immediately before the staging dir is renamed for the NAS move.
-    If metadata.json is missing, unreadable, malformed, not a JSON object, or
-    has a blank/whitespace-only Title, returns $FallbackResolved unchanged
-    (the original Resolve-Title result from before the rip). Otherwise builds
+    If metadata.json is missing, unreadable, malformed, or not a JSON object,
+    returns $FallbackResolved unchanged (the original Resolve-Title result from
+    before the rip). With a blank/whitespace-only Title the fallback's
+    FolderName/Title/Year are kept (but see ContentType below). Otherwise builds
     a "Title (Year)" folder name (or just "Title" if Year is blank) from the
     override, sanitized the same way Resolve-Title sanitizes its own matches.
+
+    ContentType is applied independently of Title: a valid `ContentType`
+    ('Animation' or 'LiveAction', case-insensitive) in metadata.json wins even
+    when Title is blank/unedited. An invalid value logs a WARN and keeps the
+    fallback's ContentType. When Title is edited but ContentType is not, the
+    TMDb-derived value is kept (no re-query) and an INFO line is logged.
+    ContentTypeNote is carried over from the fallback.
 
     Never throws. Property access uses the PSObject.Properties[...] indexer
     rather than direct dot-access so a missing key (e.g. the user deletes the
@@ -489,7 +650,7 @@ function Resolve-Title {
     Configuration hashtable (used for logging only).
 
 .OUTPUTS
-    [pscustomobject] @{ FolderName; Matched; Title; Year }
+    [pscustomobject] @{ FolderName; Matched; Title; Year; ContentType; ContentTypeNote }
 
 .EXAMPLE
     $resolved = Resolve-TitleOverride -OutputDir $ripResult.OutputDir -FallbackResolved $ripResult.Resolved -Config $config
@@ -521,22 +682,56 @@ function Resolve-TitleOverride {
         $title = if ($titleProp) { "$($titleProp.Value)" } else { '' }
         $title = $title.Trim()
 
+        # ContentType is read independently of Title so an edit to only
+        # ContentType is honoured. Valid values (case-insensitive) are Animation
+        # and LiveAction; anything else is ignored with a WARN.
+        $fallbackCtProp = if ($FallbackResolved) { $FallbackResolved.PSObject.Properties['ContentType'] } else { $null }
+        $fallbackContentType = if ($fallbackCtProp -and $fallbackCtProp.Value -in @('Animation', 'LiveAction')) { [string]$fallbackCtProp.Value } else { 'LiveAction' }
+        $fallbackNoteProp = if ($FallbackResolved) { $FallbackResolved.PSObject.Properties['ContentTypeNote'] } else { $null }
+        $contentTypeNote = if ($fallbackNoteProp -and $fallbackNoteProp.Value) { [string]$fallbackNoteProp.Value } else { '' }
+
+        $overrideContentType = $null
+        $ctProp = $json.PSObject.Properties['ContentType']
+        if ($ctProp -and $null -ne $ctProp.Value -and "$($ctProp.Value)".Trim()) {
+            $ctText = "$($ctProp.Value)".Trim()
+            if ($ctText -ieq 'Animation') {
+                $overrideContentType = 'Animation'
+            } elseif ($ctText -ieq 'LiveAction') {
+                $overrideContentType = 'LiveAction'
+            } else {
+                Write-ArmLog -Level WARN -Message "Ignoring invalid ContentType '$ctText' in metadata.json (expected Animation or LiveAction); keeping '$fallbackContentType'" -Config $Config
+            }
+        }
+        $contentType = if ($overrideContentType) { $overrideContentType } else { $fallbackContentType }
+        if ($overrideContentType -and $overrideContentType -ne $fallbackContentType) {
+            Write-ArmLog -Level INFO -Message "metadata.json overrides ContentType: $fallbackContentType -> $overrideContentType" -Config $Config
+        }
+
         if (-not $title) {
-            return $FallbackResolved
+            if (-not $FallbackResolved -or $contentType -eq $fallbackContentType) {
+                return $FallbackResolved
+            }
+            return New-ArmResolvedTitle -FolderName $FallbackResolved.FolderName -Matched ([bool]$FallbackResolved.Matched) `
+                -Title $FallbackResolved.Title -Year $FallbackResolved.Year `
+                -ContentType $contentType -ContentTypeNote $contentTypeNote
         }
 
         $yearProp = $json.PSObject.Properties['Year']
         $year = if ($yearProp) { "$($yearProp.Value)" } else { '' }
         $year = $year.Trim()
 
+        $fallbackTitle = if ($FallbackResolved) { $FallbackResolved.PSObject.Properties['Title'] } else { $null }
+        if (-not $overrideContentType -or $overrideContentType -eq $fallbackContentType) {
+            if ($fallbackTitle -and $fallbackTitle.Value -and "$($fallbackTitle.Value)" -ne $title) {
+                Write-ArmLog -Level INFO -Message "Title edited to '$title' but ContentType not changed; keeping the TMDb-derived ContentType '$contentType' (no re-query)" -Config $Config
+            }
+        }
+
         $folderName = ConvertTo-ArmFolderName -Title $title -Year $year
 
-        return [pscustomobject]@{
-            FolderName = $folderName
-            Matched    = $true
-            Title      = $title
-            Year       = if ($year) { $year } else { $null }
-        }
+        return New-ArmResolvedTitle -FolderName $folderName -Matched $true -Title $title `
+            -Year $(if ($year) { $year } else { $null }) `
+            -ContentType $contentType -ContentTypeNote $contentTypeNote
 
     } catch {
         Write-ArmLog -Level WARN -Message "Failed to read metadata.json override in '$OutputDir': $_" -Config $Config

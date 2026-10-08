@@ -7,7 +7,8 @@
       "original_title": "Star Wars",
       "release_date": "1977-05-25",
       "popularity": 82.512,
-      "vote_average": 8.2
+      "vote_average": 8.2,
+      "genre_ids": [12, 28, 878]
     },
     {
       "id": 100001,
@@ -15,7 +16,8 @@
       "original_title": "Star Wars: A Musical Parody",
       "release_date": "2013-01-01",
       "popularity": 1.203,
-      "vote_average": 4.1
+      "vote_average": 4.1,
+      "genre_ids": [35, 10402]
     }
   ],
   "total_pages": 1,

@@ -263,6 +263,46 @@ Describe 'End-to-end: Upscale-Worker.ps1 -Simulate -Once' {
     }
 }
 
+Describe 'End-to-end: ContentType=Animation queue entry -> Upscale-Worker.ps1 -Simulate -Once' {
+    BeforeAll {
+        $script:E2eRoot = Join-Path $env:TEMP "wrm-e2e-anim-$(New-Guid)"
+        New-Item -ItemType Directory -Force -Path $script:E2eRoot | Out-Null
+        $script:E2eConfig = New-ArmE2eConfig -Root $script:E2eRoot -AutoUpscale
+
+        $script:SourceMovieDir = Join-Path $script:E2eConfig.Paths.NasVideoPath 'Toy Story (1995)'
+        New-Item -ItemType Directory -Force -Path $script:SourceMovieDir | Out-Null
+        $script:SourceMkv = Join-Path $script:SourceMovieDir 'title1.mkv'
+        [System.IO.File]::WriteAllBytes($script:SourceMkv, (New-Object byte[] 4096))
+
+        # Written by the real New-UpscaleQueueEntry (what DiscWatcher calls for an
+        # animated Resolve-Title result), then consumed by the real worker script.
+        . (Join-Path $script:RepoRoot 'src' 'DiscWatcher.ps1')
+        $queueConfig = $script:E2eConfig.JobConfig + @{ UpscaleQueueDir = $script:E2eConfig.Paths.UpscaleQueueDir }
+        New-UpscaleQueueEntry -MkvPath $script:SourceMkv -DestDir $script:SourceMovieDir `
+            -FolderName 'Toy Story (1995)' -ContentType Animation -Config $queueConfig
+        $script:QueueFile = Join-Path $script:E2eConfig.Paths.UpscaleQueueDir 'Toy Story (1995).json'
+    }
+
+    AfterAll {
+        Remove-Item -Path $script:E2eRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'queue JSON carries ContentType=Animation and the worker runs the anime4k engine (video2x stub, not ncnn)' {
+        (Get-Content -LiteralPath $script:QueueFile -Raw | ConvertFrom-Json).ContentType | Should -Be 'Animation'
+
+        & $script:UpscaleWorkerScript -ConfigPath $script:E2eConfig.ConfigPath -Simulate -Once
+
+        $job = @(Get-ArmJobList -Kind Upscale -Config $script:E2eConfig.JobConfig)[0]
+        $job.State | Should -Be 'Complete'
+        $job.ContentType | Should -Be 'Animation'
+        $job.Engine | Should -Be 'anime4k'
+
+        $logText = (Get-ChildItem -Path $script:E2eConfig.Paths.LogDir -Filter '*.log' | Get-Content -Raw) -join "`n"
+        $logText | Should -Match 'stub-video2x'
+        $logText | Should -Not -Match 'stub-ncnn'
+    }
+}
+
 Describe 'End-to-end: Upscale-Worker.ps1 -Simulate -Once (AutoUpscale on)' {
     BeforeAll {
         $script:E2eRoot = Join-Path $env:TEMP "wrm-e2e-upscale-auto-$(New-Guid)"

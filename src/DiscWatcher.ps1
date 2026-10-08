@@ -161,14 +161,18 @@ function Invoke-DiscEject {
 .PARAMETER FolderName
     Base name used for the queue file (sanitized for filesystem use).
 
+.PARAMETER ContentType
+    'LiveAction' (default) or 'Animation'; selects the upscale engine in
+    Upscale-Worker (UpscaleLiveAction vs UpscaleAnimation).
+
 .PARAMETER Config
     Configuration hashtable (for UpscaleQueueDir and logging).
 
 .DESCRIPTION
-    Writes <UpscaleQueueDir>\<FolderName>.json as {Source;DestDir;JobId} and
-    creates the matching Upscale job record (State=Queued). JobId is $null in
-    the queue file when job state is unavailable; Upscale-Worker then creates
-    the job on first touch.
+    Writes <UpscaleQueueDir>\<FolderName>.json as {Source;DestDir;JobId;ContentType}
+    and creates the matching Upscale job record (State=Queued, ContentType).
+    JobId is $null in the queue file when job state is unavailable;
+    Upscale-Worker then creates the job on first touch.
 #>
 function New-UpscaleQueueEntry {
     [CmdletBinding()]
@@ -181,6 +185,9 @@ function New-UpscaleQueueEntry {
 
         [Parameter(Mandatory = $true)]
         [string] $FolderName,
+
+        [ValidateSet('LiveAction', 'Animation')]
+        [string] $ContentType = 'LiveAction',
 
         [Parameter(Mandatory = $true)]
         [hashtable] $Config
@@ -195,13 +202,14 @@ function New-UpscaleQueueEntry {
     $queuePath = Join-Path $queueDir "$safeName.json"
 
     $jobId = New-ArmJob -Kind Upscale -Properties @{
-        State     = 'Queued'
-        Title     = $FolderName
-        DestDir   = $DestDir
-        QueueFile = $queuePath
+        State       = 'Queued'
+        Title       = $FolderName
+        DestDir     = $DestDir
+        QueueFile   = $queuePath
+        ContentType = $ContentType
     } -Config $Config
 
-    $entry = [ordered]@{ Source = $MkvPath; DestDir = $DestDir; JobId = $jobId }
+    $entry = [ordered]@{ Source = $MkvPath; DestDir = $DestDir; JobId = $jobId; ContentType = $ContentType }
     $entry | ConvertTo-Json | Set-Content -LiteralPath $queuePath -Encoding utf8
 
     Write-ArmLog -Level INFO -Message "Queued upscale job: $queuePath" -Config $Config
@@ -286,8 +294,10 @@ function Invoke-VideoDispatch {
             $mainMkv = Get-ChildItem -Path $moveResult.DestDir -Recurse -Filter '*.mkv' -ErrorAction SilentlyContinue |
                 Sort-Object -Property Length -Descending | Select-Object -First 1
             if ($mainMkv) {
+                $ctProp = if ($resolved) { $resolved.PSObject.Properties['ContentType'] } else { $null }
+                $contentType = if ($ctProp -and $ctProp.Value -ieq 'Animation') { 'Animation' } else { 'LiveAction' }
                 New-UpscaleQueueEntry -MkvPath $mainMkv.FullName -DestDir $moveResult.DestDir `
-                    -FolderName $actualFolderName -Config $Config
+                    -FolderName $actualFolderName -ContentType $contentType -Config $Config
             } else {
                 Write-ArmLog -Level WARN -Message "UpscaleDvds set but no .mkv found under $($moveResult.DestDir)" -Config $Config
             }

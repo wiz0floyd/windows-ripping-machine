@@ -372,12 +372,55 @@ Describe 'Invoke-DiscDispatch' {
 
             $queueFile = Join-Path $script:QueueDir 'DVD Movie (1999).json'
             $entry = Get-Content -LiteralPath $queueFile -Raw | ConvertFrom-Json
-            @($entry.PSObject.Properties.Name) | Should -Be @('Source', 'DestDir', 'JobId')
+            @($entry.PSObject.Properties.Name) | Should -Be @('Source', 'DestDir', 'JobId', 'ContentType')
+            $entry.ContentType | Should -Be 'LiveAction'
             $upscale = Get-ArmJob -JobId $entry.JobId -Config $script:Config
             $upscale.Kind | Should -Be 'Upscale'
             $upscale.State | Should -Be 'Queued'
             $upscale.QueueFile | Should -Be $queueFile
             $upscale.Title | Should -Be 'DVD Movie (1999)'
+            $upscale.ContentType | Should -Be 'LiveAction'
+        }
+
+        It 'carries the resolved ContentType=Animation into the queue JSON and the Upscale job record' {
+            $script:Config.UpscaleDvds = $true
+            Mock Invoke-VideoRip {
+                [pscustomobject]@{
+                    Success = $true; DiscLabel = 'RAW_LABEL'; DiscType = 'DVD'
+                    OutputDir = $script:RipOutputDir; TitleCount = 1; Error = $null
+                    Resolved = [pscustomobject]@{
+                        FolderName = 'Toy Story (1995)'; Matched = $true; Title = 'Toy Story'; Year = 1995
+                        ContentType = 'Animation'; ContentTypeNote = ''
+                    }
+                }
+            }
+
+            Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Video' -Config $script:Config
+
+            $queueFile = Join-Path $script:QueueDir 'Toy Story (1995).json'
+            $entry = Get-Content -LiteralPath $queueFile -Raw | ConvertFrom-Json
+            $entry.ContentType | Should -Be 'Animation'
+            (Get-ArmJob -JobId $entry.JobId -Config $script:Config).ContentType | Should -Be 'Animation'
+        }
+
+        It 'honours a metadata.json ContentType edit made during the rip when queueing the upscale' {
+            $script:Config.UpscaleDvds = $true
+            '{"Title": "", "Year": "", "ContentType": "Animation"}' | Set-Content -LiteralPath (Join-Path $script:RipOutputDir 'metadata.json')
+            Mock Invoke-VideoRip {
+                [pscustomobject]@{
+                    Success = $true; DiscLabel = 'RAW_LABEL'; DiscType = 'DVD'
+                    OutputDir = $script:RipOutputDir; TitleCount = 1; Error = $null
+                    Resolved = [pscustomobject]@{
+                        FolderName = 'DVD Movie (1999)'; Matched = $true; Title = 'DVD Movie'; Year = 1999
+                        ContentType = 'LiveAction'; ContentTypeNote = ''
+                    }
+                }
+            }
+
+            Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Video' -Config $script:Config
+
+            $entry = Get-Content -LiteralPath (Join-Path $script:QueueDir 'DVD Movie (1999).json') -Raw | ConvertFrom-Json
+            $entry.ContentType | Should -Be 'Animation'
         }
 
         It 'records an audio Rip job through Moving to Complete' {
@@ -603,6 +646,28 @@ Describe 'Resolve-CurrentDisc' {
 }
 
 Describe 'New-UpscaleQueueEntry' {
+    It 'writes ContentType into the queue JSON (default LiveAction) and the job record' {
+        $dir = Join-Path $TestDrive (New-Guid)
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        $config = @{ UpscaleQueueDir = $dir; LogDir = $dir; StateDir = (Join-Path $dir 'state') }
+
+        New-UpscaleQueueEntry -MkvPath 'C:\x\a.mkv' -DestDir 'C:\nas\a' -FolderName 'Live (2000)' -Config $config
+        New-UpscaleQueueEntry -MkvPath 'C:\x\b.mkv' -DestDir 'C:\nas\b' -FolderName 'Cartoon (2001)' -ContentType Animation -Config $config
+
+        $live = Get-Content -LiteralPath (Join-Path $dir 'Live (2000).json') -Raw | ConvertFrom-Json
+        $cartoon = Get-Content -LiteralPath (Join-Path $dir 'Cartoon (2001).json') -Raw | ConvertFrom-Json
+        $live.ContentType | Should -Be 'LiveAction'
+        $cartoon.ContentType | Should -Be 'Animation'
+        (Get-ArmJob -JobId $cartoon.JobId -Config $config).ContentType | Should -Be 'Animation'
+    }
+
+    It 'rejects an unknown ContentType' {
+        $dir = Join-Path $TestDrive (New-Guid)
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        $config = @{ UpscaleQueueDir = $dir; LogDir = $dir }
+        { New-UpscaleQueueEntry -MkvPath 'C:\x\a.mkv' -DestDir 'C:\nas\a' -FolderName 'X' -ContentType Documentary -Config $config } | Should -Throw
+    }
+
     It 'sanitizes invalid filename characters from the folder name' {
         $dir = Join-Path $TestDrive (New-Guid)
         New-Item -ItemType Directory -Force -Path $dir | Out-Null

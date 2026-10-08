@@ -85,7 +85,7 @@ wrm/
     AutoUpscale       = $false         # $false => stop after -SampleOnly clip, notify for review
     UpscaleActiveHours= @('23:00','08:00')
     UpscaleLiveAction = 'openproteus'  # openproteus | anime4k | realesrgan (legacy)
-    UpscaleAnimation  = 'anime4k'      # engine when the queue item has ContentType='Animation'
+    UpscaleAnimation  = 'anime4k'      # engine when the queue item has ContentType='Animation' (set from the TMDb Animation genre; no config key)
     UpscaleHeight     = 1080           # output height; width = round(height * source DAR / 2) * 2
     UpscaleShader     = 'anime4k-v4-a+a'   # libplacebo shader for the anime4k engine
     UpscaleModel      = 'realesrgan-plus'  # legacy realesrgan engine only (video2x 6.4 models)
@@ -152,11 +152,17 @@ Invoke-VideoRip -DriveLetter <char> -Config <hashtable> [-JobId <string>] -> [ps
 #  5. Detect expired/absent key (MSG 5021/"registration key" text) → Success=$false,
 #     Error='MAKEMKV_KEY_EXPIRED' (watcher notifies specially).
 #
-#  Set-ArmMetadataFile -OutputDir <string> -Title <string> -Year <string> -Config <hashtable> [-Force]
-#  Writes a hand-editable metadata.json ({Title;Year}) into a rip's staging
-#  OutputDir once the disc label is resolved (called from Invoke-VideoRip).
+#  Set-ArmMetadataFile -OutputDir <string> -Title <string> -Year <string>
+#                      [-ContentType <string>] [-ContentTypeNote <string>]
+#                      -Config <hashtable> [-Force]
+#  Writes a hand-editable metadata.json ({Title;Year;ContentType;ContentTypeNote})
+#  into a rip's staging OutputDir once the disc label is resolved (called from
+#  Invoke-VideoRip, which passes Resolved.ContentType/ContentTypeNote).
 #  Skips the write if metadata.json already exists, unless -Force (used by the web
-#  UI's manual edit) overwrites it. Writes are atomic (unique .tmp in the same dir,
+#  UI's manual edit) overwrites it. -Force MERGES: ContentType/ContentTypeNote that
+#  the caller did not pass keep their value from the existing file (so a web UI
+#  Title/Year edit never wipes them); a key that was never passed and has no
+#  existing value is omitted. Writes are atomic (unique .tmp in the same dir,
 #  then File.Move overwrite). Never throws (logs WARN); returns nothing.
 
 # Rip-AudioCd.ps1
@@ -171,7 +177,15 @@ Invoke-AudioRip -DriveLetter <char> -Config <hashtable> [-JobId <string>] -> [ps
 
 # Resolve-Title.ps1
 Resolve-Title -DiscLabel <string> -Config <hashtable> -> [pscustomobject]
-#  @{ FolderName; Matched=[bool]; Title; Year }
+#  @{ FolderName; Matched=[bool]; Title; Year; ContentType; ContentTypeNote }
+#  ContentType = 'Animation' when the chosen TMDb candidate's `genre_ids` contain 16
+#  (TMDb's Animation genre), else 'LiveAction' (also when `genre_ids` is absent, and on
+#  every no-match / fallback path). It always comes from the candidate actually used
+#  (TMDb's top hit, or the LLM's pick), so the genre belongs to the title in
+#  FolderName. ContentTypeNote is '' unless the LLM cross-check disagreed (below).
+#  Only /search/movie is queried, so TV-only discs usually don't match -> LiveAction.
+#  The result is built by one helper (New-ArmResolvedTitle); Get-ArmTmdbContentType
+#  derives ContentType from a candidate; Get-ArmTmdbGenreId reads its genre_ids.
 #  Clean label: '_'/'.'→space; strip tokens (DISC|DISK|D)\s*\d, SEASON \d, edition/
 #  region/studio noise (SPECIAL EDITION, WS, 16X9, PAL, NTSC...); title-case.
 #  If TmdbApiKey: GET api.themoviedb.org/3/search/movie?query=<clean>. Zero results
@@ -190,14 +204,25 @@ Resolve-Title -DiscLabel <string> -Config <hashtable> -> [pscustomobject]
 #  is $true, EVERY non-empty TMDb result set - not just ambiguous ones - is
 #  additionally checked by calling
 #  Invoke-ArmLlmDisambiguation -DiscLabel <string> -Candidates <array>
-#                               -Config <hashtable> -> [pscustomobject] @{ SelectedIndex }
+#                               -Config <hashtable> -> [pscustomobject] @{ SelectedIndex; Animated }
 #  POSTs {model;temperature=0;messages} to "$($Config.LlmEndpoint)/chat/completions"
 #  (OpenAI-compatible; e.g. llama.cpp at http://127.0.0.1:8080/v1) with the disc
-#  label and the candidate list (index/title/year/popularity/overview, sorted by
-#  popularity descending; index = position in that array, not a TMDb ID).
-#  Expects a bare JSON reply {"index": N} or {"index": null}. SelectedIndex is
-#  validated as an in-range integer index into the real candidate array before
-#  use - the model can never introduce a title TMDb didn't return.
+#  label and the candidate list (index/title/year/genres/popularity/overview, sorted by
+#  popularity descending; index = position in that array, not a TMDb ID; genres =
+#  TMDb genre NAMES from a fixed id->name table, no extra API call).
+#  Expects a bare JSON reply {"index": N, "animated": true|false} or {"index": null}.
+#  SelectedIndex is validated as an in-range integer index into the real candidate
+#  array before use - the model can never introduce a title TMDb didn't return.
+#  Animated = $true/$false for a valid boolean (or "true"/"false" string) about the
+#  picked candidate, else $null (absent, invalid, or no index picked). A bad `animated`
+#  never invalidates a valid index. No extra request: the call already runs per lookup.
+#
+#  ContentType cross-check: when the LLM picks a candidate and Animated is non-null,
+#  it is compared with that candidate's TMDb genre. On disagreement TMDb's value is
+#  used, a WARN is logged, and ContentTypeNote records both, e.g. "TMDb genres say
+#  Animation but the LLM says not animated; using TMDb's Animation" (written to
+#  metadata.json for sample review). LLM off/unavailable/declined/omits `animated`:
+#  ContentType is the TMDb genre value and ContentTypeNote is ''.
 #
 #  The LLM has final say whenever it returns a valid index, whether or not
 #  Test-ArmTmdbAcceptance had already accepted the top hit: this catches TMDb's
@@ -221,7 +246,7 @@ Resolve-Title -DiscLabel <string> -Config <hashtable> -> [pscustomobject]
 #
 #  Resolve-TitleOverride -OutputDir <string> -FallbackResolved <pscustomobject>
 #                        -Config <hashtable> -> [pscustomobject]
-#  @{ FolderName; Matched; Title; Year }
+#  @{ FolderName; Matched; Title; Year; ContentType; ContentTypeNote }
 #  Called by DiscWatcher.ps1 (Invoke-VideoDispatch) immediately before the
 #  staging dir is renamed for the NAS move. Re-reads metadata.json in
 #  OutputDir; if present with a non-blank Title, builds "Title (Year)" from
@@ -230,6 +255,15 @@ Resolve-Title -DiscLabel <string> -Config <hashtable> -> [pscustomobject]
 #  FallbackResolved (the original Resolve-Title result from before the rip)
 #  unchanged. Never throws. This lets a user pause between rip-start and
 #  NAS-move to hand-edit metadata.json and correct the auto-resolved title/year.
+#  ContentType is applied INDEPENDENTLY of Title: a valid `ContentType`
+#  ('Animation' | 'LiveAction', case-insensitive, trimmed) in metadata.json wins even
+#  when Title is blank/unedited (the fallback's FolderName/Title/Year are then kept).
+#  An invalid or blank value keeps the fallback's ContentType (WARN for invalid). When
+#  Title is edited but ContentType is not, the TMDb-derived value is kept (no TMDb
+#  re-query) and an INFO line is logged; the sample review is the safety net.
+#  A fallback without ContentType (legacy callers) counts as 'LiveAction';
+#  ContentTypeNote is carried over from the fallback. This is the manual override
+#  path: edit "ContentType" in <staging>\<label>\metadata.json during the rip.
 
 # Move-ToNas.ps1
 Move-ToNas -SourceDir <string> -DestRoot <string> -Config <hashtable> -> [pscustomobject]
@@ -302,10 +336,17 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #  mutex 'wrm-rip'. Dispatch:
 #    Video  → Invoke-VideoRip (captures Resolve-Title result on .Resolved before
 #             the rip runs) → Resolve-TitleOverride (re-reads metadata.json for
-#             a user Title/Year edit, else falls back to .Resolved) → rename
+#             a user Title/Year/ContentType edit, else falls back to .Resolved) → rename
 #             staging dir → Move-ToNas (NasVideoPath) → if DVD && UpscaleDvds: copy main mkv path into
-#             UpscaleQueueDir queue file (<name>.json: {Source;DestDir[;ContentType];JobId}, JobId =
-#             a new Upscale job in State=Queued, $null if job state is unavailable) → eject+notify
+#             UpscaleQueueDir queue file via New-UpscaleQueueEntry (<name>.json:
+#             {Source;DestDir;JobId;ContentType}, JobId = a new Upscale job in State=Queued
+#             (with the same ContentType), $null if job state is unavailable) → eject+notify
+#  New-UpscaleQueueEntry -MkvPath <string> -DestDir <string> -FolderName <string>
+#                        [-ContentType <LiveAction|Animation>] -Config <hashtable>
+#  ContentType (default LiveAction) = the resolved value (Resolve-TitleOverride result;
+#  anything but 'Animation' is passed as LiveAction). Written into the queue JSON and the
+#  Upscale job record, so the web UI shows which engine will run before the worker starts.
+#  New optional per-entry fields are added as further optional parameters (same style).
 #    AudioCD→ Invoke-AudioRip → Move-ToNas (NasMusicPath) → eject+notify
 #    Data   → log WARN + notify, no action (no job record).
 #  Every failure path: Send-ArmNotification Level Error; staging kept for forensics.
@@ -463,7 +504,15 @@ Invoke-ArmWebRequest -Method <string> -Path <string> [-Query <hashtable>] [-Body
   interlace classes.
 - End-to-end: `DiscWatcher.ps1 -Simulate -Once` with a fixture "disc" must produce a
   named folder under a temp NAS root; same for audio; `Upscale-Worker.ps1 -Simulate
-  -Once` must consume a queue file. These run in `tests/EndToEnd.Tests.ps1`.
+  -Once` must consume a queue file; a queue file written by `New-UpscaleQueueEntry
+  -ContentType Animation` must run the anime4k engine (video2x stub, not the ncnn
+  stub; job `Engine=anime4k`). These run in `tests/EndToEnd.Tests.ps1`.
+- ContentType detection (`tests/Resolve-Title.ContentType.Tests.ps1`, mocks only):
+  TMDb animation / live action / missing genres / every fallback path; LLM agrees,
+  disagrees (both directions), picks a different candidate, omits or garbles
+  `animated`, declines, unavailable, disabled; metadata.json merge and override
+  (ContentType-only edit, invalid value, Title-only edit). The live check lives in
+  `tests/manual/Resolve-Title.LiveLlm.Tests.ps1` (excluded from CI).
 - Web UI: routing/rendering is unit-tested through Invoke-ArmWebRequest in
   `tests/WebUi.Tests.ps1` (plus one socket smoke test of `WebUi.ps1 -Once`).
   Browser behavior is tested with Playwright in `tests/browser/` (Chromium; Node is

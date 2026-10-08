@@ -32,7 +32,7 @@ A native Windows replacement for the Linux Automatic Ripping Machine: insert a d
      to prompt on), `setup.ps1` fails fast with guidance instead of hanging — re-run it from an
      elevated local/RDP pwsh session instead.
 
-2. **Upscale stage only:** `setup.ps1` creates a Python venv (needs Python 3.10+ on PATH) at `C:\ProgramData\wrm\venv` and downloads the OpenProteus 2x model (SHA256-verified) to `C:\ProgramData\wrm\models`. For the animation engine (Anime4K) also download and install [Video2X 6.x](https://github.com/k4yt3x/video2x/releases) from GitHub (CLI installer; adds `video2x.exe` to PATH). Targets Video2X 6.4+ (verify flags match your release). Engines are chosen per content type with `UpscaleLiveAction` / `UpscaleAnimation` in `config.psd1`; a queue item (`<name>.json`) can set `"ContentType": "Animation"` to use the animation engine (TMDb-based auto-detection is not wired yet).
+2. **Upscale stage only:** `setup.ps1` creates a Python venv (needs Python 3.10+ on PATH) at `C:\ProgramData\wrm\venv` and downloads the OpenProteus 2x model (SHA256-verified) to `C:\ProgramData\wrm\models`. For the animation engine (Anime4K) also download and install [Video2X 6.x](https://github.com/k4yt3x/video2x/releases) from GitHub (CLI installer; adds `video2x.exe` to PATH). Targets Video2X 6.4+ (verify flags match your release). Engines are chosen per content type with `UpscaleLiveAction` / `UpscaleAnimation` in `config.psd1`; the queue item's `ContentType` (`Animation` / `LiveAction`) picks which one runs. DiscWatcher fills it from the TMDb genre (see "Animation vs live action" below); you can also set `"ContentType": "Animation"` in a queue file by hand.
 
 3. **Verify installation** (simulate mode — no disc or NAS required):
    ```powershell
@@ -69,7 +69,21 @@ card on the page has "Edit title / year" fields prefilled from `metadata.json`, 
 of the NAS folder name (invalid filename characters are stripped exactly as in the real
 rename), and a Save button that writes `metadata.json` for you. Title is required; Year is blank
 or 4 digits. Once the rip is Moving/Complete the form is read-only (the folder name is already
-decided), and audio CDs have no form. Hand-editing the file keeps working.
+decided), and audio CDs have no form. Hand-editing the file keeps working. (The form does not
+touch `ContentType`; saving a title there preserves whatever `ContentType` the file holds.)
+
+### Animation vs live action (upscale engine)
+`metadata.json` also carries `ContentType` (`Animation` or `LiveAction`) and `ContentTypeNote`.
+`ContentType` is `Animation` when the matched TMDb movie has the Animation genre, else
+`LiveAction` (no TMDb match, or a TV-only disc, also means `LiveAction`). It is copied into
+the upscale queue item, where it selects `UpscaleAnimation` (Anime4K) instead of
+`UpscaleLiveAction` (OpenProteus). With `LlmDisambiguationEnabled`, the local LLM is also asked
+whether the picked movie is animated; if it disagrees with TMDb's genre, TMDb's value is kept
+and `ContentTypeNote` records both answers (and the log gets a WARN), so you can look at it
+during the sample review. To override, edit `"ContentType"` in `metadata.json` during the rip
+(case-insensitive; you can change only that field and leave `Title` blank). Invalid values are
+ignored with a WARN in the log. Changing `Title` alone does not re-query TMDb: the original
+`ContentType` is kept.
 
 ### Upscale a DVD (if `UpscaleDvds=true` in config)
 - When a DVD rip completes, a sample (2 min) is auto-generated if `AutoUpscale=false` (default).
@@ -199,6 +213,7 @@ The following tests require physical media and cannot be automated. Insert each 
    - If satisfied: rename `.awaiting-review` back to `.json`
    - Monitor logs; full upscale should complete off-peak (respecting `UpscaleActiveHours`)
    - Final upscaled MKV lands as `Title (Year) [AI upscale 1080p].mkv` alongside the original
+   - Content type: for an animated DVD, `metadata.json` in the staging dir shows `"ContentType": "Animation"`, the queue JSON has the same, and the web UI / log shows `Engine=anime4k`; for a live-action DVD `LiveAction` / `openproteus`. Also run `Invoke-Pester -Path tests/manual` (live TMDb + LLM) and record the ContentType lines it prints.
 
 **Note:** MakeMKV beta key expires ~monthly. If rips fail with "Key expired" in logs, refresh the key at https://www.makemkv.com or purchase a license.
 
