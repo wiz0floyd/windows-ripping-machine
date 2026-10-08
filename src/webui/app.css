@@ -118,3 +118,23 @@ pre {
   tr { border-bottom: 1px solid var(--border); }
   td { border: 0; padding: 0.2rem 0.7rem; }
 }
+.meta-form { margin-top: 0.8rem; padding-top: 0.7rem; border-top: 1px solid var(--border); }
+.meta-form h4 { margin: 0 0 0.5rem; font-size: 0.9rem; }
+.meta-fields { display: flex; flex-wrap: wrap; gap: 0.6rem 1rem; }
+.meta-field { display: flex; flex-direction: column; gap: 0.15rem; }
+.meta-field:first-child { flex: 1 1 18rem; }
+.meta-field input {
+  font: inherit;
+  padding: 0.3rem 0.5rem;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.meta-field input[name="year"] { width: 6rem; }
+.meta-field input[readonly] { opacity: 0.7; }
+.field-error { color: var(--err); min-height: 1.2em; font-size: 0.85rem; }
+.meta-folder { margin: 0.4rem 0; overflow-wrap: anywhere; }
+.meta-actions { display: flex; align-items: center; gap: 0.8rem; }
+.meta-message { color: var(--muted); }
+.meta-message.error { color: var(--err); }

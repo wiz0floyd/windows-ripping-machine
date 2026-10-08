@@ -10,6 +10,9 @@
     -Action Reset   Delete every job record, today's log, and the queue/staging contents.
     -Action New     New-ArmJob -Kind <Kind> -Properties <decoded>; writes the JobId to stdout.
     -Action Update  Update-ArmJob -JobId <JobId> -Properties <decoded>.
+    -Action NewRip  A Rip job (default State Ripping, DiscType DVD) plus the staging dir
+                    <StagingDir>\<DiscLabel>\ holding a stub mkv and metadata.json built from
+                    the MetaTitle / MetaYear payload keys. Writes {JobId;StagingDir} to stdout.
     -Action Log     Replace today's wrm-<yyyyMMdd>.log with the decoded JSON string array.
     -Action NewUpscale
                     An Upscale job plus everything the worker would have left on disk:
@@ -27,7 +30,7 @@ param(
     [string] $ConfigPath,
 
     [Parameter(Mandatory = $true)]
-    [ValidateSet('Reset', 'New', 'Update', 'Log', 'NewUpscale')]
+    [ValidateSet('Reset', 'New', 'Update', 'Log', 'NewUpscale', 'NewRip')]
     [string] $Action,
 
     [ValidateSet('Rip', 'Upscale')]
@@ -104,6 +107,28 @@ switch ($Action) {
         $item | ConvertTo-Json | Set-Content -LiteralPath $queueFile -Encoding utf8
 
         Write-Output (@{ JobId = $id; QueueFile = $queueFile; DestDir = $destDir; Source = $source } | ConvertTo-Json -Compress)
+    }
+    'NewRip' {
+        $props = ConvertFrom-SeedPayload
+        if ($null -eq $props) { $props = @{} }
+        $label = if ($props['DiscLabel']) { [string]$props['DiscLabel'] } else { 'SEEDED_DISC' }
+        $metaTitle = if ($props.ContainsKey('MetaTitle')) { [string]$props['MetaTitle'] } else { '' }
+        $metaYear = if ($props.ContainsKey('MetaYear')) { [string]$props['MetaYear'] } else { '' }
+        $props.Remove('MetaTitle')
+        $props.Remove('MetaYear')
+
+        $staging = Join-Path $config.StagingDir (ConvertTo-ArmSafeFileName -Name $label)
+        $null = New-Item -ItemType Directory -Force -Path $staging
+        [System.IO.File]::WriteAllBytes((Join-Path $staging 'title_t00.mkv'), (New-Object byte[] 4096))
+        @{ Title = $metaTitle; Year = $metaYear } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $staging 'metadata.json') -Encoding utf8
+
+        $props['StagingDir'] = $staging
+        $props['DiscLabel'] = $label
+        if (-not $props.ContainsKey('DiscType')) { $props['DiscType'] = 'DVD' }
+        if (-not $props.ContainsKey('State')) { $props['State'] = 'Ripping' }
+        $id = New-ArmJob -Kind Rip -Properties $props -Config $config
+        if (-not $id) { throw 'New-ArmJob returned no id' }
+        Write-Output (@{ JobId = $id; StagingDir = $staging } | ConvertTo-Json -Compress)
     }
     'Log' {
         $lines = @(ConvertFrom-SeedPayload)

@@ -37,27 +37,204 @@
     return el('tr', { class: 'empty' }, [el('td', { colspan: colspan, text: text })]);
   }
 
+  function activeHead(job) {
+    return el('div', { class: 'card-head' }, [el('h3', { 'data-testid': 'job-title', text: displayTitle(job) }), badge(job.State)]);
+  }
+
+  function activeDetails(job) {
+    const dl = el('dl');
+    for (const [label, value] of [['Drive', job.Drive], ['Disc type', job.DiscType], ['Disc label', job.DiscLabel], ['Staging dir', job.StagingDir], ['Updated', formatTime(job.Updated)]]) {
+      if (!value) continue;
+      dl.appendChild(el('dt', { text: label }));
+      dl.appendChild(el('dd', { text: value }));
+    }
+    return dl;
+  }
+
+  // The active card is updated in place (not rebuilt) so the metadata form
+  // keeps its focus and half-typed text across the 5 s poll.
   function renderActive(rips) {
     const container = document.getElementById('active-rip');
     const active = rips.filter((j) => ACTIVE_RIP_STATES.includes(j.State));
-    const nodes = [];
+    const wanted = new Set(active.map((j) => j.Id));
+    for (const child of Array.from(container.children)) {
+      const id = child.getAttribute('data-job-id');
+      if (!id || !wanted.has(id)) child.remove();
+    }
     if (active.length === 0) {
-      nodes.push(el('p', { class: 'empty', 'data-testid': 'empty-rips', text: rips.length === 0 ? 'No rips yet' : 'No rip in progress' }));
+      container.appendChild(el('p', { class: 'empty', 'data-testid': 'empty-rips', text: rips.length === 0 ? 'No rips yet' : 'No rip in progress' }));
+      return;
     }
     for (const job of active) {
-      const dl = el('dl');
-      for (const [label, value] of [['Drive', job.Drive], ['Disc type', job.DiscType], ['Disc label', job.DiscLabel], ['Staging dir', job.StagingDir], ['Updated', formatTime(job.Updated)]]) {
-        if (!value) continue;
-        dl.appendChild(el('dt', { text: label }));
-        dl.appendChild(el('dd', { text: value }));
+      let card = Array.from(container.children).find((c) => c.getAttribute('data-job-id') === job.Id);
+      if (!card) {
+        card = el('article', { class: 'card', 'data-testid': 'job', 'data-job-id': job.Id }, [activeHead(job), activeDetails(job)]);
+        container.appendChild(card);
+      } else {
+        const head = card.querySelector('.card-head');
+        if (head) head.replaceWith(activeHead(job)); else card.prepend(activeHead(job));
+        const dl = card.querySelector('dl');
+        if (dl) dl.replaceWith(activeDetails(job)); else card.appendChild(activeDetails(job));
       }
-      nodes.push(el('article', { class: 'card', 'data-testid': 'job', 'data-job-id': job.Id }, [
-        el('div', { class: 'card-head' }, [el('h3', { 'data-testid': 'job-title', text: displayTitle(job) }), badge(job.State)]),
-        dl,
-      ]));
+      updateMetaForm(card, job);
     }
-    container.replaceChildren(...nodes);
   }
+
+  // --- Manual metadata edit (video rips) -------------------------------------
+
+  function buildMetaForm() {
+    const field = (name, label, extra) => el('label', { class: 'meta-field' }, [
+      el('span', { text: label }),
+      el('input', Object.assign({ type: 'text', name: name, autocomplete: 'off', 'data-testid': 'meta-' + name }, extra)),
+      el('span', { class: 'field-error', 'data-testid': 'meta-error-' + name, role: 'alert' }),
+    ]);
+    return el('form', { class: 'meta-form', 'data-testid': 'meta-form', novalidate: 'novalidate' }, [
+      el('h4', { text: 'Edit title / year' }),
+      el('div', { class: 'meta-fields' }, [
+        field('title', 'Title', { maxlength: '200' }),
+        field('year', 'Year', { maxlength: '4', inputmode: 'numeric' }),
+      ]),
+      el('p', { class: 'meta-folder' }, [document.createTextNode('NAS folder: '), el('strong', { 'data-testid': 'meta-folder', text: '' })]),
+      el('div', { class: 'meta-actions' }, [
+        el('button', { type: 'submit', class: 'action action-approve', 'data-testid': 'meta-save', text: 'Save' }),
+        el('span', { class: 'meta-message', 'data-testid': 'meta-message', role: 'status' }),
+      ]),
+    ]);
+  }
+
+  function metaFormState(form) {
+    return {
+      title: form.querySelector('input[name="title"]'),
+      year: form.querySelector('input[name="year"]'),
+      save: form.querySelector('[data-testid="meta-save"]'),
+      folder: form.querySelector('[data-testid="meta-folder"]'),
+      message: form.querySelector('[data-testid="meta-message"]'),
+      errTitle: form.querySelector('[data-testid="meta-error-title"]'),
+      errYear: form.querySelector('[data-testid="meta-error-year"]'),
+    };
+  }
+
+  function setMetaMessage(form, text, isError) {
+    const f = metaFormState(form);
+    f.message.textContent = text || '';
+    f.message.classList.toggle('error', Boolean(isError));
+  }
+
+  function showMetaErrors(form, errors) {
+    const f = metaFormState(form);
+    f.errTitle.textContent = (errors && errors.Title) || '';
+    f.errYear.textContent = (errors && errors.Year) || '';
+  }
+
+  function applyMetaEditable(form, editable, reason) {
+    const f = metaFormState(form);
+    form.setAttribute('data-editable', editable ? 'true' : 'false');
+    f.title.readOnly = !editable;
+    f.year.readOnly = !editable;
+    if (!editable) {
+      f.save.disabled = true;
+      setMetaMessage(form, reason || 'Read-only: the rip is no longer being ripped', false);
+    }
+  }
+
+  async function refreshMetaPreview(form) {
+    const f = metaFormState(form);
+    const seq = (Number(form.getAttribute('data-preview-seq')) || 0) + 1;
+    form.setAttribute('data-preview-seq', String(seq));
+    try {
+      const url = '/api/metadata-preview?title=' + encodeURIComponent(f.title.value) + '&year=' + encodeURIComponent(f.year.value);
+      const preview = await getJson(url);
+      if (Number(form.getAttribute('data-preview-seq')) !== seq) return; // a newer keystroke superseded this one
+      f.folder.textContent = preview.FolderName || '';
+      showMetaErrors(form, preview.Errors);
+      form.setAttribute('data-valid', preview.Valid ? 'true' : 'false');
+      f.save.disabled = !preview.Valid || form.getAttribute('data-editable') !== 'true';
+    } catch (err) {
+      setMetaMessage(form, 'Could not preview the folder name: ' + err.message, true);
+    }
+  }
+
+  async function loadMetaForm(form, jobId) {
+    const f = metaFormState(form);
+    try {
+      const meta = await getJson('/api/jobs/' + encodeURIComponent(jobId) + '/metadata');
+      if (form.getAttribute('data-dirty') !== 'true') {
+        f.title.value = meta.Title || '';
+        f.year.value = meta.Year || '';
+      }
+      form.setAttribute('data-loaded', 'true');
+      applyMetaEditable(form, Boolean(meta.Editable), meta.Reason);
+    } catch (err) {
+      setMetaMessage(form, 'Could not load the current title: ' + err.message, true);
+    }
+    await refreshMetaPreview(form);
+  }
+
+  function updateMetaForm(card, job) {
+    // Video rips only: audio CDs have no metadata.json path.
+    if (job.DiscType === 'AudioCD') return;
+    let form = card.querySelector('form.meta-form');
+    const editable = (job.Actions || []).includes('metadata');
+    if (!form) {
+      form = buildMetaForm();
+      card.appendChild(form);
+      form.setAttribute('data-editable', editable ? 'true' : 'false');
+      loadMetaForm(form, job.Id);
+      return;
+    }
+    if (form.getAttribute('data-loaded') !== 'true') return;
+    const was = form.getAttribute('data-editable') === 'true';
+    if (editable !== was) {
+      applyMetaEditable(form, editable, null);
+      if (editable) refreshMetaPreview(form);
+    }
+  }
+
+  async function saveMeta(form, jobId) {
+    const f = metaFormState(form);
+    f.save.disabled = true;
+    setMetaMessage(form, 'Saving...', false);
+    try {
+      // The X-WRM-Action header is the server's CSRF guard for POSTs.
+      const response = await fetch('/api/jobs/' + encodeURIComponent(jobId) + '/metadata', {
+        method: 'POST',
+        headers: { 'X-WRM-Action': '1', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ Title: f.title.value, Year: f.year.value }),
+        cache: 'no-store',
+      });
+      let body = {};
+      try { body = await response.json(); } catch (_) { body = {}; }
+      if (response.ok) {
+        form.setAttribute('data-dirty', 'false');
+        setMetaMessage(form, 'Saved. Folder will be: ' + (body.FolderName || ''), false);
+      } else {
+        showMetaErrors(form, body.Errors);
+        setMetaMessage(form, 'Could not save: ' + (body.Error || 'HTTP ' + response.status), true);
+      }
+    } catch (err) {
+      setMetaMessage(form, 'Could not save: ' + err.message, true);
+    }
+    await refresh();
+    await refreshMetaPreview(form);
+  }
+
+  document.addEventListener('input', (event) => {
+    const form = event.target.closest && event.target.closest('form.meta-form');
+    if (!form) return;
+    form.setAttribute('data-dirty', 'true');
+    setMetaMessage(form, '', false);
+    clearTimeout(form._previewTimer);
+    form._previewTimer = setTimeout(() => refreshMetaPreview(form), 150);
+  });
+
+  document.addEventListener('submit', (event) => {
+    const form = event.target.closest && event.target.closest('form.meta-form');
+    if (!form) return;
+    event.preventDefault();
+    const card = form.closest('[data-job-id]');
+    if (!card || form.getAttribute('data-editable') !== 'true') return;
+    saveMeta(form, card.getAttribute('data-job-id'));
+  });
 
   function renderHistory(rips) {
     const body = document.getElementById('rip-history-body');

@@ -14,6 +14,9 @@ export interface TestEnv {
   webUiScript: string;
   seedScript: string;
   workerScript: string;
+  finishRipScript: string;
+  /** Video NAS root (NasVideoPath) under the per-run temp root. */
+  nasVideoPath: string;
 }
 
 function psQuote(value: string): string {
@@ -50,6 +53,7 @@ export function ensureTestRoot(): TestEnv {
       `    Video2xPath = 'C:\\does-not-exist\\video2x.exe'`,
       `    TmdbApiKey = ''`,
       `    HaWebhookUrl = ''`,
+      `    EjectWhenDone = $false`,
       `    UpscaleDvds = $false`,
       `    AutoUpscale = $false`,
       `    UpscaleActiveHours = @('00:00','23:59')`,
@@ -73,5 +77,7 @@ export function ensureTestRoot(): TestEnv {
     webUiScript: path.join(REPO_ROOT, 'src', 'WebUi.ps1'),
     seedScript: path.join(REPO_ROOT, 'tests', 'browser', 'fixtures', 'seed.ps1'),
     workerScript: path.join(REPO_ROOT, 'src', 'Upscale-Worker.ps1'),
+    finishRipScript: path.join(REPO_ROOT, 'tests', 'browser', 'fixtures', 'finish-rip.ps1'),
+    nasVideoPath: path.join(root, 'nas-video'),
   };
 }

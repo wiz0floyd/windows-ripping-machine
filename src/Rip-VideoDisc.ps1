@@ -249,6 +249,11 @@ function Write-MakeMkvProgress {
     Skips the write if metadata.json already exists in OutputDir, so a
     retried rip of the same disc (staging dir reused) never clobbers an
     edit the user made during a prior attempt.
+
+    -Force overwrites an existing file (used by the web UI's manual edit). The
+    write is atomic (temp file in the same dir, then rename) so a concurrent
+    Resolve-TitleOverride never reads a half-written file. Still never throws;
+    callers that must know whether it worked read the file back.
 #>
 function Set-ArmMetadataFile {
     [CmdletBinding()]
@@ -263,20 +268,30 @@ function Set-ArmMetadataFile {
         [string] $Year,
 
         [Parameter(Mandatory = $true)]
-        [hashtable] $Config
+        [hashtable] $Config,
+
+        [switch] $Force
     )
 
+    $tmp = $null
     try {
         $path = Join-Path $OutputDir 'metadata.json'
-        if (Test-Path -LiteralPath $path) {
+        if ((Test-Path -LiteralPath $path) -and -not $Force) {
             return
         }
-        [pscustomobject]@{
+        $json = [pscustomobject]@{
             Title = if ($Title) { $Title } else { '' }
             Year  = if ($Year) { "$Year" } else { '' }
-        } | ConvertTo-Json | Set-Content -LiteralPath $path -Encoding utf8
+        } | ConvertTo-Json
+        $tmp = "$path.$([guid]::NewGuid().ToString('N')).tmp"
+        [System.IO.File]::WriteAllText($tmp, $json, [System.Text.UTF8Encoding]::new($false))
+        [System.IO.File]::Move($tmp, $path, $true)
+        $tmp = $null
     } catch {
         Write-ArmLog -Level WARN -Message "Failed to write metadata.json in '$OutputDir': $_" -Config $Config
+        if ($tmp -and (Test-Path -LiteralPath $tmp)) {
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 

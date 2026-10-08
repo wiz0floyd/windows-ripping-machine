@@ -64,6 +64,13 @@ you leave `Title` blank or don't touch the file, the original auto-resolved resu
 label+date fallback — is used as-is). This is useful when TMDb picks the wrong movie or no
 match was found from the disc label alone.
 
+The [Web UI](#web-ui) offers the same thing as a form: while a video disc is **Ripping**, its
+card on the page has "Edit title / year" fields prefilled from `metadata.json`, a live preview
+of the NAS folder name (invalid filename characters are stripped exactly as in the real
+rename), and a Save button that writes `metadata.json` for you. Title is required; Year is blank
+or 4 digits. Once the rip is Moving/Complete the form is read-only (the folder name is already
+decided), and audio CDs have no form. Hand-editing the file keeps working.
+
 ### Upscale a DVD (if `UpscaleDvds=true` in config)
 - When a DVD rip completes, a sample (2 min) is auto-generated if `AutoUpscale=false` (default).
 - Review the sample → approve (rename from `<name>.awaiting-review` to `<name>.json` in the queue folder) → full upscale runs at off-peak hours.
@@ -83,7 +90,8 @@ It refreshes itself every 5 seconds. Upscale rows have buttons: **Approve** (job
 same as renaming `.awaiting-review` to `.json`), **Retry** (failed job, `.failed` back to `.json`, sample
 gate runs again) and **Cancel** (queued or awaiting review; deletes the queue file after a confirm).
 Jobs the worker is processing (Sampling/Upscaling) have no buttons. The manual renames keep working.
-Title editing still works through the files described above and below.
+The active video rip also has an **Edit title / year** form (see "Correcting a video title/year
+before the NAS move"); renaming a rip that already reached the NAS is not supported.
 
 It listens on `localhost` only (not reachable from other devices), started at logon by the
 `wrm-webui` Scheduled Task. Change the port with `WebUiPort`, or set `WebUiEnabled = $false`

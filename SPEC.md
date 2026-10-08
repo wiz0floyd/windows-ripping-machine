@@ -143,10 +143,12 @@ Invoke-VideoRip -DriveLetter <char> -Config <hashtable> [-JobId <string>] -> [ps
 #  5. Detect expired/absent key (MSG 5021/"registration key" text) → Success=$false,
 #     Error='MAKEMKV_KEY_EXPIRED' (watcher notifies specially).
 #
-#  Set-ArmMetadataFile -OutputDir <string> -Title <string> -Year <string> -Config <hashtable>
+#  Set-ArmMetadataFile -OutputDir <string> -Title <string> -Year <string> -Config <hashtable> [-Force]
 #  Writes a hand-editable metadata.json ({Title;Year}) into a rip's staging
 #  OutputDir once the disc label is resolved (called from Invoke-VideoRip).
-#  Skips the write if metadata.json already exists. Never throws (logs WARN).
+#  Skips the write if metadata.json already exists, unless -Force (used by the web
+#  UI's manual edit) overwrites it. Writes are atomic (unique .tmp in the same dir,
+#  then File.Move overwrite). Never throws (logs WARN); returns nothing.
 
 # Rip-AudioCd.ps1
 Invoke-AudioRip -DriveLetter <char> -Config <hashtable> [-JobId <string>] -> [pscustomobject]
@@ -351,7 +353,30 @@ Invoke-ArmWebRequest -Method <string> -Path <string> [-Query <hashtable>] [-Body
 #    POST /api/jobs/<id>/{approve|retry|cancel}   upscale actions; require header
 #                           'X-WRM-Action: 1' (else 403). Valid states: approve=AwaitingReview,
 #                           retry=Failed, cancel=Queued|AwaitingReview; other state → 409,
-#                           unknown id → 404. Each job in /api/jobs carries an Actions list.
+#                           unknown id → 404. Each job in /api/jobs carries an Actions list
+#                           (video rips that are Ripping carry 'metadata').
+#    GET  /api/jobs/<id>/metadata   Rip jobs only (else 404). {Editable; Reason; Title; Year;
+#                           FolderName; Current}: Title/Year read from the rip's
+#                           metadata.json (the form's prefill); Editable=false + Reason when
+#                           the rip is not Ripping, is an AudioCD, or its staging dir is gone.
+#    POST /api/jobs/<id>/metadata   body JSON {Title; Year}; manual title override for a
+#                           video rip. Header 'X-WRM-Action: 1' (else 403). Order of checks:
+#                           403, 404 (unknown/non-Rip id), 409 (State != Ripping, AudioCD, or
+#                           StagingDir missing / not a direct child of StagingDir), 400 (bad
+#                           JSON, body > 4096 chars, or {Error:'Validation failed'; Errors:
+#                           {Title?;Year?}}), then Set-ArmMetadataFile -Force into the job's
+#                           StagingDir (path from the job record only, never the request)
+#                           and a read-back (mismatch → 500 generic). If the job is no
+#                           longer Ripping afterwards → 409 "may not have been applied".
+#                           200 {Title;Year;FolderName}; the job's Title becomes FolderName.
+#                           Validation: Title trimmed, required, <= 200 chars, no control
+#                           chars, non-blank after ConvertTo-ArmSafeFileName, folder name not
+#                           dot-only or a Windows device name; Year blank or exactly 4 digits.
+#                           Resolve-TitleOverride picks the file up unchanged. Known limit:
+#                           an edit landing in the few ms between Resolve-TitleOverride and
+#                           the Moving update is accepted (200) but not applied.
+#    GET  /api/metadata-preview?title=&year=   200 {Valid; FolderName; Errors} using the same
+#                           ConvertTo-ArmFolderName rule (the form's live preview).
 #    GET /api/log[?lines=N] {Lines:[...]} = last N lines of today's wrm-<yyyyMMdd>.log
 #                           (default 200, clamped 1..1000, non-integer → 400; missing
 #                           file → []). Read with FileShare.ReadWrite; never written.
