@@ -210,6 +210,32 @@ Describe 'Invoke-DiscDispatch' {
             $entry.Source | Should -Be (Join-Path $fakeDest 'Grease (1978).mkv')
         }
 
+        It 'queues the file this rip produced, not a bigger upscale already sitting in an existing NAS folder' {
+            $script:Config.UpscaleDvds = $true
+            $ripOutputDir = Join-Path $script:StagingDir 'RAW_LABEL'
+            New-Item -ItemType Directory -Force -Path $ripOutputDir | Out-Null
+            'x' * 100 | Set-Content (Join-Path $ripOutputDir 'B1_t00.mkv')
+            Mock Invoke-VideoRip {
+                [pscustomobject]@{
+                    Success = $true; DiscLabel = 'RAW_LABEL'; DiscType = 'DVD'
+                    OutputDir = $ripOutputDir; TitleCount = 1; Error = $null
+                    Resolved = [pscustomobject]@{ FolderName = 'Grease (1978)'; Matched = $true; Title = 'Grease'; Year = 1978 }
+                }
+            }
+            $fakeDest = Join-Path $script:NasVideoRoot 'Grease (1978)'
+            Mock Move-ToNas {
+                $null = New-Item -ItemType Directory -Force -Path $fakeDest
+                'x' * 100 | Set-Content -LiteralPath (Join-Path $fakeDest 'Grease (1978).mkv')
+                'x' * 900 | Set-Content -LiteralPath (Join-Path $fakeDest 'Grease (1978) - 1080p.mkv')
+                [pscustomobject]@{ Success = $true; DestDir = $fakeDest; Error = $null }
+            }
+
+            Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Video' -Config $script:Config
+
+            $entry = Get-Content -LiteralPath (Join-Path $script:QueueDir 'Grease (1978).json') -Raw | ConvertFrom-Json
+            $entry.Source | Should -Be (Join-Path $fakeDest 'Grease (1978).mkv')
+        }
+
         It 'sends a dedicated MAKEMKV_KEY_EXPIRED notification and keeps staging on key expiry' {
             Mock Invoke-VideoRip {
                 [pscustomobject]@{ Success = $false; DiscLabel = $null; DiscType = $null; OutputDir = $null; TitleCount = 0; Error = 'MAKEMKV_KEY_EXPIRED'; Resolved = $null }

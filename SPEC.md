@@ -276,21 +276,26 @@ Resolve-Title -DiscLabel <string> -Config <hashtable> -> [pscustomobject]
 
 # Move-ToNas.ps1
 Move-ToNas -SourceDir <string> -DestRoot <string> -Config <hashtable> -> [pscustomobject]
-Move-ArmExtrasToSubdir -Dir <string> -Config <hashtable> -> [pscustomobject] { Success, Moved, Error }
+Move-ArmExtrasToSubdir -Dir <string> -Config <hashtable> -> [pscustomobject] { Success, Moved, MainFeature, Error }
+#  MainFeature = full path of the kept (largest) top-level .mkv, $null if none/failed.
 # Called by Invoke-VideoDispatch before Move-ToNas: keeps the largest top-level .mkv in place and moves
 # the other top-level .mkv files into <Dir>\extras\ (Jellyfin extras folder). No-op for <2 .mkv files.
-Rename-ArmMainFeature -Dir <string> -Config <hashtable> -> [pscustomobject] { Success, Renamed, Path, Error }
+Rename-ArmMainFeature -Dir <string> -Config <hashtable> [-MainFeature <string>] -> [pscustomobject] { Success, Renamed, Path, Error }
 # Called right after Move-ArmExtrasToSubdir (video rips only): renames the largest top-level .mkv to
 # '<leaf of Dir>.mkv' (leaf = resolved folder name = NAS folder name, since Move-ToNas uses the source
-# leaf). Jellyfin groups files as versions of one movie only when each name starts with the folder name.
-# No-op when the name already matches (case-insensitive); if another file already has the target name,
+# leaf). Jellyfin groups files as versions of one movie only when each name is the folder name, or the folder
+# name followed by optional spaces and one of - _ . [ (Test-ArmJellyfinVersionName; 'Upgrade' is NOT 'Up').
+# -MainFeature (from Move-ArmExtrasToSubdir) names the file to rename; default: largest top-level .mkv.
+# The queue entry (DVD+UpscaleDvds) points at the renamed file, not at the largest file in DestDir.
+# No-op when the name already matches; if another file already has the target name,
 # WARN and keep the original name. extras/ untouched. Never throws.
 Rename-ArmUpscaleVersions -FolderName <string> -UpscaledFile <string> -SourceFile <string>
                           [-SourceHeight <int>] -Config <hashtable> -> [pscustomobject]
 #  { Success, OutputFile, SourceFile, OutputRenamed, SourceRenamed, Error } (final paths).
-#  Upscale -> '<Folder> - 1080p.mkv' (first), source -> '<Folder> - <H>p.mkv' ('DVD' when height unknown).
+#  Upscale -> '<Folder> - <UpscaleHeight>p.mkv' (default 1080; first), source -> '<Folder> - <H>p.mkv' ('DVD' when height unknown).
 #  Labels ending in 'p' sort by resolution, highest first, so the upscale plays by default. A rename that
-#  cannot happen (target exists, file missing) logs WARN and leaves that file; never throws, never fails the job.
+#  cannot happen (target exists, file missing) logs WARN and leaves that file; if the upscale was not
+#  renamed the source is left alone too; never throws, never fails the job.
 #  All paths via -LiteralPath ('[' ']' in the old name).
 #  @{ Success; DestDir; Error }
 #  robocopy <src> <dest> /E /Z /NP /R:3 /W:10; exit codes 0-7 = success, ≥8 = failure.
@@ -302,11 +307,14 @@ Rename-ArmUpscaleVersions -FolderName <string> -UpscaledFile <string> -SourceFil
 
 # tools/Repair-ArmJellyfinNames.ps1 -Path <movies root> [-ConfigPath] [-Simulate] [-WhatIf]
 #  One-off repair of existing libraries (SupportsShouldProcess; Repair-ArmJellyfinNames function returns
-#  rows Folder, File, Action Renamed|WouldRename|Skipped, NewName, Reason). Per movie folder, top-level
-#  .mkv only: a single raw file not starting with the folder name -> '<Folder>.mkv'; one '* [AI upscale
-#  1080p].mkv' -> '<Folder> - 1080p.mkv' and its raw source -> '<Folder> - <H>p.mkv' (H via Get-VideoSourceInfo,
-#  'DVD' if unknown). Ambiguous (several raw files, unidentifiable source, target exists) -> skipped + listed.
-#  -WhatIf changes nothing. Guarded by InvocationName -ne '.' so tests dot-source it.
+#  rows Folder, File, Action Renamed|WouldRename|Moved|WouldMove|Skipped, NewName, Reason). Per movie
+#  folder, top-level .mkv only; the largest raw file is the main feature and every other raw file that
+#  Jellyfin would not group with the folder is an extra: main -> '<Folder>.mkv', the rest -> extras/;
+#  one '* [AI upscale 1080p].mkv' -> '<Folder> - <UpscaleHeight>p.mkv' and its source (same base name, else
+#  largest raw) -> '<Folder> - <H>p.mkv' (H via Get-VideoSourceInfo, 'DVD' if unknown). Whole folder skipped
+#  + listed when a raw is the Source of a queue entry (.json/.awaiting-review/.failed in UpscaleQueueDir),
+#  a target name or extras/ file already exists, or there are several upscale files.
+#  Script mode prints a table only (no objects). -WhatIf changes nothing. Guarded by InvocationName -ne '.' so tests dot-source it.
 
 # Send-Notification.ps1
 Send-ArmNotification -Title <string> -Message <string> -Level <Info|Error>
@@ -394,7 +402,8 @@ Get-UpscalePlan -InputFile <string> -SourceInfo <pscustomobject> -InterlaceType 
 
 Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
                [-ContentType <LiveAction|Animation>] [-SampleOnly] -> [pscustomobject]
-#  @{ Success; OutputFile; InterlaceType; Engine; Error }   # Engine = openproteus|anime4k|realesrgan ($null if failed before engine selection)
+#  @{ Success; OutputFile; InterlaceType; Engine; SourceHeight; Error }   # SourceHeight = probed source frame height or $null
+#  Engine = openproteus|anime4k|realesrgan ($null if failed before engine selection)
 #  Probe, plan, execute. (a) Probe: Get-VideoSourceInfo (ffprobe, source file),
 #  Get-InterlaceType, and - unless Telecined - Get-VideoFrameRate. Then Get-UpscalePlan;
 #  plan Warnings are logged, plan Error and (non-Simulate) missing openproteus
@@ -468,8 +477,8 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #  after approving; document in README). Else full run → move result to DestDir,
 #  notify, delete queue file. Failures → .failed + Error notification.
 #  After a successful full run the worker calls Rename-ArmUpscaleVersions with the leaf of DestDir
-#  (Jellyfin version names; source height from the Invoke-Upscale result's SourceHeight/Height, else
-#  Get-VideoSourceInfo, else 'DVD'). The notification text and the Complete job record (OutputFile)
+#  (Jellyfin version names; source height from the Invoke-Upscale result's SourceHeight, else
+#  Get-VideoSourceInfo, else 'DVD'). The queue file is deleted BEFORE the renames. The notification text and the Complete job record (OutputFile)
 #  carry the final output path. Sample-only runs write to UpscaleQueueDir (never DestDir), so a sample
 #  can't show up as a third Jellyfin version.
 #  Job state per item: resolve the queue file's JobId (a missing/unknown JobId gets

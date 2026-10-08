@@ -343,7 +343,7 @@ Describe 'End-to-end: Upscale-Worker.ps1 -Simulate -Once (AutoUpscale on)' {
 
         $job = Get-ArmJob -JobId $script:JobId -Config $script:E2eConfig.JobConfig
         $job.State | Should -Be 'Complete'
-        $job.OutputFile | Should -Be $expectedOutput
+        (Get-Item -LiteralPath $job.OutputFile).FullName | Should -Be (Get-Item -LiteralPath $expectedOutput).FullName
         @($job.History).State | Should -Be @('Queued', 'Upscaling', 'Complete')
     }
 }

@@ -97,7 +97,7 @@ function Get-ArmUpscaleRunInfo {
     Source frame height for the Jellyfin version label, or $null when unknown.
 
 .DESCRIPTION
-    Uses SourceHeight/Height from the Invoke-Upscale result when it carries one,
+    Uses SourceHeight from the Invoke-Upscale result when it carries one,
     otherwise probes the source with Get-VideoSourceInfo (ffprobe via Invoke-ArmTool).
     Never throws.
 #>
@@ -116,12 +116,14 @@ function Get-ArmUpscaleSourceHeight {
     )
 
     try {
-        $names = $Result.PSObject.Properties.Name
-        foreach ($key in @('SourceHeight', 'Height')) {
-            if ($names -contains $key -and $Result.$key -and [int] $Result.$key -gt 0) {
-                return [int] $Result.$key
-            }
+        $prop = $Result.PSObject.Properties['SourceHeight']
+        if ($prop -and $prop.Value -and [int] $prop.Value -gt 0) {
+            return [int] $prop.Value
         }
+    } catch {
+        Write-ArmLog -Level WARN -Message "Ignoring bad SourceHeight in upscale result: $_" -Config $Config
+    }
+    try {
         $info = Get-VideoSourceInfo -InputFile $SourceFile -Config $Config
         if ($info.Success -and $info.Height -and [int] $info.Height -gt 0) {
             return [int] $info.Height
@@ -249,8 +251,12 @@ function Invoke-ArmUpscaleQueueItem {
                 throw "Upscale failed: $($result.Error)"
             }
 
+            # Delete the queue file first: if that fails the item goes to .failed with its
+            # source still under its original name (the renames below would orphan it).
+            Remove-Item -LiteralPath $QueueFile -Force
+
             # Jellyfin: name both files '<Folder> - <label>.mkv' so they group as versions
-            # of one movie and the 1080p upscale plays by default. Never fails the job.
+            # of one movie and the upscale plays by default. Never fails the job.
             $finalOutput = [string] $result.OutputFile
             try {
                 $sourceHeight = Get-ArmUpscaleSourceHeight -Result $result -SourceFile $source -Config $Config
@@ -264,8 +270,6 @@ function Invoke-ArmUpscaleQueueItem {
             Send-ArmNotification -Title 'Upscale complete' `
                 -Message "Upscaled: $finalOutput" `
                 -Level Info -Config $Config
-
-            Remove-Item -LiteralPath $QueueFile -Force
 
             $completeProps = @{ State = 'Complete'; DestDir = $destDir; OutputFile = $finalOutput }
             $completeProps += Get-ArmUpscaleRunInfo -Result $result

@@ -454,6 +454,17 @@ Describe 'Invoke-ArmUpscaleQueueItem Jellyfin version names' {
         Test-Path -LiteralPath ($script:QueueFile -replace '\.json$', '.failed') | Should -BeFalse
     }
 
+    It 'does not rename anything when deleting the queue file fails (item ends up .failed with its source intact)' {
+        Mock Get-VideoSourceInfo { [pscustomobject]@{ Success = $true; Height = 480 } }
+        Mock Remove-Item { throw 'cannot delete queue file' }
+
+        Invoke-ArmUpscaleQueueItem -QueueFile $script:QueueFile -Config $script:Config
+
+        Test-Path -LiteralPath $script:SourceFile | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $script:DestDir 'Grease (1978) - 480p.mkv') | Should -BeFalse
+        (Get-ArmJob -JobId $script:JobId -Config $script:Config).State | Should -Be 'Failed'
+    }
+
     It 'sample-only runs write into the queue dir, never DestDir' {
         $script:Config.AutoUpscale = $false
         Mock Invoke-Upscale {

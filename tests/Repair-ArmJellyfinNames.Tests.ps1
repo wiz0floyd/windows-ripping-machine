@@ -68,13 +68,39 @@ Describe 'Repair-ArmJellyfinNames' {
         Get-Names $dir | Should -Be $before
     }
 
-    It 'skips and lists ambiguous folders: several raw mkvs' {
-        $dir = New-MovieDir 'Grease (1978)' @{ 'B1_t00.mkv' = 'a'; 'B1_t01.mkv' = 'b' }
+    It 'treats the largest of several raw mkvs as the main feature and moves the rest to extras/' {
+        $dir = New-MovieDir 'Grease (1978)' @{ 'B1_t00.mkv' = ('a' * 50); 'B1_t01.mkv' = ('b' * 500); 'B1_t02.mkv' = ('c' * 5) }
         $rows = @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config)
+        Get-Names $dir | Should -Be @('Grease (1978).mkv')
+        (Get-Content -LiteralPath (Join-Path $dir 'Grease (1978).mkv') -Raw).Trim() | Should -Be ('b' * 500)
+        Get-Names (Join-Path $dir 'extras') | Should -Be @('B1_t00.mkv', 'B1_t02.mkv')
+        @($rows | Where-Object Action -eq 'Moved').Count | Should -Be 2
+        @($rows | Where-Object Action -eq 'Renamed').Count | Should -Be 1
+    }
+
+    It '-WhatIf reports WouldMove and WouldRename for several raw mkvs and changes nothing' {
+        $dir = New-MovieDir 'Grease (1978)' @{ 'B1_t00.mkv' = ('a' * 50); 'B1_t01.mkv' = ('b' * 500) }
+        $rows = @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config -WhatIf)
         Get-Names $dir | Should -Be @('B1_t00.mkv', 'B1_t01.mkv')
-        $rows.Count | Should -Be 1
-        $rows[0].Action | Should -Be 'Skipped'
-        $rows[0].Reason | Should -Match 'ambiguous'
+        Test-Path -LiteralPath (Join-Path $dir 'extras') | Should -BeFalse
+        @($rows | Where-Object Action -eq 'WouldMove').Count | Should -Be 1
+        @($rows | Where-Object Action -eq 'WouldRename').Count | Should -Be 1
+    }
+
+    It 'does not treat Upgrade.mkv as already named for the movie Up' {
+        $dir = New-MovieDir 'Up' @{ 'Upgrade.mkv' = 'x' }
+        $null = Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config
+        Get-Names $dir | Should -Be @('Up.mkv')
+    }
+
+    It 'accepts "Up - 480p.mkv", "Up [x].mkv", "Up_x.mkv" and "Up (2009).mkv"-style names only per the Jellyfin rule' {
+        $dir = New-MovieDir 'Up' @{ 'Up - 480p.mkv' = 'x' }
+        @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config).Count | Should -Be 0
+        Test-ArmJellyfinVersionName -BaseName 'Up [x]' -Folder 'Up' | Should -BeTrue
+        Test-ArmJellyfinVersionName -BaseName 'Up_x' -Folder 'Up' | Should -BeTrue
+        Test-ArmJellyfinVersionName -BaseName 'up' -Folder 'Up' | Should -BeTrue
+        Test-ArmJellyfinVersionName -BaseName 'Up (2009)' -Folder 'Up' | Should -BeFalse
+        Test-ArmJellyfinVersionName -BaseName 'Upgrade' -Folder 'Up' | Should -BeFalse
     }
 
     It 'skips when the target name already exists' {
@@ -86,13 +112,31 @@ Describe 'Repair-ArmJellyfinNames' {
         $rows[0].Reason | Should -Match 'already exists'
     }
 
-    It 'skips an upscale whose source cannot be identified' {
-        $dir = New-MovieDir 'Grease (1978)' @{ 'a.mkv' = '1'; 'b.mkv' = '2'; 'zzz [AI upscale 1080p].mkv' = 'up' }
-        $rows = @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config)
-        Get-Names $dir | Should -Be @('a.mkv', 'b.mkv', 'zzz [AI upscale 1080p].mkv')
-        $rows[0].Action | Should -Be 'Skipped'
+    It 'uses the largest raw as the upscale source when no raw shares its base name, and moves other raws to extras/' {
+        $dir = New-MovieDir 'Grease (1978)' @{ 'a.mkv' = ('1' * 20); 'b.mkv' = ('2' * 200); 'zzz [AI upscale 1080p].mkv' = 'up' }
+        $null = Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config
+        Get-Names $dir | Should -Be @('Grease (1978) - 1080p.mkv', 'Grease (1978) - 480p.mkv')
+        (Get-Content -LiteralPath (Join-Path $dir 'Grease (1978) - 480p.mkv') -Raw).Trim() | Should -Be ('2' * 200)
+        Get-Names (Join-Path $dir 'extras') | Should -Be @('a.mkv')
     }
 
+    It 'skips when several upscale files exist' {
+        $dir = New-MovieDir 'Grease (1978)' @{ 'a.mkv' = '1'; 'a [AI upscale 1080p].mkv' = 'x'; 'b [AI upscale 1080p].mkv' = 'y' }
+        $rows = @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config)
+        $rows[0].Action | Should -Be 'Skipped'
+        Get-Names $dir | Should -Be @('a [AI upscale 1080p].mkv', 'a.mkv', 'b [AI upscale 1080p].mkv')
+    }
+
+    It 'skips the whole folder when any raw is a queued source (.failed too) and moves nothing to extras' {
+        $q = Join-Path $TestDrive "queue-$(New-Guid)"
+        $null = New-Item -ItemType Directory -Path $q
+        $script:Config.UpscaleQueueDir = $q
+        $dir = New-MovieDir 'Grease (1978)' @{ 'B1_t00.mkv' = ('a' * 500); 'B1_t01.mkv' = ('b' * 5) }
+        ([ordered]@{ Source = (Join-Path $dir 'B1_t00.mkv') } | ConvertTo-Json) | Set-Content -LiteralPath (Join-Path $q 'Grease (1978).failed')
+        $rows = @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config)
+        Get-Names $dir | Should -Be @('B1_t00.mkv', 'B1_t01.mkv')
+        $rows[0].Reason | Should -Be 'queued for upscale (worker renames it on completion)'
+    }
     It 'skips raw files that a pending queue entry (.json or .awaiting-review) points at, ignoring junk queue files' {
         $q = Join-Path $TestDrive "queue-$(New-Guid)"
         $null = New-Item -ItemType Directory -Path $q

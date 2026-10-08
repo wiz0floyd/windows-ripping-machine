@@ -903,7 +903,7 @@ function Invoke-Upscale {
         }
 
         $success = $true
-        return New-ArmResult -Success $true -Properties ([ordered]@{ OutputFile = $outputFile; InterlaceType = $interlaceType; Engine = $engine }) -Error $null
+        return New-ArmResult -Success $true -Properties ([ordered]@{ OutputFile = $outputFile; InterlaceType = $interlaceType; Engine = $engine; SourceHeight = $sourceInfo.Height }) -Error $null
     } catch {
         Write-ArmLog -Level ERROR -Message "Invoke-Upscale failed for $InputFile : $_" -Config $Config
         return New-ArmResult -Success $false -Properties ([ordered]@{ OutputFile = $null; InterlaceType = $interlaceType; Engine = $engine }) -Error "$_"

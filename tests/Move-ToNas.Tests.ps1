@@ -429,3 +429,61 @@ Describe 'Rename-ArmUpscaleVersions' {
         Should -Invoke Write-ArmLog -ParameterFilter { $Level -eq 'WARN' }
     }
 }
+
+Describe 'Jellyfin naming review fixes' {
+    BeforeEach {
+        $script:Dir = Join-Path $TestDrive "rv-$(New-Guid)" 'Grease (1978)'
+        $null = New-Item -ItemType Directory -Path $script:Dir -Force
+    }
+
+    It 'Move-ArmExtrasToSubdir returns the kept main feature, and Rename-ArmMainFeature -MainFeature renames exactly that file' {
+        Set-Content -LiteralPath (Join-Path $script:Dir 't00.mkv') -Value ('a' * 100)
+        Set-Content -LiteralPath (Join-Path $script:Dir 't01.mkv') -Value ('a' * 5000)
+        $e = Move-ArmExtrasToSubdir -Dir $script:Dir -Config (New-TestConfig)
+        $e.MainFeature | Should -Be (Join-Path $script:Dir 't01.mkv')
+
+        $r = Rename-ArmMainFeature -Dir $script:Dir -Config (New-TestConfig) -MainFeature $e.MainFeature
+        $r.Renamed | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $script:Dir 'Grease (1978).mkv') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $script:Dir 'extras' 't00.mkv') | Should -BeTrue
+    }
+
+    It 'Move-ArmExtrasToSubdir reports the single mkv as MainFeature' {
+        Set-Content -LiteralPath (Join-Path $script:Dir 't00.mkv') -Value 'x'
+        (Move-ArmExtrasToSubdir -Dir $script:Dir -Config (New-TestConfig)).MainFeature | Should -Be (Join-Path $script:Dir 't00.mkv')
+    }
+
+    It 'Rename-ArmMainFeature renames Upgrade.mkv in folder Up (prefix alone is not a version name)' {
+        $up = Join-Path $TestDrive "rv-$(New-Guid)" 'Up'
+        $null = New-Item -ItemType Directory -Path $up -Force
+        Set-Content -LiteralPath (Join-Path $up 'Upgrade.mkv') -Value 'x'
+        (Rename-ArmMainFeature -Dir $up -Config (New-TestConfig)).Renamed | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $up 'Up.mkv') | Should -BeTrue
+    }
+
+    It 'Rename-ArmUpscaleVersions labels the upscale with UpscaleHeight' {
+        $src = Join-Path $script:Dir 'Grease (1978).mkv'
+        $up = Join-Path $script:Dir 'Grease (1978) [AI upscale 1080p].mkv'
+        Set-Content -LiteralPath $src -Value 'raw'
+        Set-Content -LiteralPath $up -Value 'up'
+        $cfg = New-TestConfig
+        $cfg.UpscaleHeight = 720
+        $r = Rename-ArmUpscaleVersions -FolderName 'Grease (1978)' -UpscaledFile $up -SourceFile $src -SourceHeight 480 -Config $cfg
+        $r.OutputFile | Should -Be (Join-Path $script:Dir 'Grease (1978) - 720p.mkv')
+        Test-Path -LiteralPath (Join-Path $script:Dir 'Grease (1978) - 480p.mkv') | Should -BeTrue
+    }
+
+    It 'Rename-ArmUpscaleVersions leaves the source alone when the upscale rename did not happen' {
+        $src = Join-Path $script:Dir 'Grease (1978).mkv'
+        $up = Join-Path $script:Dir 'Grease (1978) [AI upscale 1080p].mkv'
+        Set-Content -LiteralPath $src -Value 'raw'
+        Set-Content -LiteralPath $up -Value 'up'
+        Set-Content -LiteralPath (Join-Path $script:Dir 'Grease (1978) - 1080p.mkv') -Value 'squatter'
+        Mock Write-ArmLog { }
+        $r = Rename-ArmUpscaleVersions -FolderName 'Grease (1978)' -UpscaledFile $up -SourceFile $src -SourceHeight 480 -Config (New-TestConfig)
+        $r.Success | Should -BeTrue
+        $r.SourceRenamed | Should -BeFalse
+        Test-Path -LiteralPath $src | Should -BeTrue
+        Test-Path -LiteralPath $up | Should -BeTrue
+    }
+}
