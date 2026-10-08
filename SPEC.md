@@ -555,9 +555,11 @@ Invoke-ArmWebRequest -Method <string> -Path <string> [-Query <hashtable>] [-Body
 #  Start-Process -Verb RunAs. -RunAsUser <string> ("DOMAIN\User"): internal/
 #  advanced param used to register the scheduled tasks' principal as the
 #  original pre-elevation user rather than whichever account UAC elevated to;
-#  the entry point captures $env:USERDOMAIN\$env:USERNAME before relaunching
-#  elevated and passes it through automatically, so end users normally never
-#  need to set this themselves.
+#  the entry point captures the current Windows identity (Get-ArmCurrentUserName,
+#  i.e. WindowsIdentity.GetCurrent().Name, not $env:USERDOMAIN, which reads
+#  'WORKGROUP' on workgroup machines) before relaunching elevated and passes it
+#  through automatically (Get-ArmElevatedArgumentList), so end users normally
+#  never need to set this themselves.
 ```
 
 ## Testing requirements
