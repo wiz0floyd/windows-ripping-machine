@@ -44,12 +44,9 @@ if ($isIdet) {
     exit 0
 }
 
-# Stream-info probe (`ffmpeg -hide_banner -i <file>`, no output file): like the real
-# tool, print the stream line on stderr and exit 1. Never touch the input file.
-if ($argList -contains '-hide_banner' -and $argList -notcontains '-f' -and $argList -notcontains '-c:v') {
-    [Console]::Error.WriteLine('  Stream #0:0: Video: ffv1, yuv420p, 720x480, SAR 853:720 DAR 853:480, 23.98 fps, 23.98 tbr, 1k tbn')
-    exit 1
-}
+# Stream metadata (size, SAR/DAR, colour, rates) is read with ffprobe, not an
+# `ffmpeg -i` banner parse - see stub-ffprobe.ps1. This stub only answers the two
+# measured probes (idet, decoded frame rate) and encode/mux invocations.
 
 # Null-sink invocations (`-f null -`, e.g. the frame-rate probe): nothing is written;
 # emit a realistic final progress line for a 60s window of 23.976 fps film.

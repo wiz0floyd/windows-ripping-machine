@@ -1,6 +1,11 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+BeforeDiscovery {
+    . (Join-Path $PSScriptRoot 'UpscaleGolden.Helpers.ps1')
+    $script:GoldenCases = @(foreach ($s in Get-UpscaleGoldenScenarios) { @{ Id = $s.Id; Scenario = $s } })
+}
+
 BeforeAll {
     $script:ProbeStderr = @()
     . (Join-Path $PSScriptRoot '..' 'src' 'Common.ps1')
@@ -9,8 +14,20 @@ BeforeAll {
     $script:FixtureDir = Join-Path $PSScriptRoot 'fixtures'
     $script:TestDir = New-Item -ItemType Directory -Path (Join-Path $env:TEMP "wrm-upscale-test-$(New-Guid)")
 
+    . (Join-Path $PSScriptRoot 'UpscaleGolden.Helpers.ps1')
+
     function Get-FixtureLines($name) {
         Get-Content -Path (Join-Path $script:FixtureDir $name)
+    }
+
+    # The recorded ffprobe output (Cast Away DVD rip: 720x480, SAR 853:720 / DAR 853:480),
+    # optionally re-tagged with another SAR. '8:9' is a 4:3 NTSC DVD (DAR 4:3).
+    function New-FfprobeJson([string] $Sar = '853:720') {
+        $text = (Get-FixtureLines 'ffprobe-dvd-source.json') -join "`n"
+        if ($Sar -eq '8:9') {
+            $text = $text.Replace('"sample_aspect_ratio": "853:720"', '"sample_aspect_ratio": "8:9"').Replace('"display_aspect_ratio": "853:480"', '"display_aspect_ratio": "4:3"')
+        }
+        $text
     }
 }
 
@@ -219,6 +236,7 @@ Describe 'Invoke-Upscale' {
     It 'returns Success with the expected output file name and interlace type' {
         Mock Invoke-ArmTool {
             param($Name, $Arguments, $Config, $TimeoutSec)
+            if ($Name -eq 'ffprobe') { return [pscustomobject]@{ ExitCode = 0; StdOut = @(Get-FixtureLines 'ffprobe-dvd-source.json'); StdErr = @() } }
 
             if ($Name -eq 'ffmpeg' -and ($Arguments -join ' ') -match 'idet') {
                 return [pscustomobject]@{
@@ -249,6 +267,7 @@ Describe 'Invoke-Upscale' {
     It 'uses the telecined filter chain when source is telecined' {
         Mock Invoke-ArmTool {
             param($Name, $Arguments, $Config, $TimeoutSec)
+            if ($Name -eq 'ffprobe') { return [pscustomobject]@{ ExitCode = 0; StdOut = @(Get-FixtureLines 'ffprobe-dvd-source.json'); StdErr = @() } }
 
             if ($Name -eq 'ffmpeg' -and ($Arguments -join ' ') -match 'idet') {
                 return [pscustomobject]@{
@@ -280,6 +299,7 @@ Describe 'Invoke-Upscale' {
     It 'passes -ss 600 -t 120 to the preprocess step when -SampleOnly is set' {
         Mock Invoke-ArmTool {
             param($Name, $Arguments, $Config, $TimeoutSec)
+            if ($Name -eq 'ffprobe') { return [pscustomobject]@{ ExitCode = 0; StdOut = @(Get-FixtureLines 'ffprobe-dvd-source.json'); StdErr = @() } }
 
             if ($Name -eq 'ffmpeg' -and ($Arguments -join ' ') -match 'idet') {
                 return [pscustomobject]@{
@@ -309,6 +329,7 @@ Describe 'Invoke-Upscale' {
     It 'returns Success=$false and Error when the upscale step fails' {
         Mock Invoke-ArmTool {
             param($Name, $Arguments, $Config, $TimeoutSec)
+            if ($Name -eq 'ffprobe') { return [pscustomobject]@{ ExitCode = 0; StdOut = @(Get-FixtureLines 'ffprobe-dvd-source.json'); StdErr = @() } }
 
             if ($Name -eq 'ffmpeg' -and ($Arguments -join ' ') -match 'idet') {
                 return [pscustomobject]@{
@@ -340,6 +361,7 @@ Describe 'Invoke-Upscale' {
     It 'removes a partial output file left behind when the mux step fails' {
         Mock Invoke-ArmTool {
             param($Name, $Arguments, $Config, $TimeoutSec)
+            if ($Name -eq 'ffprobe') { return [pscustomobject]@{ ExitCode = 0; StdOut = @(Get-FixtureLines 'ffprobe-dvd-source.json'); StdErr = @() } }
 
             if ($Name -eq 'ffmpeg' -and ($Arguments -join ' ') -match 'idet') {
                 return [pscustomobject]@{
@@ -386,6 +408,7 @@ Describe 'Invoke-Upscale' {
 
         Mock Invoke-ArmTool {
             param($Name, $Arguments, $Config, $TimeoutSec)
+            if ($Name -eq 'ffprobe') { return [pscustomobject]@{ ExitCode = 0; StdOut = @(Get-FixtureLines 'ffprobe-dvd-source.json'); StdErr = @() } }
 
             if ($Name -eq 'ffmpeg' -and ($Arguments -join ' ') -match 'idet') {
                 return [pscustomobject]@{
@@ -415,54 +438,380 @@ Describe 'Invoke-Upscale' {
     }
 }
 
-Describe 'Get-VideoDisplayAspect' {
+Describe 'Get-InterlaceType probe window' {
+    BeforeEach {
+        $script:Config = @{ Simulate = $true; LogDir = $script:TestDir }
+        Mock Invoke-ArmTool { [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = Get-FixtureLines 'ffmpeg-idet-progressive.txt' } }
+    }
+
+    It 'probes from 0:00 with the exact historical arguments when no window is given' {
+        Get-InterlaceType -InputFile 'C:\fake\a.mkv' -Config $script:Config | Should -Be 'Progressive'
+        Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter {
+            $Name -eq 'ffmpeg' -and ($Arguments -join ' ') -eq '-i C:\fake\a.mkv -filter:v idet -frames:v 2000 -an -f null -'
+        }
+    }
+
+    It 'puts -ss/-t before -i when a window is given (same window parameters as Get-VideoFrameRate)' {
+        Get-InterlaceType -InputFile 'C:\fake\a.mkv' -Config $script:Config -Seek 600 -Duration 120 | Should -Be 'Progressive'
+        Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter {
+            ($Arguments -join ' ') -eq '-ss 600 -t 120 -i C:\fake\a.mkv -filter:v idet -frames:v 2000 -an -f null -'
+        }
+    }
+
+    It 'accepts a seek without a duration' {
+        $null = Get-InterlaceType -InputFile 'C:\fake\a.mkv' -Config $script:Config -Seek 0
+        Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter {
+            ($Arguments -join ' ') -eq '-ss 0 -i C:\fake\a.mkv -filter:v idet -frames:v 2000 -an -f null -'
+        }
+    }
+}
+
+Describe 'ConvertTo-VideoSourceInfo' {
+    BeforeAll {
+        $script:FixtureJson = (Get-FixtureLines 'ffprobe-dvd-source.json') -join "`n"
+    }
+
+    It 'reads every field from a real MakeMKV DVD rip (fixture recorded with ffprobe 8.1.2)' {
+        $i = ConvertTo-VideoSourceInfo -Json $script:FixtureJson
+        $i.Success | Should -Be $true
+        $i.Error | Should -BeNullOrEmpty
+        $i.Width | Should -Be 720
+        $i.Height | Should -Be 480
+        $i.SampleAspectRatio | Should -Be '853:720'
+        $i.DisplayAspectRatio | Should -Be '853:480'
+        [math]::Round($i.DisplayAspect, 9) | Should -Be ([math]::Round((853.0 / 480.0), 9))
+        $i.DisplayAspectSource | Should -Be 'sar'
+        $i.PixelFormat | Should -Be 'yuv420p'
+        $i.ColorSpace | Should -Be 'smpte170m'
+        $i.ColorPrimaries | Should -Be 'smpte170m'
+        $i.ColorTransfer | Should -Be 'smpte170m'
+        $i.ColorRange | Should -Be 'tv'
+        $i.FieldOrder | Should -Be 'progressive'
+        $i.FrameRate | Should -Be '30000/1001'
+        $i.DurationSec | Should -Be 8627.936
+        $i.AudioStreamCount | Should -Be 5
+        $i.Warnings.Count | Should -Be 0
+    }
+
+    It 'derives a 4:3 display aspect from an 8:9 SAR' {
+        $i = ConvertTo-VideoSourceInfo -Json (New-FfprobeJson -Sar '8:9')
+        [math]::Round($i.DisplayAspect, 9) | Should -Be ([math]::Round((4.0 / 3.0), 9))
+    }
+
+    It 'matches the DAR the old ffmpeg-banner parse printed for the same stream' {
+        # banner: `720x480 [SAR 853:720 DAR 853:480]` => 853/480
+        (ConvertTo-VideoSourceInfo -Json $script:FixtureJson).DisplayAspect | Should -Be (853.0 / 480.0)
+    }
+
+    It 'falls back to display_aspect_ratio, then the frame size, then 16:9 with a warning' {
+        $dar = '{"streams":[{"codec_type":"video","width":720,"height":480,"display_aspect_ratio":"16:9"}]}'
+        $i = ConvertTo-VideoSourceInfo -Json $dar
+        [math]::Round($i.DisplayAspect, 9) | Should -Be ([math]::Round((16.0 / 9.0), 9))
+        $i.DisplayAspectSource | Should -Be 'dar'
+
+        $size = '{"streams":[{"codec_type":"video","width":640,"height":480,"sample_aspect_ratio":"0:1"}]}'
+        $i = ConvertTo-VideoSourceInfo -Json $size
+        [math]::Round($i.DisplayAspect, 9) | Should -Be ([math]::Round((640.0 / 480.0), 9))
+        $i.DisplayAspectSource | Should -Be 'frame-size'
+        $i.SampleAspectRatio | Should -BeNullOrEmpty
+
+        $none = '{"streams":[{"codec_type":"video"}]}'
+        $i = ConvertTo-VideoSourceInfo -Json $none -InputFile 'C:\fake\x.mkv'
+        $i.Success | Should -Be $true
+        [math]::Round($i.DisplayAspect, 9) | Should -Be ([math]::Round((16.0 / 9.0), 9))
+        $i.DisplayAspectSource | Should -Be 'assumed'
+        $i.Warnings | Should -Match 'x\.mkv.*16:9'
+    }
+
+    It 'treats unknown colour tags and a 0/0 header rate as absent' {
+        $json = '{"streams":[{"codec_type":"video","width":720,"height":480,"color_space":"unknown","color_range":"N/A","r_frame_rate":"0/0","avg_frame_rate":"25/1"}]}'
+        $i = ConvertTo-VideoSourceInfo -Json $json
+        $i.ColorSpace | Should -BeNullOrEmpty
+        $i.ColorRange | Should -BeNullOrEmpty
+        $i.FrameRate | Should -Be '25/1'
+    }
+
+    It 'never throws: garbage, empty and audio-only input give Success=$false with the 16:9 fallback' {
+        foreach ($bad in 'not json at all', '', '{"streams":[{"codec_type":"audio"}]}', '{}') {
+            $i = ConvertTo-VideoSourceInfo -Json $bad
+            $i.Success | Should -Be $false
+            $i.Error | Should -Not -BeNullOrEmpty
+            [math]::Round($i.DisplayAspect, 9) | Should -Be ([math]::Round((16.0 / 9.0), 9))
+            $i.Width | Should -BeNullOrEmpty
+            $i.AudioStreamCount | Should -BeLessOrEqual 1
+        }
+    }
+}
+
+Describe 'Get-VideoSourceInfo' {
     BeforeEach {
         $script:Config = @{ Simulate = $true; LogDir = $script:TestDir }
     }
 
-    It 'uses the DAR printed by ffmpeg for an anamorphic DVD stream' {
-        Mock Invoke-ArmTool {
-            [pscustomobject]@{ ExitCode = 1; StdOut = @(); StdErr = @(
-                '  Stream #0:0: Video: ffv1 (FFV1 / 0x31564646), yuv420p(tv), 720x480 [SAR 853:720 DAR 853:480], SAR 853:720 DAR 853:480, 29.97 fps') }
-        }
+    It 'runs ffprobe once on the given file and returns the parsed object' {
+        Mock Invoke-ArmTool { [pscustomobject]@{ ExitCode = 0; StdOut = @(Get-FixtureLines 'ffprobe-dvd-source.json'); StdErr = @() } }
 
-        Get-VideoDisplayAspect -InputFile 'C:\fake\a.mkv' -Config $script:Config | Should -BeGreaterThan 1.77
+        $i = Get-VideoSourceInfo -InputFile 'C:\fake\a.mkv' -Config $script:Config
+        $i.Success | Should -Be $true
+        $i.AudioStreamCount | Should -Be 5
+        Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter {
+            $Name -eq 'ffprobe' -and $Arguments[-1] -eq 'C:\fake\a.mkv' -and ($Arguments -join ' ') -match '-of json'
+        }
     }
 
-    It 'parses the bracketless DAR that ffmpeg prints for an ffv1 intermediate (real output)' {
-        Mock Invoke-ArmTool {
-            [pscustomobject]@{ ExitCode = 1; StdOut = @(); StdErr = @(
-                '  Stream #0:0(eng): Video: ffv1, yuv420p(tv, smpte170m, progressive), 720x480, SAR 853:720 DAR 853:480, 29.97 fps, 29.97 tbr, 1k tbn') }
-        }
-
-        Get-VideoDisplayAspect -InputFile 'C:\fake\a.mkv' -Config $script:Config | Should -BeGreaterThan 1.77
+    It 'works end to end against the real stub-ffprobe (Simulate)' {
+        $i = Get-VideoSourceInfo -InputFile 'C:\fake\a.mkv' -Config $script:Config
+        $i.Success | Should -Be $true
+        $i.Width | Should -Be 720
+        [math]::Round($i.DisplayAspect, 9) | Should -Be ([math]::Round((853.0 / 480.0), 9))
     }
 
-    It 'uses the last DAR when the line has codec-level and stream-level values (real mpeg2 output)' {
-        Mock Invoke-ArmTool {
-            [pscustomobject]@{ ExitCode = 1; StdOut = @(); StdErr = @(
-                '  Stream #0:0(eng): Video: mpeg2video (Main), yuv420p(tv, smpte170m, progressive), 720x480 [SAR 8:9 DAR 4:3], SAR 853:720 DAR 853:480, 29.97 fps') }
-        }
-
-        Get-VideoDisplayAspect -InputFile 'C:\fake\a.mkv' -Config $script:Config | Should -BeGreaterThan 1.77
-    }
-
-    It 'falls back to the frame-size ratio when no DAR is printed' {
-        Mock Invoke-ArmTool {
-            [pscustomobject]@{ ExitCode = 1; StdOut = @(); StdErr = @('  Stream #0:0: Video: h264, yuv420p, 640x480, 24 fps') }
-        }
-
-        Get-VideoDisplayAspect -InputFile 'C:\fake\a.mkv' -Config $script:Config | Should -Be (640 / 480)
-    }
-
-    It 'assumes 16:9 and logs a WARN when nothing parses' {
-        Mock Invoke-ArmTool { [pscustomobject]@{ ExitCode = 1; StdOut = @(); StdErr = @('garbage') } }
+    It 'falls back to 16:9 and logs WARNs when ffprobe fails' {
+        Mock Invoke-ArmTool { [pscustomobject]@{ ExitCode = -1; StdOut = @(); StdErr = @() } }
         Mock Write-ArmLog {}
 
-        Get-VideoDisplayAspect -InputFile 'C:\fake\a.mkv' -Config $script:Config | Should -Be (16.0 / 9.0)
-        Should -Invoke Write-ArmLog -ParameterFilter { $Level -eq 'WARN' }
+        $i = Get-VideoSourceInfo -InputFile 'C:\fake\a.mkv' -Config $script:Config
+        $i.Success | Should -Be $false
+        $i.Error | Should -Match 'ffprobe exited with code -1'
+        [math]::Round($i.DisplayAspect, 9) | Should -Be ([math]::Round((16.0 / 9.0), 9))
+        Should -Invoke Write-ArmLog -ParameterFilter { $Level -eq 'WARN' -and $Message -match '16:9' }
+        Should -Invoke Write-ArmLog -ParameterFilter { $Level -eq 'WARN' -and $Message -match 'a\.mkv.*failed' }
+    }
+
+    It 'never throws even when Invoke-ArmTool throws' {
+        Mock Invoke-ArmTool { throw 'catastrophic failure' }
+        Mock Write-ArmLog {}
+
+        { Get-VideoSourceInfo -InputFile 'C:\fake\a.mkv' -Config $script:Config } | Should -Not -Throw
+        (Get-VideoSourceInfo -InputFile 'C:\fake\a.mkv' -Config $script:Config).Success | Should -Be $false
     }
 }
+
+Describe 'Get-UpscalePlan' {
+    BeforeAll {
+        $script:Source = ConvertTo-VideoSourceInfo -Json ((Get-FixtureLines 'ffprobe-dvd-source.json') -join "`n")
+        function New-TestPlan {
+            param($Interlace = 'Progressive', $Rate = '24000/1001', [hashtable] $Override = @{}, $ContentType = 'LiveAction', [switch] $Sample, $Source = $script:Source)
+            $config = New-UpscaleGoldenConfig -Overrides $Override -LogDir $script:TestDir
+            Get-UpscalePlan -InputFile 'C:\rips\movie.mkv' -SourceInfo $Source -InterlaceType $Interlace -FrameRate $Rate `
+                -Config $config -ContentType $ContentType -SampleOnly:$Sample
+        }
+    }
+
+    It 'plans a progressive live-action source: no filter, measured CFR, openproteus at 1920x1080' {
+        $p = New-TestPlan
+        $p.Error | Should -BeNullOrEmpty
+        $p.InterlaceType | Should -Be 'Progressive'
+        $p.Preprocess.Filter | Should -BeNullOrEmpty
+        $p.Preprocess.FrameRate | Should -Be '24000/1001'
+        $p.Window | Should -BeNullOrEmpty
+        $p.Engine | Should -Be 'openproteus'
+        $p.EngineTool | Should -Be 'ncnn'
+        $p.Target.Width | Should -Be 1920
+        $p.Target.Height | Should -Be 1080
+        $p.Encode.ResetSar | Should -Be $true
+        $p.Encode.Codec | Should -Be 'libx265'
+        $p.Encode.Crf | Should -Be 16
+        $p.OutputFileName | Should -Be 'movie [AI upscale 1080p].mkv'
+        $p.Warnings.Count | Should -Be 0
+    }
+
+    It 'keeps the #30 per-class filter chains in a single Preprocess.Filter field' {
+        (New-TestPlan -Interlace Interlaced).Preprocess.Filter | Should -Be 'bwdif=mode=send_frame'
+        (New-TestPlan -Interlace Telecined).Preprocess.Filter | Should -Be 'fieldmatch,yadif=deint=interlaced,decimate'
+    }
+
+    It 'applies CFR to Progressive and Interlaced but never to Telecined (decimate sets the rate)' {
+        (New-TestPlan -Interlace Interlaced -Rate '30000/1001').Preprocess.FrameRate | Should -Be '30000/1001'
+        $t = New-TestPlan -Interlace Telecined -Rate '24000/1001'
+        $t.Preprocess.FrameRate | Should -BeNullOrEmpty
+        $t.Warnings.Count | Should -Be 0
+    }
+
+    It 'warns (once, naming the file) and leaves CFR off when the rate was not measured' {
+        $p = New-TestPlan -Rate $null
+        $p.Preprocess.FrameRate | Should -BeNullOrEmpty
+        $p.Warnings.Count | Should -Be 1
+        $p.Warnings[0] | Should -Match 'could not measure the frame rate of C:\\rips\\movie\.mkv'
+    }
+
+    It 'sets the 10:00-12:00 window for -SampleOnly' {
+        $p = New-TestPlan -Sample
+        $p.SampleOnly | Should -Be $true
+        $p.Window.Seek | Should -Be 600
+        $p.Window.Duration | Should -Be 120
+    }
+
+    It 'derives the target width from the DAR and height from UpscaleHeight' {
+        $four3 = ConvertTo-VideoSourceInfo -Json (New-FfprobeJson -Sar '8:9')
+        (New-TestPlan -Source $four3).Target.Width | Should -Be 1440
+        $p = New-TestPlan -Override @{ UpscaleHeight = 720 }
+        $p.Target.Width | Should -Be 1280
+        $p.Target.Height | Should -Be 720
+    }
+
+    It 'routes Animation to anime4k with the configured shader and video2x' {
+        $p = New-TestPlan -ContentType Animation -Override @{ UpscaleShader = 'anime4k-v4-b' }
+        $p.Engine | Should -Be 'anime4k'
+        $p.EngineTool | Should -Be 'video2x'
+        $p.Upscale.Shader | Should -Be 'anime4k-v4-b'
+        $p.Encode.ResetSar | Should -Be $true
+    }
+
+    It 'plans the legacy realesrgan engine without a target size or SAR reset' {
+        $p = New-TestPlan -Override @{ UpscaleLiveAction = 'realesrgan' }
+        $p.Engine | Should -Be 'realesrgan'
+        $p.EngineTool | Should -Be 'video2x'
+        $p.Target | Should -BeNullOrEmpty
+        $p.Upscale.Model | Should -Be 'realesr-animevideov3'
+        $p.Upscale.Scale | Should -Be 2
+        $p.Encode.ResetSar | Should -Be $false
+    }
+
+    It 'carries the source colour tags for later colour handling, touching nothing today' {
+        $p = New-TestPlan
+        $p.Colour.Space | Should -Be 'smpte170m'
+        $p.Colour.Primaries | Should -Be 'smpte170m'
+        $p.Colour.Transfer | Should -Be 'smpte170m'
+        $p.Colour.Range | Should -Be 'tv'
+        $p.Colour.Action | Should -Be 'none'
+        $p.Source.Width | Should -Be 720
+    }
+
+    It 'uses the built-in default engines when the config has no engine keys' {
+        (New-TestPlan -Override @{ _OmitEngines = $true }).Engine | Should -Be 'openproteus'
+        (New-TestPlan -Override @{ _OmitEngines = $true } -ContentType Animation).Engine | Should -Be 'anime4k'
+    }
+
+    It 'reports an unknown engine in Error (and keeps the name) instead of throwing' {
+        $p = New-TestPlan -Override @{ UpscaleLiveAction = 'bogus' }
+        $p.Engine | Should -Be 'bogus'
+        $p.Error | Should -Match "Unknown upscale engine 'bogus'"
+    }
+
+    It 'reports the realesrgan-plus x4-only mismatch in Error' {
+        $p = New-TestPlan -Override @{ UpscaleLiveAction = 'realesrgan'; UpscaleModel = 'realesrgan-plus'; UpscaleScale = 2 }
+        $p.Error | Should -Match 'only supports UpscaleScale=4'
+    }
+
+    It 'takes the ncnn runner ffprobe from FfprobePath, else beside FfmpegPath, else bare' {
+        (New-TestPlan).Upscale.Ffprobe | Should -Be 'ffprobe'
+        (New-TestPlan -Override @{ FfmpegPath = 'C:\tools\ffmpeg\bin\ffmpeg.exe' }).Upscale.Ffprobe | Should -Be 'C:\tools\ffmpeg\bin\ffprobe.exe'
+        (New-TestPlan -Override @{ FfmpegPath = 'C:\tools\ffmpeg\bin\ffmpeg.exe'; FfprobePath = 'D:\probe\ffprobe.exe' }).Upscale.Ffprobe | Should -Be 'D:\probe\ffprobe.exe'
+    }
+
+    It 'is pure: launches no tool and writes no log' {
+        Mock Invoke-ArmTool { throw 'plan must not run tools' }
+        Mock Write-ArmLog { throw 'plan must not log' }
+        { New-TestPlan -Interlace Telecined -Sample } | Should -Not -Throw
+        Should -Invoke Invoke-ArmTool -Times 0
+        Should -Invoke Write-ArmLog -Times 0
+    }
+}
+
+Describe 'Upscale stage argument builders' {
+    BeforeAll {
+        $script:Source = ConvertTo-VideoSourceInfo -Json ((Get-FixtureLines 'ffprobe-dvd-source.json') -join "`n")
+        function New-TestPlan {
+            param($Interlace = 'Progressive', $Rate = '24000/1001', [hashtable] $Override = @{}, $ContentType = 'LiveAction', [switch] $Sample)
+            Get-UpscalePlan -InputFile 'C:\in\movie.mkv' -SourceInfo $script:Source -InterlaceType $Interlace -FrameRate $Rate `
+                -Config (New-UpscaleGoldenConfig -Overrides $Override -LogDir $script:TestDir) -ContentType $ContentType -SampleOnly:$Sample
+        }
+    }
+
+    It 'builds the preprocess arguments in the historical order (window, filter, CFR, ffv1)' {
+        $a = Get-UpscalePreprocessArgumentList -Plan (New-TestPlan -Interlace Interlaced -Sample) -OutputFile 'T:\p.mkv'
+        $a -join ' ' | Should -Be '-y -i C:\in\movie.mkv -ss 600 -t 120 -vf bwdif=mode=send_frame -fps_mode cfr -r 24000/1001 -c:v ffv1 -an T:\p.mkv'
+    }
+
+    It 'builds the telecined preprocess with no CFR flags' {
+        $a = Get-UpscalePreprocessArgumentList -Plan (New-TestPlan -Interlace Telecined) -OutputFile 'T:\p.mkv'
+        $a -join ' ' | Should -Be '-y -i C:\in\movie.mkv -vf fieldmatch,yadif=deint=interlaced,decimate -c:v ffv1 -an T:\p.mkv'
+    }
+
+    It 'builds the three engine argument lists' {
+        (Get-UpscaleEngineArgumentList -Plan (New-TestPlan) -InputFile 'T:\p.mkv' -OutputFile 'T:\u.mkv') -join ' ' |
+            Should -Match '^-I .*ncnn_upscale\.py --input T:\\p\.mkv --param C:\\models\\openproteus-x2\.param --bin C:\\models\\openproteus-x2\.bin --scale 2 --out-width 1920 --out-height 1080 --ffmpeg ffmpeg --ffprobe ffprobe --output T:\\u\.mkv$'
+        (Get-UpscaleEngineArgumentList -Plan (New-TestPlan -ContentType Animation) -InputFile 'T:\p.mkv' -OutputFile 'T:\u.mkv') -join ' ' |
+            Should -Be '-i T:\p.mkv -p libplacebo --libplacebo-shader anime4k-v4-a+a -w 1920 -h 1080 -o T:\u.mkv'
+        (Get-UpscaleEngineArgumentList -Plan (New-TestPlan -Override @{ UpscaleLiveAction = 'realesrgan' }) -InputFile 'T:\p.mkv' -OutputFile 'T:\u.mkv') -join ' ' |
+            Should -Be '-i T:\p.mkv -p realesrgan --realesrgan-model realesr-animevideov3 -s 2 -o T:\u.mkv'
+    }
+
+    It 'builds the mux arguments, trimming the audio input for a sample and resetting SAR' {
+        (Get-UpscaleEncodeArgumentList -Plan (New-TestPlan -Sample) -UpscaledFile 'T:\u.mkv' -OutputFile 'O:\out.mkv') -join ' ' |
+            Should -Be '-y -i T:\u.mkv -ss 600 -t 120 -i C:\in\movie.mkv -map 0:v:0 -map 1:a -vf setsar=1 -c:v libx265 -crf 16 -preset slow -c:a copy -shortest O:\out.mkv'
+        (Get-UpscaleEncodeArgumentList -Plan (New-TestPlan -Override @{ UpscaleLiveAction = 'realesrgan' }) -UpscaledFile 'T:\u.mkv' -OutputFile 'O:\out.mkv') -join ' ' |
+            Should -Be '-y -i T:\u.mkv -i C:\in\movie.mkv -map 0:v:0 -map 1:a -c:v libx265 -crf 16 -preset slow -c:a copy -shortest O:\out.mkv'
+    }
+}
+
+Describe 'Invoke-Upscale golden arguments (issue #31: plan-built args == pre-refactor args)' {
+    BeforeAll {
+        $script:Golden = Get-Content -Path (Join-Path $script:FixtureDir 'golden-upscale-args.json') -Raw | ConvertFrom-Json -AsHashtable
+        $script:GoldenInput = Join-Path $script:TestDir 'movie.mkv'
+        Set-Content -Path $script:GoldenInput -Value 'fake source bytes'
+        $script:GoldenOut = Join-Path $script:TestDir "golden-out-$(New-Guid)"
+        $null = New-Item -ItemType Directory -Path $script:GoldenOut -Force
+        $script:GoldenPaths = @{ InputFile = $script:GoldenInput; OutputDir = $script:GoldenOut; RepoRoot = (Split-Path -Parent $PSScriptRoot) }
+        $script:GoldenCalls = [System.Collections.Generic.List[string]]::new()
+        $script:GoldenProbes = [System.Collections.Generic.List[string]]::new()
+    }
+
+    It 'the golden file covers every scenario' {
+        $scenarios = @(Get-UpscaleGoldenScenarios)
+        foreach ($s in $scenarios) { $script:Golden.ContainsKey($s.Id) | Should -Be $true -Because $s.Id }
+        $script:Golden.Count | Should -Be $scenarios.Count
+    }
+
+    It 'reproduces the pre-refactor ffmpeg/video2x/ncnn arguments: <Id>' -ForEach $script:GoldenCases {
+        $script:CurrentScenario = $Scenario
+        $script:GoldenCalls.Clear()
+        $script:GoldenProbes.Clear()
+
+        Mock Invoke-ArmTool {
+            param($Name, $Arguments, $Config, $TimeoutSec = 3600)
+            $Arguments = @($Arguments)
+            if ($Name -eq 'ffprobe') {
+                $script:GoldenProbes.Add("$($Arguments[-1])")
+                return [pscustomobject]@{ ExitCode = 0; StdOut = @(New-FfprobeJson -Sar $script:CurrentScenario.Sar); StdErr = @() }
+            }
+            $call = ConvertTo-UpscaleGoldenCall -Name $Name -Arguments $Arguments -TimeoutSec $TimeoutSec -Paths $script:GoldenPaths
+            $script:GoldenCalls.Add("$($call.Name) [$($call.TimeoutSec)] " + ($call.Args -join [string][char]0x1f))
+            if ($Name -eq 'ffmpeg' -and ($Arguments -join ' ') -match 'idet' -and $Arguments[-1] -eq '-') {
+                return [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @(Get-FixtureLines "ffmpeg-idet-$($script:CurrentScenario.Interlace.ToLower()).txt") }
+            }
+            if ($Arguments[-1] -eq '-') {
+                return [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @($script:CurrentScenario.RateStderr | Where-Object { $_ }) }
+            }
+            $out = $Arguments[-1]
+            if ($Name -eq 'ncnn') { $out = $Arguments[[array]::IndexOf($Arguments, '--output') + 1] }
+            if ($Name -eq 'video2x') { $out = $Arguments[[array]::IndexOf($Arguments, '-o') + 1] }
+            Set-Content -LiteralPath $out -Value 'fake bytes'
+            [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @() }
+        }
+        Mock Write-ArmLog {}
+
+        $config = New-UpscaleGoldenConfig -Overrides $Scenario.Config -LogDir $script:TestDir
+        $r = if ($Scenario.Sample) {
+            Invoke-Upscale -InputFile $script:GoldenInput -OutputDir $script:GoldenOut -Config $config -ContentType $Scenario.ContentType -SampleOnly
+        } else {
+            Invoke-Upscale -InputFile $script:GoldenInput -OutputDir $script:GoldenOut -Config $config -ContentType $Scenario.ContentType
+        }
+        $r.Success | Should -Be $true -Because $r.Error
+
+        $expected = $script:Golden[$Id]
+        $r.InterlaceType | Should -Be $expected.InterlaceType
+        $r.Engine | Should -Be $expected.Engine
+        $expectedLines = @(foreach ($c in $expected.Calls) { "$($c.Name) [$($c.TimeoutSec)] " + (@($c.Args) -join [string][char]0x1f) })
+        ($script:GoldenCalls -join "`n") | Should -BeExactly ($expectedLines -join "`n")
+
+        # The source is probed exactly once, and it is the source file (not the intermediate).
+        $script:GoldenProbes.Count | Should -Be 1
+        $script:GoldenProbes[0] | Should -Be $script:GoldenInput
+    }
+}
+
 
 Describe 'Invoke-Upscale engine routing' {
     BeforeEach {
@@ -479,7 +828,7 @@ Describe 'Invoke-Upscale engine routing' {
             NcnnModelDir      = 'C:\models'
             FfmpegPath        = 'ffmpeg'
         }
-        $script:DarStderr = '  Stream #0:0: Video: ffv1, yuv420p, 720x480 [SAR 853:720 DAR 853:480], 29.97 fps'
+        $script:Sar = '853:720'
 
         $script:InputFile = Join-Path $script:TestDir 'movie.mkv'
         Set-Content -Path $script:InputFile -Value 'fake source bytes'
@@ -488,12 +837,10 @@ Describe 'Invoke-Upscale engine routing' {
 
         Mock Invoke-ArmTool {
             param($Name, $Arguments, $Config, $TimeoutSec)
+            if ($Name -eq 'ffprobe') { return [pscustomobject]@{ ExitCode = 0; StdOut = @(New-FfprobeJson -Sar $script:Sar); StdErr = @() } }
             $joined = $Arguments -join ' '
             if ($Name -eq 'ffmpeg' -and $joined -match 'idet') {
                 return [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = Get-FixtureLines 'ffmpeg-idet-progressive.txt' }
-            }
-            if ($Name -eq 'ffmpeg' -and $joined -match '-hide_banner') {
-                return [pscustomobject]@{ ExitCode = 1; StdOut = @(); StdErr = @($script:DarStderr) }
             }
             # frame-rate probe (`-f null -`) writes nothing; don't let the generic branch create a file named '-'
             if ($Arguments[$Arguments.Count - 1] -eq '-') {
@@ -520,7 +867,7 @@ Describe 'Invoke-Upscale engine routing' {
     }
 
     It 'derives a 1440 width for a 4:3 source' {
-        $script:DarStderr = '  Stream #0:0: Video: ffv1, yuv420p, 720x480 [SAR 8:9 DAR 4:3], 29.97 fps'
+        $script:Sar = '8:9'
 
         $r = Invoke-Upscale -InputFile $script:InputFile -OutputDir $script:OutputDir -Config $script:Config
         $r.Success | Should -Be $true
@@ -638,15 +985,13 @@ Describe 'Invoke-Upscale constant-frame-rate preprocess' {
 
         Mock Invoke-ArmTool {
             param($Name, $Arguments, $Config, $TimeoutSec)
+            if ($Name -eq 'ffprobe') { return [pscustomobject]@{ ExitCode = 0; StdOut = @(Get-FixtureLines 'ffprobe-dvd-source.json'); StdErr = @() } }
             $joined = $Arguments -join ' '
             if ($Name -eq 'ffmpeg' -and $joined -match 'idet') {
                 return [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = Get-FixtureLines $script:IdetFixture }
             }
             if ($Arguments[$Arguments.Count - 1] -eq '-') {
                 return [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @($script:ProbeStderr) }
-            }
-            if ($Name -eq 'ffmpeg' -and $joined -match '-hide_banner') {
-                return [pscustomobject]@{ ExitCode = 1; StdOut = @(); StdErr = @('  Stream #0:0: Video: ffv1, yuv420p, 720x480, SAR 853:720 DAR 853:480, 23.98 fps') }
             }
             $outFile = $Arguments[$Arguments.Count - 1]
             if ($Name -eq 'ncnn') { $outFile = $Arguments[[array]::IndexOf($Arguments, '--output') + 1] }

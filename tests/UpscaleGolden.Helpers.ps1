@@ -83,6 +83,9 @@ function ConvertTo-UpscaleGoldenCall {
         foreach ($k in @('InputFile', 'OutputDir', 'RepoRoot')) {
             $s = $s.Replace($Paths[$k], "<$k>")
         }
+        # The runner path is built from $PSScriptRoot, whose spelling depends on how the
+        # test dot-sourced the module (...\src vs ...\tests\..\src); canonicalise it.
+        if ($s -match '[\\/]ncnn_upscale\.py$') { $s = '<RepoRoot>\src\..\tools\ncnn_upscale.py' }
         $s
     }
     [ordered]@{ Name = $Name; Args = @($normalised); TimeoutSec = $TimeoutSec }

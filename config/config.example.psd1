@@ -10,6 +10,7 @@
     MakeMkvConPath    = 'C:\Program Files (x86)\MakeMKV\makemkvcon64.exe'
     FreacCmdPath      = 'C:\Program Files\fre-ac\freaccmd.exe'
     FfmpegPath        = 'ffmpeg'
+    FfprobePath       = 'ffprobe'      # if omitted from config.psd1, defaults to the ffprobe.exe next to FfmpegPath (bare 'ffprobe' when FfmpegPath is bare)
     Video2xPath       = 'C:\Program Files\Video2X\video2x.exe'
     NcnnPath          = 'C:\ProgramData\wrm\venv\Scripts\python.exe'   # venv python that runs tools/ncnn_upscale.py (setup.ps1 creates it)
     NcnnModelDir      = 'C:\ProgramData\wrm\models'                      # holds openproteus-x2.param/.bin (setup.ps1 downloads them)
