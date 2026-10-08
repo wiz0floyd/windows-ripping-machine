@@ -34,6 +34,20 @@ $script:ArmWebLogDefaultLines = 200
 $script:ArmWebLogMaxLines = 1000
 $script:ArmWebActiveRipStates = @('Detected', 'Ripping', 'Moving')
 
+# POSTs must carry this header (value '1'). A cross-origin page can't add a custom
+# header without a CORS preflight, which this server never grants - so this is
+# the CSRF guard for the state-changing routes.
+$script:ArmWebActionHeader = 'X-WRM-Action'
+
+# Upscale job actions: which job states each one is valid in (the single source
+# of truth - /api/jobs exposes the result as each job's Actions list, and both
+# renderers draw buttons from it).
+$script:ArmWebUpscaleActionStates = [ordered]@{
+    approve = @('AwaitingReview')
+    retry   = @('Failed')
+    cancel  = @('Queued', 'AwaitingReview')
+}
+
 # Route table: ordered list of @{ Method; Pattern; Handler }. Pattern is a regex
 # matched against the whole URL path (anchored by Invoke-ArmWebRequest); named
 # groups are passed to the handler as $Request.Params. Add routes with
@@ -172,7 +186,30 @@ function ConvertTo-ArmWebJob {
                 At    = ConvertTo-ArmIsoTimestamp -Value $entry.At
             }
         })
+    $out.Actions = @(Get-ArmWebJobActionList -Kind $out.Kind -State $out.State)
     return $out
+}
+
+<#
+.SYNOPSIS
+    Actions (approve / retry / cancel) valid for a job right now; empty for rips
+    and for upscale jobs the worker is processing.
+#>
+function Get-ArmWebJobActionList {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [AllowNull()]
+        [string] $Kind,
+
+        [AllowNull()]
+        [string] $State
+    )
+
+    if ($Kind -ne 'Upscale') { return @() }
+    return @(foreach ($action in $script:ArmWebUpscaleActionStates.Keys) {
+            if ($State -in $script:ArmWebUpscaleActionStates[$action]) { $action }
+        })
 }
 
 <#
@@ -268,6 +305,29 @@ function Format-ArmWebStateBadge {
 
 <#
 .SYNOPSIS
+    Action buttons for an upscale row (app.js renders the same markup from the
+    job's Actions list and handles the clicks).
+#>
+function Format-ArmWebActionButtons {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [string[]] $Actions
+    )
+
+    $labels = @{ approve = 'Approve'; retry = 'Retry'; cancel = 'Cancel' }
+    return (@(foreach ($action in @($Actions)) {
+                if ($action -and $labels.ContainsKey($action)) {
+                    $a = ConvertTo-ArmHtml $action
+                    "<button type=`"button`" class=`"action action-$a`" data-action=`"$a`" data-testid=`"action-$a`">$(ConvertTo-ArmHtml $labels[$action])</button>"
+                }
+            }) -join ' ')
+}
+
+<#
+.SYNOPSIS
     Render the dashboard HTML (server-side initial state; app.js keeps it fresh).
 #>
 function Format-ArmWebDashboard {
@@ -350,16 +410,19 @@ function Format-ArmWebDashboard {
 </section>
 <section aria-labelledby="h-upscale">
 <h2 id="h-upscale">Upscale queue</h2>
+<p id="action-message" class="action-message" data-testid="action-message" role="status"></p>
 <table data-testid="upscale-queue">
-<thead><tr><th>Title</th><th>State</th><th>Sample / destination / error</th><th>Updated</th></tr></thead>
+<thead><tr><th>Title</th><th>State</th><th>Sample / destination / error</th><th>Updated</th><th>Actions</th></tr></thead>
 <tbody id="upscale-queue-body">
 '@)
     if ($upscales.Count -eq 0) {
-        $null = $sb.Append("<tr class=`"empty`"><td colspan=`"4`">No upscale jobs</td></tr>`n")
+        $null = $sb.Append("<tr class=`"empty`"><td colspan=`"5`">No upscale jobs</td></tr>`n")
     }
     foreach ($job in $upscales) {
-        $detail = if ($job.State -eq 'Failed') { $job.Error } elseif ($job.SamplePath -and $job.State -eq 'AwaitingReview') { $job.SamplePath } else { $job.DestDir }
-        $null = $sb.Append("<tr data-testid=`"job`" data-job-id=`"$(& $h $job.Id)`"><td data-testid=`"job-title`">$(& $h (Get-ArmWebJobDisplayTitle -Job $job))</td><td>$(Format-ArmWebStateBadge -State $job.State)</td><td class=`"path`">$(& $h $detail)</td><td>$(& $h $job.Updated)</td></tr>`n")
+        $showSample = $job.SamplePath -and $job.State -eq 'AwaitingReview'
+        $detail = if ($job.State -eq 'Failed') { $job.Error } elseif ($showSample) { $job.SamplePath } else { $job.DestDir }
+        $copy = if ($showSample) { ' <button type="button" class="copy" data-action="copy" data-testid="copy-sample">Copy path</button>' } else { '' }
+        $null = $sb.Append("<tr data-testid=`"job`" data-job-id=`"$(& $h $job.Id)`"><td data-testid=`"job-title`">$(& $h (Get-ArmWebJobDisplayTitle -Job $job))</td><td>$(Format-ArmWebStateBadge -State $job.State)</td><td class=`"path`"><span class=`"path-text`">$(& $h $detail)</span>$copy</td><td>$(& $h $job.Updated)</td><td class=`"actions`">$(Format-ArmWebActionButtons -Actions $job.Actions)</td></tr>`n")
     }
 
     $null = $sb.Append(@'
@@ -401,6 +464,209 @@ function Get-ArmWebStaticResponse {
     return (New-ArmWebResponse -ContentType $type -Body $body)
 }
 
+<#
+.SYNOPSIS
+    Locate an upscale job's queue file, refusing anything outside UpscaleQueueDir.
+
+.DESCRIPTION
+    The path comes only from the job record (never from the request). Even so, the
+    record's directory must be UpscaleQueueDir, and the file name must carry one of
+    the expected extensions, so a tampered/stale record can't steer a rename or
+    delete anywhere else. The returned Path is rebuilt from the configured queue
+    dir + the file name.
+
+.OUTPUTS
+    [hashtable] @{ Path; Name } on success, or @{ Error } when refused.
+#>
+function Resolve-ArmWebQueueFile {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [pscustomobject] $Job,
+
+        [Parameter(Mandatory = $true)]
+        [string[]] $Extension,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable] $Config
+    )
+
+    if (-not $Config.ContainsKey('UpscaleQueueDir') -or -not $Config.UpscaleQueueDir) {
+        return @{ Error = 'UpscaleQueueDir is not configured' }
+    }
+    $recorded = if ($Job.PSObject.Properties.Name -contains 'QueueFile') { [string]$Job.QueueFile } else { '' }
+    if (-not $recorded) {
+        return @{ Error = 'This job has no queue file on record; re-queue it by hand' }
+    }
+
+    try {
+        $queueDir = [System.IO.Path]::GetFullPath($Config.UpscaleQueueDir).TrimEnd('\', '/')
+        $full = [System.IO.Path]::GetFullPath($recorded)
+    } catch {
+        return @{ Error = "The job's queue file path is invalid" }
+    }
+    $parent = [System.IO.Path]::GetDirectoryName($full)
+    if (-not $parent -or -not [string]::Equals($parent.TrimEnd('\', '/'), $queueDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return @{ Error = "The job's queue file is not inside UpscaleQueueDir; refusing to touch it" }
+    }
+
+    $name = [System.IO.Path]::GetFileName($full)
+    $ext = [System.IO.Path]::GetExtension($name)
+    if ($ext -notin $Extension) {
+        return @{ Error = "The job's queue file '$name' is not a $($Extension -join ' / ') file" }
+    }
+    return @{ Path = (Join-Path $queueDir $name); Name = $name }
+}
+
+<#
+.SYNOPSIS
+    Approve / retry / cancel an upscale job (the web UI's POST actions).
+
+.DESCRIPTION
+    Performs the same queue-file renames a user would do by hand (README "Upscale
+    review workflow"), then records the new job state:
+      approve  AwaitingReview: <name>.awaiting-review -> <name>.json (SampleGenerated
+               stays true, so the worker runs the full upscale)        -> Queued
+      retry    Failed: <name>.failed -> <name>.json with SampleGenerated removed
+               (so the sample/review gate runs again)                  -> Queued
+      cancel   Queued / AwaitingReview: the queue file is deleted      -> Cancelled
+
+    Any other state (notably Sampling / Upscaling, when the worker owns the file)
+    is a 409, as is a queue file that is missing, unparseable (retry), or would
+    overwrite an existing .json. The worker only ever picks up *.json, so the
+    approve/retry renames can't race it. Cancel of a Queued job can: the file is
+    first parked under a non-.json name, the job is re-read, and if the worker
+    has meanwhile started it the file is put back and the cancel refused (409).
+    If the job record can't be written, the file operation is rolled back so the
+    record and the queue directory never disagree.
+
+.OUTPUTS
+    [hashtable] web response (200 with the updated job, or 404 / 409 / 500).
+#>
+function Invoke-ArmWebUpscaleAction {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $JobId,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('approve', 'retry', 'cancel')]
+        [string] $Action,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable] $Config
+    )
+
+    $action = $Action.ToLowerInvariant()
+    $conflict = { param($message) New-ArmWebJsonResponse -Status 409 -InputObject @{ Error = $message } }
+
+    $job = Get-ArmJob -JobId $JobId -Config $Config
+    if (-not $job -or $job.Kind -ne 'Upscale') {
+        return (New-ArmWebJsonResponse -Status 404 -InputObject @{ Error = 'Upscale job not found' })
+    }
+    $state = [string]$job.State
+    $allowed = $script:ArmWebUpscaleActionStates[$action]
+    if ($state -notin $allowed) {
+        return (& $conflict "Cannot $action a job that is $state (only when $($allowed -join ' or '))")
+    }
+
+    $extension = switch ($action) {
+        'approve' { @('.awaiting-review') }
+        'retry' { @('.failed') }
+        'cancel' { if ($state -eq 'Queued') { @('.json') } else { @('.awaiting-review') } }
+    }
+    $resolved = Resolve-ArmWebQueueFile -Job $job -Extension $extension -Config $Config
+    if ($resolved.ContainsKey('Error')) {
+        return (& $conflict $resolved.Error)
+    }
+    $file = $resolved.Path
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+        return (& $conflict "Queue file '$($resolved.Name)' no longer exists")
+    }
+
+    $rollback = $null
+    $properties = $null
+    try {
+        switch ($action) {
+            'approve' {
+                $target = [System.IO.Path]::ChangeExtension($file, '.json')
+                if (Test-Path -LiteralPath $target) {
+                    return (& $conflict "'$([System.IO.Path]::GetFileName($target))' already exists in the queue")
+                }
+                Move-Item -LiteralPath $file -Destination $target -ErrorAction Stop
+                $rollback = @{ From = $target; To = $file }
+                $properties = @{ State = 'Queued'; QueueFile = $target; Error = $null }
+            }
+            'retry' {
+                $target = [System.IO.Path]::ChangeExtension($file, '.json')
+                if (Test-Path -LiteralPath $target) {
+                    return (& $conflict "'$([System.IO.Path]::GetFileName($target))' already exists in the queue")
+                }
+                $item = $null
+                try {
+                    $item = Get-Content -LiteralPath $file -Raw -ErrorAction Stop | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+                } catch {
+                    $item = $null
+                }
+                if ($item -isnot [System.Collections.IDictionary] -or -not $item['Source']) {
+                    return (& $conflict "Queue file '$($resolved.Name)' is not a valid queue entry; fix or delete it by hand")
+                }
+                # Rewrite in place first (the worker ignores .failed), then rename.
+                $original = Get-Content -LiteralPath $file -Raw -ErrorAction Stop
+                $item.Remove('SampleGenerated')
+                $item['JobId'] = $JobId
+                $item | ConvertTo-Json | Set-Content -LiteralPath $file -Encoding utf8 -ErrorAction Stop
+                try {
+                    Move-Item -LiteralPath $file -Destination $target -ErrorAction Stop
+                } catch {
+                    Set-Content -LiteralPath $file -Value $original -NoNewline -Encoding utf8 -ErrorAction SilentlyContinue
+                    throw
+                }
+                $rollback = @{ From = $target; To = $file }
+                $properties = @{ State = 'Queued'; QueueFile = $target; Error = $null; SamplePath = $null }
+            }
+            'cancel' {
+                $parked = [System.IO.Path]::ChangeExtension($file, '.cancelling')
+                if (Test-Path -LiteralPath $parked) {
+                    return (& $conflict "'$([System.IO.Path]::GetFileName($parked))' already exists in the queue")
+                }
+                Move-Item -LiteralPath $file -Destination $parked -ErrorAction Stop
+                $rollback = @{ From = $parked; To = $file }
+                $now = Get-ArmJob -JobId $JobId -Config $Config
+                if ($now -and [string]$now.State -notin $allowed) {
+                    Move-Item -LiteralPath $parked -Destination $file -ErrorAction SilentlyContinue
+                    return (& $conflict "The job became $($now.State) while cancelling; it can no longer be cancelled")
+                }
+                $properties = @{ State = 'Cancelled'; QueueFile = $null }
+            }
+        }
+    } catch {
+        Write-ArmLog -Level WARN -Message "Web UI: $action of job $JobId failed: $_" -Config $Config
+        return (& $conflict "Could not $action the job: the queue file changed underneath (try again)")
+    }
+
+    if (-not (Update-ArmJob -JobId $JobId -Properties $properties -Config $Config)) {
+        try {
+            Move-Item -LiteralPath $rollback.From -Destination $rollback.To -ErrorAction Stop
+        } catch {
+            Write-ArmLog -Level ERROR -Message "Web UI: $action of job $JobId could not record state nor roll back $($rollback.From): $_" -Config $Config
+        }
+        return (New-ArmWebJsonResponse -Status 500 -InputObject @{ Error = 'Could not update the job record; the queue file was left as it was' })
+    }
+
+    if ($action -eq 'cancel') {
+        try {
+            Remove-Item -LiteralPath $rollback.From -Force -ErrorAction Stop
+        } catch {
+            Write-ArmLog -Level WARN -Message "Web UI: cancelled job $JobId but could not delete $($rollback.From): $_" -Config $Config
+        }
+    }
+    Write-ArmLog -Level INFO -Message "Web UI: $action of upscale job $JobId -> $($properties.State)" -Config $Config
+    return (New-ArmWebJsonResponse -InputObject (ConvertTo-ArmWebJob -Job (Get-ArmJob -JobId $JobId -Config $Config)))
+}
+
 # --- Routes ------------------------------------------------------------------
 
 Register-ArmWebRoute -Method GET -Pattern '/' -Handler {
@@ -435,6 +701,11 @@ Register-ArmWebRoute -Method GET -Pattern '/api/jobs/(?<id>[^/]+)' -Handler {
     New-ArmWebJsonResponse -InputObject (ConvertTo-ArmWebJob -Job $job)
 }
 
+Register-ArmWebRoute -Method POST -Pattern '/api/jobs/(?<id>[^/]+)/(?<action>approve|retry|cancel)' -Handler {
+    param($Request)
+    Invoke-ArmWebUpscaleAction -JobId $Request.Params.id -Action $Request.Params.action -Config $Request.Config
+}
+
 Register-ArmWebRoute -Method GET -Pattern '/api/log' -Handler {
     param($Request)
     $lines = $script:ArmWebLogDefaultLines
@@ -455,7 +726,8 @@ Register-ArmWebRoute -Method GET -Pattern '/api/log' -Handler {
 
 .DESCRIPTION
     Matches Path against the route table (anchored regexes). No path match -> 404;
-    path matches but not for this method -> 405 with an Allow header. A handler that
+    path matches but not for this method -> 405 with an Allow header; a matched
+    POST without the 'X-WRM-Action: 1' header -> 403 (CSRF guard). A handler that
     throws -> 500 (logged at ERROR); the exception text is not sent to the client.
 
 .PARAMETER Method
@@ -508,6 +780,12 @@ function Invoke-ArmWebRequest {
         if ($route.Method -ne $method) {
             if (-not $allowed.Contains($route.Method)) { $allowed.Add($route.Method) }
             continue
+        }
+
+        # CSRF guard: every state-changing route needs the custom header, checked
+        # before the handler (and so before any job lookup) runs.
+        if ($method -eq 'POST' -and [string]$Headers[$script:ArmWebActionHeader] -ne '1') {
+            return (New-ArmWebJsonResponse -Status 403 -InputObject @{ Error = "Missing $($script:ArmWebActionHeader): 1 header" })
         }
 
         $params = @{}

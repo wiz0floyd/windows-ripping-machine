@@ -99,7 +99,7 @@ Describe 'GET /api/jobs' {
         $raw = $r.Body | ConvertFrom-Json -DateKind String
         $job = @($raw)[0]
         $job.PSObject.Properties.Name | Should -Be @('Id', 'Kind', 'State', 'Title', 'DiscLabel', 'DiscType', 'Drive',
-            'StagingDir', 'DestDir', 'QueueFile', 'SamplePath', 'Error', 'Created', 'Updated', 'History')
+            'StagingDir', 'DestDir', 'QueueFile', 'SamplePath', 'Error', 'Created', 'Updated', 'History', 'Actions')
         $job.Created | Should -Match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+[+-]\d{2}:\d{2}$'
         @($job.History).State | Should -Be @('Detected', 'Ripping')
         @($job.History)[1].At | Should -Match '^\d{4}-\d{2}-\d{2}T'
@@ -246,6 +246,281 @@ Describe 'GET /api/log' {
             @(((Invoke-ArmWebRequest -Method GET -Path '/api/log' -Config $script:cfg).Body | ConvertFrom-Json).Lines) | Should -Be @('held open')
         } finally {
             $writer.Dispose()
+        }
+    }
+}
+
+Describe 'POST /api/jobs/{id}/approve|retry|cancel (upscale actions)' {
+    BeforeAll {
+        $script:okHeaders = @{ 'X-WRM-Action' = '1' }
+
+        function New-TestActionConfig {
+            $cfg = New-TestWebConfig
+            $cfg.UpscaleQueueDir = Join-Path (Split-Path -Parent $cfg.StateDir) 'queue'
+            $null = New-Item -ItemType Directory -Force -Path $cfg.UpscaleQueueDir
+            return $cfg
+        }
+
+        # An Upscale job plus its queue file (<Name><Extension>) as the worker leaves them.
+        function New-TestUpscaleJob {
+            param(
+                [hashtable] $Config,
+                [string] $State,
+                [string] $Extension,
+                [string] $Name = 'Sample Movie (2020)',
+                [switch] $SampleGenerated,
+                [string] $Content
+            )
+            $queueFile = Join-Path $Config.UpscaleQueueDir "$Name$Extension"
+            $id = New-ArmJob -Kind Upscale -Properties @{ State = $State; Title = $Name; QueueFile = $queueFile } -Config $Config
+            if (-not $PSBoundParameters.ContainsKey('Content')) {
+                $item = [ordered]@{ Source = 'C:\nas\Sample Movie (2020)\title1.mkv'; DestDir = 'C:\nas\Sample Movie (2020)'; JobId = $id }
+                if ($SampleGenerated) { $item.SampleGenerated = $true }
+                $Content = $item | ConvertTo-Json
+            }
+            Set-Content -LiteralPath $queueFile -Value $Content -Encoding utf8
+            return [pscustomobject]@{ Id = $id; QueueFile = $queueFile; Base = Join-Path $Config.UpscaleQueueDir $Name }
+        }
+
+        function Invoke-TestAction {
+            param([hashtable] $Config, [string] $Id, [string] $Action, [hashtable] $Headers = $script:okHeaders)
+            return (Invoke-ArmWebRequest -Method POST -Path "/api/jobs/$Id/$Action" -Headers $Headers -Config $Config)
+        }
+    }
+
+    BeforeEach {
+        $script:cfg = New-TestActionConfig
+    }
+
+    Context 'approve' {
+        It 'renames .awaiting-review to .json, keeps SampleGenerated, and sets Queued' {
+            $j = New-TestUpscaleJob -Config $script:cfg -State AwaitingReview -Extension '.awaiting-review' -SampleGenerated
+
+            $r = Invoke-TestAction -Config $script:cfg -Id $j.Id -Action approve
+
+            $r.Status | Should -Be 200
+            ($r.Body | ConvertFrom-Json).State | Should -Be 'Queued'
+            Test-Path -LiteralPath "$($j.Base).awaiting-review" | Should -BeFalse
+            Test-Path -LiteralPath "$($j.Base).json" | Should -BeTrue
+            (Get-Content -LiteralPath "$($j.Base).json" -Raw | ConvertFrom-Json).SampleGenerated | Should -BeTrue
+            $job = Get-ArmJob -JobId $j.Id -Config $script:cfg
+            $job.State | Should -Be 'Queued'
+            $job.QueueFile | Should -Be "$($j.Base).json"
+        }
+
+        It 'returns 409 for a job that is <_>, leaving the file alone' -ForEach @('Queued', 'Sampling', 'Upscaling', 'Failed', 'Complete', 'Cancelled') {
+            $j = New-TestUpscaleJob -Config $script:cfg -State $_ -Extension '.awaiting-review'
+
+            (Invoke-TestAction -Config $script:cfg -Id $j.Id -Action approve).Status | Should -Be 409
+
+            Test-Path -LiteralPath "$($j.Base).awaiting-review" | Should -BeTrue
+            (Get-ArmJob -JobId $j.Id -Config $script:cfg).State | Should -Be $_
+        }
+
+        It 'returns 409 when the queue file is gone' {
+            $j = New-TestUpscaleJob -Config $script:cfg -State AwaitingReview -Extension '.awaiting-review'
+            Remove-Item -LiteralPath $j.QueueFile
+
+            $r = Invoke-TestAction -Config $script:cfg -Id $j.Id -Action approve
+            $r.Status | Should -Be 409
+            ($r.Body | ConvertFrom-Json).Error | Should -Match 'no longer exists'
+        }
+
+        It 'returns 409 rather than overwrite an existing .json' {
+            $j = New-TestUpscaleJob -Config $script:cfg -State AwaitingReview -Extension '.awaiting-review'
+            Set-Content -LiteralPath "$($j.Base).json" -Value '{"Source":"other"}'
+
+            (Invoke-TestAction -Config $script:cfg -Id $j.Id -Action approve).Status | Should -Be 409
+            Get-Content -LiteralPath "$($j.Base).json" -Raw | Should -Match 'other'
+            Test-Path -LiteralPath $j.QueueFile | Should -BeTrue
+        }
+
+        It 'rolls the rename back when the job record cannot be written' {
+            $j = New-TestUpscaleJob -Config $script:cfg -State AwaitingReview -Extension '.awaiting-review'
+            Mock Update-ArmJob { $false }
+
+            (Invoke-TestAction -Config $script:cfg -Id $j.Id -Action approve).Status | Should -Be 500
+            Test-Path -LiteralPath $j.QueueFile | Should -BeTrue
+            Test-Path -LiteralPath "$($j.Base).json" | Should -BeFalse
+        }
+    }
+
+    Context 'retry' {
+        It 'renames .failed to .json without SampleGenerated and sets Queued' {
+            $j = New-TestUpscaleJob -Config $script:cfg -State Failed -Extension '.failed' -SampleGenerated
+            $null = Update-ArmJob -JobId $j.Id -Properties @{ Error = 'Upscale failed: boom'; SamplePath = 'C:\q\old sample.mkv' } -Config $script:cfg
+
+            $r = Invoke-TestAction -Config $script:cfg -Id $j.Id -Action retry
+
+            $r.Status | Should -Be 200
+            Test-Path -LiteralPath $j.QueueFile | Should -BeFalse
+            $item = Get-Content -LiteralPath "$($j.Base).json" -Raw | ConvertFrom-Json
+            $item.PSObject.Properties.Name | Should -Not -Contain 'SampleGenerated'
+            $item.Source | Should -Be 'C:\nas\Sample Movie (2020)\title1.mkv'
+            $item.JobId | Should -Be $j.Id
+            $job = Get-ArmJob -JobId $j.Id -Config $script:cfg
+            $job.State | Should -Be 'Queued'
+            $job.Error | Should -BeNullOrEmpty
+            $job.SamplePath | Should -BeNullOrEmpty
+        }
+
+        It 'returns 409 for a job that is <_>' -ForEach @('Queued', 'AwaitingReview', 'Sampling', 'Upscaling', 'Complete') {
+            $j = New-TestUpscaleJob -Config $script:cfg -State $_ -Extension '.failed'
+            (Invoke-TestAction -Config $script:cfg -Id $j.Id -Action retry).Status | Should -Be 409
+            Test-Path -LiteralPath $j.QueueFile | Should -BeTrue
+        }
+
+        It 'returns 409 (not 500) for a Failed job whose queue file was unparseable' {
+            $j = New-TestUpscaleJob -Config $script:cfg -State Failed -Extension '.failed' -Content '{ not json'
+
+            $r = Invoke-TestAction -Config $script:cfg -Id $j.Id -Action retry
+            $r.Status | Should -Be 409
+            ($r.Body | ConvertFrom-Json).Error | Should -Match 'not a valid queue entry'
+            Get-Content -LiteralPath $j.QueueFile -Raw | Should -Match 'not json'
+        }
+
+        It 'returns 409 for a Failed job with no queue file on record' {
+            $id = New-ArmJob -Kind Upscale -Properties @{ State = 'Failed' } -Config $script:cfg
+            $r = Invoke-TestAction -Config $script:cfg -Id $id -Action retry
+            $r.Status | Should -Be 409
+            ($r.Body | ConvertFrom-Json).Error | Should -Match 'no queue file'
+        }
+    }
+
+    Context 'cancel' {
+        It 'deletes the queue file of a <State> job and sets Cancelled' -ForEach @(
+            @{ State = 'Queued'; Extension = '.json' }
+            @{ State = 'AwaitingReview'; Extension = '.awaiting-review' }
+        ) {
+            $j = New-TestUpscaleJob -Config $script:cfg -State $State -Extension $Extension
+
+            $r = Invoke-TestAction -Config $script:cfg -Id $j.Id -Action cancel
+
+            $r.Status | Should -Be 200
+            ($r.Body | ConvertFrom-Json).State | Should -Be 'Cancelled'
+            @(Get-ChildItem -LiteralPath $script:cfg.UpscaleQueueDir -Force) | Should -HaveCount 0
+            (Get-ArmJob -JobId $j.Id -Config $script:cfg).State | Should -Be 'Cancelled'
+        }
+
+        It 'returns 409 for a job that is <_>' -ForEach @('Sampling', 'Upscaling', 'Failed', 'Complete', 'Cancelled') {
+            $j = New-TestUpscaleJob -Config $script:cfg -State $_ -Extension '.json'
+            (Invoke-TestAction -Config $script:cfg -Id $j.Id -Action cancel).Status | Should -Be 409
+            Test-Path -LiteralPath $j.QueueFile | Should -BeTrue
+        }
+
+        It 'puts the file back and returns 409 when the worker starts the job mid-cancel' {
+            $j = New-TestUpscaleJob -Config $script:cfg -State Queued -Extension '.json'
+            $script:getCalls = 0
+            Mock Get-ArmJob {
+                $script:getCalls++
+                $record = Read-ArmJobRecord -Path (Join-Path $Config.StateDir 'jobs' "$JobId.json") -Config $Config
+                if ($script:getCalls -ge 2) { $record.State = 'Sampling' }
+                $record
+            }
+
+            $r = Invoke-TestAction -Config $script:cfg -Id $j.Id -Action cancel
+            $r.Status | Should -Be 409
+            ($r.Body | ConvertFrom-Json).Error | Should -Match 'Sampling'
+            Test-Path -LiteralPath $j.QueueFile | Should -BeTrue
+            Test-Path -LiteralPath "$($j.Base).cancelling" | Should -BeFalse
+        }
+    }
+
+    Context 'guards' {
+        It 'returns 403 without the X-WRM-Action header, before looking at the job' {
+            $j = New-TestUpscaleJob -Config $script:cfg -State AwaitingReview -Extension '.awaiting-review'
+            Mock Get-ArmJob { throw 'must not be called' }
+
+            foreach ($headers in @(@{}, @{ 'X-WRM-Action' = '0' })) {
+                $r = Invoke-TestAction -Config $script:cfg -Id $j.Id -Action approve -Headers $headers
+                $r.Status | Should -Be 403
+            }
+            Should -Invoke Get-ArmJob -Times 0 -Exactly
+            Test-Path -LiteralPath $j.QueueFile | Should -BeTrue
+        }
+
+        It 'accepts the header name case-insensitively' {
+            $j = New-TestUpscaleJob -Config $script:cfg -State AwaitingReview -Extension '.awaiting-review'
+            (Invoke-TestAction -Config $script:cfg -Id $j.Id -Action approve -Headers @{ 'x-wrm-action' = '1' }).Status | Should -Be 200
+        }
+
+        It 'returns 404 for an unknown, malformed, or non-upscale job id' {
+            $ripId = New-ArmJob -Kind Rip -Properties @{ State = 'Failed' } -Config $script:cfg
+            foreach ($id in @('20260101-000000-abcdef', '..%5C..%5Cconfig', 'nope', $ripId)) {
+                (Invoke-TestAction -Config $script:cfg -Id $id -Action retry).Status | Should -Be 404
+            }
+        }
+
+        It 'returns 405 for GET on an action route and 404 for an unknown action' {
+            $j = New-TestUpscaleJob -Config $script:cfg -State AwaitingReview -Extension '.awaiting-review'
+            (Invoke-ArmWebRequest -Method GET -Path "/api/jobs/$($j.Id)/approve" -Config $script:cfg).Status | Should -Be 405
+            (Invoke-TestAction -Config $script:cfg -Id $j.Id -Action delete).Status | Should -Be 404
+        }
+
+        It 'refuses a record whose QueueFile points outside UpscaleQueueDir' {
+            $outside = Join-Path (Split-Path -Parent $script:cfg.StateDir) 'elsewhere'
+            $null = New-Item -ItemType Directory -Force -Path $outside
+            $victim = Join-Path $outside 'victim.awaiting-review'
+            Set-Content -LiteralPath $victim -Value 'keep me'
+            # Same file name also exists in the queue dir: must not be used as a fallback either.
+            Set-Content -LiteralPath (Join-Path $script:cfg.UpscaleQueueDir 'victim.awaiting-review') -Value 'queue copy'
+            $id = New-ArmJob -Kind Upscale -Properties @{ State = 'AwaitingReview'; QueueFile = $victim } -Config $script:cfg
+
+            foreach ($action in @('approve', 'cancel')) {
+                $r = Invoke-TestAction -Config $script:cfg -Id $id -Action $action
+                $r.Status | Should -Be 409
+                ($r.Body | ConvertFrom-Json).Error | Should -Match 'not inside UpscaleQueueDir'
+            }
+            Get-Content -LiteralPath $victim -Raw | Should -Match 'keep me'
+            Test-Path -LiteralPath (Join-Path $script:cfg.UpscaleQueueDir 'victim.awaiting-review') | Should -BeTrue
+        }
+
+        It 'refuses a traversal-style QueueFile that normalizes outside the queue dir' {
+            $victim = Join-Path (Split-Path -Parent $script:cfg.StateDir) 'victim.failed'
+            Set-Content -LiteralPath $victim -Value '{"Source":"x"}'
+            $sneaky = Join-Path $script:cfg.UpscaleQueueDir '..\victim.failed'
+            $id = New-ArmJob -Kind Upscale -Properties @{ State = 'Failed'; QueueFile = $sneaky } -Config $script:cfg
+
+            (Invoke-TestAction -Config $script:cfg -Id $id -Action retry).Status | Should -Be 409
+            Test-Path -LiteralPath $victim | Should -BeTrue
+        }
+
+        It 'refuses a queue file with an unexpected extension for the action' {
+            $j = New-TestUpscaleJob -Config $script:cfg -State AwaitingReview -Extension '.json'
+            (Invoke-TestAction -Config $script:cfg -Id $j.Id -Action approve).Status | Should -Be 409
+            Test-Path -LiteralPath $j.QueueFile | Should -BeTrue
+        }
+    }
+
+    Context 'rendering' {
+        It 'exposes the valid actions per state in /api/jobs' {
+            $expected = @{ Queued = 'cancel'; AwaitingReview = 'approve,cancel'; Failed = 'retry'; Sampling = ''; Upscaling = ''; Complete = ''; Cancelled = '' }
+            $ids = @{}
+            foreach ($state in $expected.Keys) {
+                $ids[$state] = New-ArmJob -Kind Upscale -Properties @{ State = $state } -Config $script:cfg
+            }
+            $rip = New-ArmJob -Kind Rip -Properties @{ State = 'Failed' } -Config $script:cfg
+
+            $jobs = (Invoke-ArmWebRequest -Method GET -Path '/api/jobs' -Config $script:cfg).Body | ConvertFrom-Json
+            foreach ($state in $expected.Keys) {
+                $job = $jobs | Where-Object Id -eq $ids[$state]
+                (@($job.Actions) -join ',') | Should -Be $expected[$state] -Because $state
+            }
+            @(($jobs | Where-Object Id -eq $rip).Actions) | Should -HaveCount 0
+        }
+
+        It 'server-renders action buttons only for valid states, plus a sample copy button' {
+            $review = New-ArmJob -Kind Upscale -Properties @{ State = 'AwaitingReview'; SamplePath = 'C:\q\s.mkv' } -Config $script:cfg
+            $busy = New-ArmJob -Kind Upscale -Properties @{ State = 'Upscaling' } -Config $script:cfg
+
+            $html = (Invoke-ArmWebRequest -Method GET -Path '/' -Config $script:cfg).Body
+            $reviewRow = [regex]::Match($html, "<tr[^>]*data-job-id=`"$review`".*?</tr>").Value
+            $busyRow = [regex]::Match($html, "<tr[^>]*data-job-id=`"$busy`".*?</tr>").Value
+            $reviewRow | Should -Match 'data-action="approve"'
+            $reviewRow | Should -Match 'data-action="cancel"'
+            $reviewRow | Should -Match 'data-testid="copy-sample"'
+            $reviewRow | Should -Not -Match 'data-action="retry"'
+            $busyRow | Should -Not -Match '<button'
         }
     }
 }

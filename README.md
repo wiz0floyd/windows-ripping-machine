@@ -79,8 +79,11 @@ Open `http://localhost:8765/` on the ripping machine (or over RDP). The page sho
   Upscaling, Complete, Failed), with the sample path while it awaits review.
 - **Today's log** — the last 200 lines of `wrm-<date>.log`.
 
-It refreshes itself every 5 seconds. The page is read-only for now; approve/retry/cancel and
-title editing still work through the files described above and below.
+It refreshes itself every 5 seconds. Upscale rows have buttons: **Approve** (job awaiting review,
+same as renaming `.awaiting-review` to `.json`), **Retry** (failed job, `.failed` back to `.json`, sample
+gate runs again) and **Cancel** (queued or awaiting review; deletes the queue file after a confirm).
+Jobs the worker is processing (Sampling/Upscaling) have no buttons. The manual renames keep working.
+Title editing still works through the files described above and below.
 
 It listens on `localhost` only (not reachable from other devices), started at logon by the
 `wrm-webui` Scheduled Task. Change the port with `WebUiPort`, or set `WebUiEnabled = $false`

@@ -6,6 +6,7 @@
 (function () {
   const POLL_MS = 5000;
   const ACTIVE_RIP_STATES = ['Detected', 'Ripping', 'Moving'];
+  const ACTION_LABELS = { approve: 'Approve', retry: 'Retry', cancel: 'Cancel' };
 
   function el(tag, attrs, children) {
     const node = document.createElement(tag);
@@ -74,18 +75,80 @@
   function renderUpscales(upscales) {
     const body = document.getElementById('upscale-queue-body');
     const rows = upscales.map((job) => {
+      const showSample = job.State === 'AwaitingReview' && job.SamplePath;
       let detail = job.DestDir;
       if (job.State === 'Failed') detail = job.Error;
-      else if (job.State === 'AwaitingReview' && job.SamplePath) detail = job.SamplePath;
+      else if (showSample) detail = job.SamplePath;
+      const detailCell = el('td', { class: 'path' }, [el('span', { class: 'path-text', text: detail || '' })]);
+      if (showSample) {
+        detailCell.appendChild(document.createTextNode(' '));
+        detailCell.appendChild(el('button', { type: 'button', class: 'copy', 'data-action': 'copy', 'data-testid': 'copy-sample', text: 'Copy path' }));
+      }
+      // Buttons come from the server's Actions list (the one place the
+      // state -> allowed-action rule lives).
+      const buttons = (job.Actions || []).filter((a) => ACTION_LABELS[a]).map((a) =>
+        el('button', { type: 'button', class: 'action action-' + a, 'data-action': a, 'data-testid': 'action-' + a, text: ACTION_LABELS[a] }));
       return el('tr', { 'data-testid': 'job', 'data-job-id': job.Id }, [
         el('td', { 'data-testid': 'job-title', text: displayTitle(job) }),
         el('td', {}, [badge(job.State)]),
-        el('td', { class: 'path', text: detail || '' }),
+        detailCell,
         el('td', { text: formatTime(job.Updated) }),
+        el('td', { class: 'actions' }, buttons),
       ]);
     });
-    body.replaceChildren(...(rows.length ? rows : [emptyRow(4, 'No upscale jobs')]));
+    body.replaceChildren(...(rows.length ? rows : [emptyRow(5, 'No upscale jobs')]));
   }
+
+  function showActionMessage(text, isError) {
+    const node = document.getElementById('action-message');
+    if (!node) return;
+    node.textContent = text;
+    node.classList.toggle('error', Boolean(isError));
+  }
+
+  async function runAction(jobId, action, button) {
+    button.disabled = true;
+    try {
+      // The X-WRM-Action header is the server's CSRF guard for POSTs.
+      const response = await fetch('/api/jobs/' + encodeURIComponent(jobId) + '/' + action, {
+        method: 'POST',
+        headers: { 'X-WRM-Action': '1' },
+        cache: 'no-store',
+      });
+      let body = {};
+      try { body = await response.json(); } catch (_) { body = {}; }
+      if (response.ok) showActionMessage(ACTION_LABELS[action] + ': done', false);
+      else showActionMessage('Could not ' + action + ': ' + (body.Error || 'HTTP ' + response.status), true);
+    } catch (err) {
+      showActionMessage('Could not ' + action + ': ' + err.message, true);
+    }
+    await refresh();
+  }
+
+  function copyPath(row, button) {
+    const text = (row.querySelector('.path-text') || {}).textContent || '';
+    const done = (ok) => { button.textContent = ok ? 'Copied' : 'Copy failed - select the path'; };
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) { done(false); return; }
+      navigator.clipboard.writeText(text).then(() => done(true), () => done(false));
+    } catch (_) {
+      done(false);
+    }
+  }
+
+  // One delegated listener (no inline handlers: the CSP forbids them) that
+  // survives every re-render of the table.
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-action]');
+    if (!button) return;
+    const row = button.closest('[data-job-id]');
+    if (!row) return;
+    const action = button.getAttribute('data-action');
+    if (action === 'copy') { copyPath(row, button); return; }
+    if (!ACTION_LABELS[action]) return;
+    if (action === 'cancel' && !window.confirm('Cancel this upscale job? Its queue file will be deleted.')) return;
+    runAction(row.getAttribute('data-job-id'), action, button);
+  });
 
   async function getJson(url) {
     const response = await fetch(url, { cache: 'no-store' });
