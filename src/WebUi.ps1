@@ -1231,7 +1231,7 @@ function Start-ArmWebUi {
         [switch] $Once
     )
 
-    $config = Get-ArmConfig -Path $ConfigPath
+    $config = Get-ArmConfig -Path $ConfigPath -Simulate:$Simulate
     if ($Simulate) {
         $config.Simulate = $true
     }

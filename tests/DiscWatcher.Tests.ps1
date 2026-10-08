@@ -491,6 +491,18 @@ Describe 'Invoke-DiscDispatch' {
     }
 }
 
+Describe 'Get-ArmRipMutexName' {
+    It 'uses the live name outside Simulate' {
+        Get-ArmRipMutexName -Config @{ Simulate = $false } | Should -Be 'Global\wrm-rip'
+        Get-ArmRipMutexName | Should -Be 'Global\wrm-rip'
+    }
+    It 'uses a distinct per-process name under Simulate' {
+        $n = Get-ArmRipMutexName -Config @{ Simulate = $true }
+        $n | Should -Be "Global\wrm-rip-sim-$PID"
+        $n | Should -Not -Be (Get-ArmRipMutexName -Config @{ Simulate = $false })
+    }
+}
+
 Describe 'Invoke-DiscMutexDispatch (single-flight)' {
     BeforeEach {
         $script:TestRoot = Join-Path $TestDrive (New-Guid)
@@ -511,14 +523,14 @@ Describe 'Invoke-DiscMutexDispatch (single-flight)' {
         # PowerShell instance instead.
         $holderPs = [powershell]::Create()
         $holderPs.AddScript({
-            param($ReadyPath, $ReleasePath)
-            $m = New-Object System.Threading.Mutex($false, 'Global\wrm-rip')
+            param($ReadyPath, $ReleasePath, $MutexName)
+            $m = New-Object System.Threading.Mutex($false, $MutexName)
             $m.WaitOne() | Out-Null
             New-Item -ItemType File -Path $ReadyPath -Force | Out-Null
             while (-not (Test-Path $ReleasePath)) { Start-Sleep -Milliseconds 50 }
             $m.ReleaseMutex()
             $m.Dispose()
-        }).AddArgument("$script:TestRoot\ready.flag").AddArgument("$script:TestRoot\release.flag") | Out-Null
+        }).AddArgument("$script:TestRoot\ready.flag").AddArgument("$script:TestRoot\release.flag").AddArgument((Get-ArmRipMutexName -Config $script:Config)) | Out-Null
         $asyncResult = $holderPs.BeginInvoke()
 
         try {
@@ -547,7 +559,7 @@ Describe 'Invoke-DiscMutexDispatch (single-flight)' {
         $result | Should -BeTrue
 
         # Mutex must be released afterward: a second immediate acquire should succeed.
-        $m = New-Object System.Threading.Mutex($false, 'Global\wrm-rip')
+        $m = New-Object System.Threading.Mutex($false, (Get-ArmRipMutexName -Config $script:Config))
         try {
             $m.WaitOne(0) | Should -BeTrue
         } finally {

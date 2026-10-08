@@ -69,6 +69,62 @@ Describe 'Get-ArmConfig' {
         { Get-ArmConfig -Path $simConfig } | Should -Not -Throw
     }
 
+    Context 'Simulate sandbox (no explicit -Path)' {
+        BeforeAll {
+            $script:SandboxKeys = @('NasVideoPath', 'NasMusicPath', 'StagingDir', 'UpscaleQueueDir', 'LogDir', 'StateDir')
+        }
+
+        It 'rebases every directory/NAS key under the temp sandbox' {
+            $config = Get-ArmConfig -Simulate
+            $root = Join-Path ([IO.Path]::GetTempPath()) "wrm-sim-$PID"
+            $config.SimulateSandboxRoot | Should -Be $root
+            Test-Path $root | Should -BeTrue
+            $seen = @{}
+            foreach ($k in $script:SandboxKeys) {
+                $config[$k] | Should -BeLike "$root*"
+                $config[$k] | Should -Not -BeLike 'C:\rips*'
+                $config[$k] | Should -Not -BeLike '\\*'
+                $seen[$config[$k]] = $true
+            }
+            $seen.Count | Should -Be $script:SandboxKeys.Count
+            $config.Simulate | Should -BeTrue
+        }
+
+        It 'sandboxes a real default-path config.psd1 under Simulate' {
+            # Temp copy of the repo layout so the default-path lookup finds a "real" config.
+            $repo = Join-Path $TestDrive (New-Guid)
+            $null = New-Item -ItemType Directory -Path (Join-Path $repo 'src'), (Join-Path $repo 'config') -Force
+            Copy-Item (Join-Path $PSScriptRoot '..' 'src' 'Common.ps1') (Join-Path $repo 'src')
+            $example = Join-Path $PSScriptRoot '..' 'config' 'config.example.psd1'
+            Copy-Item $example (Join-Path $repo 'config' 'config.example.psd1')
+            Copy-Item $example (Join-Path $repo 'config' 'config.psd1')
+            $common = Join-Path $repo 'src' 'Common.ps1'
+            $out = & pwsh -NoProfile -Command ". '$common'; `$c = Get-ArmConfig -Simulate; `$c.SimulateSandboxRoot; `$c.StagingDir; `$c.NasVideoPath" 2>&1
+            $lines = @($out | Where-Object { $_ -and $_ -notmatch 'WARN|INFO' })
+            $lines.Count | Should -Be 3
+            $lines[0] | Should -BeLike '*wrm-sim-*'
+            $lines[1] | Should -BeLike "$($lines[0])*"
+            $lines[2] | Should -BeLike "$($lines[0])*"
+        }
+
+        It 'leaves paths untouched for an explicit -Path under Simulate' {
+            $examplePath = Join-Path $PSScriptRoot '..' 'config' 'config.example.psd1'
+            $cfgPath = Join-Path $script:ConfigDir 'explicit-sim.psd1'
+            Copy-Item $examplePath -Destination $cfgPath
+            $config = Get-ArmConfig -Path $cfgPath -Simulate
+            $config.ContainsKey('SimulateSandboxRoot') | Should -BeFalse
+            foreach ($k in $script:SandboxKeys) { $config[$k] | Should -Not -BeLike '*wrm-sim-*' }
+            $config.NasVideoPath | Should -BeLike '*nas*import*movies'
+            $config.LogDir | Should -BeLike '*rips*logs'
+        }
+
+        It 'leaves paths untouched when not Simulate' {
+            $config = Get-ArmConfig
+            $config.ContainsKey('SimulateSandboxRoot') | Should -BeFalse
+            $config.NasVideoPath | Should -Not -BeLike '*wrm-sim-*'
+        }
+    }
+
     It 'expands relative paths to absolute' {
         $examplePath = Join-Path $PSScriptRoot '..' 'config' 'config.example.psd1'
         $testConfig = Import-PowerShellDataFile -Path $examplePath

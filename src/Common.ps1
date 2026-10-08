@@ -43,6 +43,11 @@ function Resolve-ArmFfprobePath {
 .PARAMETER Path
     Path to config file. Defaults to config/config.psd1 in the script root.
 
+.PARAMETER Simulate
+    Treat the config as Simulate. If the config fell back to config.example.psd1
+    (no explicit -Path, no config.psd1), all directory/NAS paths are rebased onto
+    a temp sandbox (`$env:TEMP\wrm-sim-<PID>`). Explicit/real configs are untouched.
+
 .OUTPUTS
     [hashtable] Configuration with expanded paths.
 
@@ -54,8 +59,11 @@ function Get-ArmConfig {
     [CmdletBinding()]
     [OutputType([hashtable])]
     param(
-        [string] $Path
+        [string] $Path,
+        [switch] $Simulate
     )
+
+    $explicitPath = [bool] $Path
 
     if (-not $Path) {
         $scriptRoot = Split-Path -Parent $PSScriptRoot
@@ -101,14 +109,41 @@ function Get-ArmConfig {
     }
 
     # Validate required keys (check with ContainsKey for strict mode)
-    $simulate = $config.ContainsKey('Simulate') -and $config.Simulate
-    if (-not $simulate) {
+    $configSimulate = $config.ContainsKey('Simulate') -and $config.Simulate
+    if (-not $configSimulate) {
         if (-not $config.ContainsKey('NasVideoPath') -or -not $config.NasVideoPath) {
             throw "NasVideoPath is required in config (or set Simulate=`$true)"
         }
         if (-not $config.ContainsKey('NasMusicPath') -or -not $config.NasMusicPath) {
             throw "NasMusicPath is required in config (or set Simulate=`$true)"
         }
+    }
+
+    # Simulate without an explicit -Path (example fallback OR the default
+    # config.psd1): production C:\rips\... and \\nas\... paths must never be
+    # touched, so rebase every directory / NAS destination onto a per-process
+    # temp sandbox. Only an explicit -Path is the user opting in.
+    if (($Simulate -or $configSimulate) -and -not $explicitPath) {
+        $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) "wrm-sim-$PID"
+        $sandboxDirs = [ordered]@{
+            NasVideoPath    = 'nas-video'
+            NasMusicPath    = 'nas-music'
+            StagingDir      = 'staging'
+            UpscaleQueueDir = 'upscale-queue'
+            LogDir          = 'logs'
+            StateDir        = 'state'
+        }
+        try {
+            $null = New-Item -ItemType Directory -Path $sandbox -Force
+        } catch {
+            Write-Warning "Could not create simulate sandbox $sandbox : $_"
+        }
+        foreach ($key in $sandboxDirs.Keys) {
+            $config[$key] = Join-Path $sandbox $sandboxDirs[$key]
+        }
+        $config['Simulate'] = $true
+        $config['SimulateSandboxRoot'] = $sandbox
+        Write-ArmLog -Level INFO -Message "Simulate with example config: using sandbox $sandbox instead of production paths" -Config $config
     }
 
     # Expand relative paths to absolute. Bare tool names (no path separator, e.g.
