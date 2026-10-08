@@ -851,16 +851,20 @@ function Invoke-Upscale {
 
         $plan = Get-UpscalePlan -InputFile $InputFile -SourceInfo $sourceInfo -InterlaceType $interlaceType `
             -FrameRate $frameRate -Config $Config -ContentType $ContentType -SampleOnly:$SampleOnly
-        $engine = $plan.Engine
         foreach ($warning in $plan.Warnings) {
             Write-ArmLog -Level WARN -Message $warning -Config $Config
         }
+        # The result's Engine stays $null for a failure before the engine is chosen (a
+        # preprocess failure), exactly as before the plan refactor; a plan that cannot
+        # run reports the engine it tried to choose.
         if ($plan.Error) {
+            $engine = $plan.Engine
             throw $plan.Error
         }
         if ($plan.Upscale.Contains('RequiredFiles') -and -not (Get-UpscaleSetting -Config $Config -Name 'Simulate' -Default $false)) {
             foreach ($required in $plan.Upscale.RequiredFiles) {
                 if (-not (Test-Path -LiteralPath $required)) {
+                    $engine = $plan.Engine
                     throw "OpenProteus engine needs '$required' - run setup.ps1 to install the ncnn runner and model"
                 }
             }
@@ -879,6 +883,7 @@ function Invoke-Upscale {
 
         # --- (c) AI upscale with the engine configured for this content type ---
         $upscaledFile = Join-Path $tempDir 'upscaled.mkv'
+        $engine = $plan.Engine
         $upscaleResult = Invoke-ArmTool -Name $plan.EngineTool -Config $Config -TimeoutSec $longTimeoutSec `
             -Arguments (Get-UpscaleEngineArgumentList -Plan $plan -InputFile $preprocessedFile -OutputFile $upscaledFile)
         if ($upscaleResult.ExitCode -ne 0) {
