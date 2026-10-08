@@ -89,7 +89,7 @@ Describe 'Get-InterlaceType' {
         }
 
         $result = Get-InterlaceType -InputFile 'C:\fake\unknown.mkv' -Config $script:Config
-        $result | Should -Be 'Interlaced'
+        $result | Should -Be 'Unknown'
     }
 
     Context 'ffmpeg 8.x double idet summary (first all-zero, then real)' {
@@ -133,7 +133,7 @@ Describe 'Get-InterlaceType' {
                 [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @($zero + $zero) }
             }
             Mock Write-ArmLog {}
-            Get-InterlaceType -InputFile 'C:\fake\zeros.mkv' -Config $script:Config | Should -Be 'Interlaced'
+            Get-InterlaceType -InputFile 'C:\fake\zeros.mkv' -Config $script:Config | Should -Be 'Unknown'
             Should -Invoke Write-ArmLog -Times 1 -ParameterFilter { $Level -eq 'WARN' -and $Message -match 'zeros\.mkv' }
         }
     }
@@ -232,11 +232,11 @@ Describe 'Get-InterlaceType decision table (#30)' {
 
     It 'unparseable output: Interlaced, one WARN with a truncated raw output, INFO still logged' {
         Mock Invoke-ArmTool { [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @('x' * 1000) } }
-        Get-InterlaceType -InputFile 'C:\fake\u.mkv' -Config $script:Config | Should -Be 'Interlaced'
+        Get-InterlaceType -InputFile 'C:\fake\u.mkv' -Config $script:Config | Should -Be 'Unknown'
         Should -Invoke Write-ArmLog -Times 1 -ParameterFilter {
             $Level -eq 'WARN' -and $Message -match 'u\.mkv' -and $Message -match 'Raw output: x+\.\.\.$' -and $Message.Length -lt 600
         }
-        Should -Invoke Write-ArmLog -Times 1 -ParameterFilter { $Level -eq 'INFO' -and $Message -match '-> Interlaced' }
+        Should -Invoke Write-ArmLog -Times 1 -ParameterFilter { $Level -eq 'INFO' -and $Message -match '-> Unknown' }
     }
 }
 
@@ -257,8 +257,8 @@ Describe 'Get-InterlaceType probe windows (#30)' {
         Mock Invoke-ArmTool { $script:Calls.Add(($Arguments -join ' ')); [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = New-WindowStderr -Prog 900 -Tff 100 } }
         Get-InterlaceType -InputFile 'C:\fake\a.mkv' -Config $script:Config -SourceDuration 7200.5 | Should -Be 'Progressive'
         $script:Calls.Count | Should -Be 2
-        $script:Calls[0] | Should -Be '-ss 600 -i C:\fake\a.mkv -filter:v idet -frames:v 1000 -an -f null -'
-        $script:Calls[1] | Should -Be '-ss 3600 -i C:\fake\a.mkv -filter:v idet -frames:v 1000 -an -f null -'
+        $script:Calls[0] | Should -Be '-hide_banner -ss 600 -i C:\fake\a.mkv -filter:v idet -frames:v 1000 -an -f null -'
+        $script:Calls[1] | Should -Be '-hide_banner -ss 3600 -i C:\fake\a.mkv -filter:v idet -frames:v 1000 -an -f null -'
     }
 
     It 'sums counts across windows before classifying' {
@@ -284,35 +284,35 @@ Describe 'Get-InterlaceType probe windows (#30)' {
         Mock Invoke-ArmTool { $script:Calls.Add(($Arguments -join ' ')); [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = New-WindowStderr -Prog 900 -Tff 100 } }
         Get-InterlaceType -InputFile 'C:\fake\a.mkv' -Config $script:Config | Should -Be 'Progressive'
         $script:Calls.Count | Should -Be 1
-        $script:Calls[0] | Should -Match '^-ss 600 '
+        $script:Calls[0] | Should -Match '^-hide_banner -ss 600 '
     }
 
     It 'falls back to 0:00 when the windows yield nothing (window past the end of a short file)' {
         Mock Invoke-ArmTool {
             $script:Calls.Add(($Arguments -join ' '))
-            $err = if ($Arguments[1] -eq '0') { New-WindowStderr -Prog 900 -Tff 100 } else { New-WindowStderr -Prog 0 -Tff 0 }
+            $err = if ($Arguments[2] -eq '0') { New-WindowStderr -Prog 900 -Tff 100 } else { New-WindowStderr -Prog 0 -Tff 0 }
             [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = $err }
         }
         Get-InterlaceType -InputFile 'C:\fake\short.mkv' -Config $script:Config -SourceDuration 120 | Should -Be 'Progressive'
         # 600 s is past the end of a 120 s file: skipped; the 50% window (60 s) comes back empty.
         $script:Calls.Count | Should -Be 2
-        $script:Calls[0] | Should -Match '^-ss 60 '
-        $script:Calls[1] | Should -Be '-ss 0 -i C:\fake\short.mkv -filter:v idet -frames:v 1000 -an -f null -'
+        $script:Calls[0] | Should -Match '^-hide_banner -ss 60 '
+        $script:Calls[1] | Should -Be '-hide_banner -ss 0 -i C:\fake\short.mkv -filter:v idet -frames:v 1000 -an -f null -'
     }
 
     It 'falls back to 0:00 when the mid-feature windows print no idet lines at all' {
         Mock Invoke-ArmTool {
             $script:Calls.Add(($Arguments -join ' '))
-            $err = if ($Arguments[1] -eq '0') { New-WindowStderr -Prog 900 -Tff 100 } else { @('Output file is empty, nothing was encoded') }
+            $err = if ($Arguments[2] -eq '0') { New-WindowStderr -Prog 900 -Tff 100 } else { @('Output file is empty, nothing was encoded') }
             [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = $err }
         }
         Get-InterlaceType -InputFile 'C:\fake\a.mkv' -Config $script:Config | Should -Be 'Progressive'
-        $script:Calls[-1] | Should -Match '^-ss 0 '
+        $script:Calls[-1] | Should -Match '^-hide_banner -ss 0 '
     }
 
     It 'does not repeat the 0:00 probe when 0:00 was already tried' {
         Mock Invoke-ArmTool { $script:Calls.Add(($Arguments -join ' ')); [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @('nothing') } }
-        Get-InterlaceType -InputFile 'C:\fake\a.mkv' -Config $script:Config -Seek 0 | Should -Be 'Interlaced'
+        Get-InterlaceType -InputFile 'C:\fake\a.mkv' -Config $script:Config -Seek 0 | Should -Be 'Unknown'
         $script:Calls.Count | Should -Be 1
     }
 }
@@ -571,14 +571,14 @@ Describe 'Get-InterlaceType explicit window (-Seek/-Duration)' {
     It 'puts -ss/-t before -i when a window is given (same window parameters as Get-VideoFrameRate)' {
         Get-InterlaceType -InputFile 'C:\fake\a.mkv' -Config $script:Config -Seek 600 -Duration 120 | Should -Be 'Progressive'
         Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter {
-            ($Arguments -join ' ') -eq '-ss 600 -t 120 -i C:\fake\a.mkv -filter:v idet -frames:v 1000 -an -f null -'
+            ($Arguments -join ' ') -eq '-hide_banner -ss 600 -t 120 -i C:\fake\a.mkv -filter:v idet -frames:v 1000 -an -f null -'
         }
     }
 
     It 'an explicit seek replaces the default windows' {
         $null = Get-InterlaceType -InputFile 'C:\fake\a.mkv' -Config $script:Config -Seek 30 -SourceDuration 7200
         Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter {
-            ($Arguments -join ' ') -eq '-ss 30 -i C:\fake\a.mkv -filter:v idet -frames:v 1000 -an -f null -'
+            ($Arguments -join ' ') -eq '-hide_banner -ss 30 -i C:\fake\a.mkv -filter:v idet -frames:v 1000 -an -f null -'
         }
     }
 }
@@ -753,8 +753,25 @@ Describe 'Get-UpscalePlan' {
         $t.Preprocess.Filter | Should -BeNullOrEmpty
         $t.Preprocess.FrameRate | Should -Be '24000/1001'
         $t.Warnings.Count | Should -Be 1
-        $t.Warnings[0] | Should -Match 'Telecined but already decodes at 24000/1001'
+        $t.Warnings[0] | Should -Match 'decodes at 23.976 in every idet window \(24000/1001\)'
         (New-TestPlan -Interlace Telecined -Rate '24/1' -Override @{ UpscaleLiveAction = 'anime4k' }).InterlaceType | Should -Be 'Progressive'
+    }
+
+    It 'soft-telecine guard needs EVERY idet window at 23.976: a hybrid disc stays Telecined' {
+        $o = @{ UpscaleLiveAction = 'anime4k' }
+        $mk = { param($w) Get-UpscalePlan -InputFile 'C:\rips\movie.mkv' -SourceInfo $script:Source -InterlaceType Telecined -FrameRate '24000/1001' -WindowFrameRate $w -Config (New-UpscaleGoldenConfig -Overrides $o -LogDir $script:TestDir) }
+        $hybrid = & $mk @('24000/1001', '30000/1001')
+        $hybrid.InterlaceType | Should -Be 'Telecined'
+        $hybrid.Preprocess.Filter | Should -Be 'fieldmatch,yadif=deint=interlaced,decimate'
+        $hybrid.Warnings.Count | Should -Be 0
+        (& $mk @('24000/1001', $null)).InterlaceType | Should -Be 'Telecined'
+        (& $mk @('24000/1001', '24000/1001')).InterlaceType | Should -Be 'Progressive'
+    }
+
+    It 'maps the Unknown label to the blanket bwdif chain (pre-#30 behaviour) with CFR' {
+        $p = New-TestPlan -Interlace Unknown -Rate '24000/1001' -Override @{ UpscaleLiveAction = 'anime4k' }
+        $p.Preprocess.Filter | Should -Be 'bwdif=mode=send_frame'
+        $p.Preprocess.FrameRate | Should -Be '24000/1001'
     }
 
     It 'the guard does not touch Interlaced at 23.976 or Telecined at 25 fps' {
