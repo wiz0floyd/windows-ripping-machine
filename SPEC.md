@@ -418,6 +418,19 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #  New optional per-entry fields are added as further optional parameters (same style).
 #    AudioCD→ Invoke-AudioRip → Move-ToNas (NasMusicPath) → eject+notify
 #    Data   → log WARN + notify, no action (no job record).
+#  Invoke-DiscEject -DriveLetter <char> -Config <hashtable>   (returns nothing, never throws)
+#    No-op unless EjectWhenDone; under Simulate logs INFO "Simulate: skipping physical
+#    eject of X:" and touches nothing. Otherwise the eject is VERIFIED (#41): Shell.Application
+#    'Eject' verb (Invoke-ArmShellEject), then Wait-ArmEjected polls Win32_CDROMDrive
+#    MediaLoaded (Get-ArmDriveMediaLoaded) every 500 ms for up to 10 s. Gone -> INFO
+#    "Ejected X: (shell)". Still loaded (the verb silently does nothing from the hidden
+#    wrm-watcher task) -> WARN, then Invoke-ArmIoctlEject (kernel32 P/Invoke compiled by
+#    Initialize-ArmNativeEject: open \\.\X:, FSCTL_LOCK_VOLUME/FSCTL_DISMOUNT_VOLUME best
+#    effort, IOCTL_STORAGE_MEDIA_REMOVAL allow, IOCTL_STORAGE_EJECT_MEDIA; needs no shell or
+#    desktop) and poll again -> INFO "Ejected X: (IOCTL fallback)". Still loaded -> WARN
+#    "Failed to eject X: ...". Every shell/native/CIM call lives in its own wrapper
+#    (Invoke-ArmShellEject, Invoke-ArmIoctlEject, Get-ArmDriveMediaLoaded) so tests mock them
+#    and never touch a real drive.
 #  Every failure path: Send-ArmNotification Level Error; staging kept for forensics.
 #  Job state: Invoke-DiscDispatch creates a Rip job (State=Detected, Drive, DiscType)
 #  for Video/AudioCD and passes -JobId down; dispatch advances it

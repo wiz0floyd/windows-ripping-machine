@@ -645,6 +645,120 @@ Describe 'Resolve-CurrentDisc' {
     }
 }
 
+Describe 'Invoke-DiscEject (verified eject, #41)' {
+    BeforeEach {
+        # Every native/shell touchpoint is mocked: these tests must never eject a real drive.
+        Mock Invoke-ArmShellEject { }
+        Mock Invoke-ArmIoctlEject { $true }
+        Mock Get-ArmDriveMediaLoaded { $false }
+        Mock Start-Sleep { }
+        Mock Write-ArmLog { }
+        $script:Config = @{ EjectWhenDone = $true; Simulate = $false; LogDir = $TestDrive }
+    }
+
+    It 'does nothing when EjectWhenDone is false' {
+        $script:Config.EjectWhenDone = $false
+        Invoke-DiscEject -DriveLetter 'F' -Config $script:Config
+        Should -Invoke Invoke-ArmShellEject -Times 0
+        Should -Invoke Invoke-ArmIoctlEject -Times 0
+        Should -Invoke Get-ArmDriveMediaLoaded -Times 0
+    }
+
+    It 'skips the physical eject under Simulate and says so' {
+        $script:Config.Simulate = $true
+        Invoke-DiscEject -DriveLetter 'F' -Config $script:Config
+        Should -Invoke Invoke-ArmShellEject -Times 0
+        Should -Invoke Invoke-ArmIoctlEject -Times 0
+        Should -Invoke Write-ArmLog -Times 1 -ParameterFilter { $Level -eq 'INFO' -and $Message -like 'Simulate: skipping physical eject*' }
+    }
+
+    It 'logs INFO and skips the fallback when the shell eject empties the drive' {
+        $script:polls = 0
+        Mock Get-ArmDriveMediaLoaded { $script:polls++; $script:polls -lt 3 }
+        Invoke-DiscEject -DriveLetter 'F' -Config $script:Config
+        Should -Invoke Invoke-ArmShellEject -Times 1 -ParameterFilter { $DriveLetter -eq 'F' }
+        Should -Invoke Invoke-ArmIoctlEject -Times 0
+        Should -Invoke Write-ArmLog -Times 1 -ParameterFilter { $Level -eq 'INFO' -and $Message -eq 'Ejected F: (shell)' }
+        Should -Invoke Write-ArmLog -Times 0 -ParameterFilter { $Level -eq 'WARN' }
+    }
+
+    It 'WARNs, then falls back to IOCTL and logs INFO when the shell verb silently does nothing' {
+        $script:ioctlDone = $false
+        Mock Get-ArmDriveMediaLoaded { -not $script:ioctlDone }
+        Mock Invoke-ArmIoctlEject { $script:ioctlDone = $true; $true }
+        Invoke-DiscEject -DriveLetter 'F' -Config $script:Config
+        Should -Invoke Invoke-ArmShellEject -Times 1
+        Should -Invoke Invoke-ArmIoctlEject -Times 1 -ParameterFilter { $DriveLetter -eq 'F' }
+        Should -Invoke Write-ArmLog -Times 1 -ParameterFilter { $Level -eq 'WARN' -and $Message -like 'Media still loaded in F:*IOCTL fallback*' }
+        Should -Invoke Write-ArmLog -Times 1 -ParameterFilter { $Level -eq 'INFO' -and $Message -eq 'Ejected F: (IOCTL fallback)' }
+    }
+
+    It 'WARNs that the eject failed when media survives both methods (and never logs success)' {
+        Mock Get-ArmDriveMediaLoaded { $true }
+        Invoke-DiscEject -DriveLetter 'F' -Config $script:Config
+        Should -Invoke Invoke-ArmIoctlEject -Times 1
+        Should -Invoke Write-ArmLog -Times 1 -ParameterFilter { $Level -eq 'WARN' -and $Message -like 'Failed to eject F:*still loaded*' }
+        Should -Invoke Write-ArmLog -Times 0 -ParameterFilter { $Level -eq 'INFO' }
+    }
+
+    It 'WARNs and does not poll again when the IOCTL itself fails' {
+        Mock Get-ArmDriveMediaLoaded { $true }
+        Mock Invoke-ArmIoctlEject { $false }
+        Invoke-DiscEject -DriveLetter 'F' -Config $script:Config
+        Should -Invoke Write-ArmLog -Times 1 -ParameterFilter { $Level -eq 'WARN' -and $Message -like 'Failed to eject F:*' }
+    }
+
+    It 'treats a throwing shell verb as a failed attempt and still tries the fallback' {
+        Mock Invoke-ArmShellEject { throw 'COM unavailable' }
+        $script:ioctlDone = $false
+        Mock Get-ArmDriveMediaLoaded { -not $script:ioctlDone }
+        Mock Invoke-ArmIoctlEject { $script:ioctlDone = $true; $true }
+        { Invoke-DiscEject -DriveLetter 'F' -Config $script:Config } | Should -Not -Throw
+        Should -Invoke Write-ArmLog -Times 1 -ParameterFilter { $Level -eq 'WARN' -and $Message -like 'Shell eject of F: threw*COM unavailable*' }
+        Should -Invoke Write-ArmLog -Times 1 -ParameterFilter { $Level -eq 'INFO' -and $Message -eq 'Ejected F: (IOCTL fallback)' }
+    }
+
+    It 'returns nothing (so dispatch pipelines are not polluted)' {
+        Mock Get-ArmDriveMediaLoaded { $false }
+        $out = Invoke-DiscEject -DriveLetter 'F' -Config $script:Config
+        $out | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Wait-ArmEjected' {
+    BeforeEach {
+        Mock Start-Sleep { }
+    }
+
+    It 'returns $true immediately when no media is loaded' {
+        Mock Get-ArmDriveMediaLoaded { $false }
+        Wait-ArmEjected -DriveLetter 'F' | Should -BeTrue
+        Should -Invoke Start-Sleep -Times 0
+    }
+
+    It 'polls a bounded number of times, then returns $false' {
+        Mock Get-ArmDriveMediaLoaded { $true }
+        Wait-ArmEjected -DriveLetter 'F' -TimeoutSec 2 -PollMs 500 | Should -BeFalse
+        Should -Invoke Get-ArmDriveMediaLoaded -Times 5
+        Should -Invoke Start-Sleep -Times 4
+    }
+
+    It 'returns $true as soon as the media leaves' {
+        $script:n = 0
+        Mock Get-ArmDriveMediaLoaded { $script:n++; $script:n -lt 3 }
+        Wait-ArmEjected -DriveLetter 'F' | Should -BeTrue
+        Should -Invoke Start-Sleep -Times 2
+    }
+}
+
+Describe 'Initialize-ArmNativeEject (P/Invoke helper)' {
+    It 'compiles the helper and rejects a nonexistent device path without touching any drive' {
+        Initialize-ArmNativeEject | Should -BeTrue
+        # A device name that cannot exist: CreateFile fails, no drive is opened.
+        [Wrm.NativeEject]::Eject('\\.\wrm-no-such-device-for-tests') | Should -Not -Be 0
+    }
+}
+
 Describe 'New-UpscaleQueueEntry' {
     It 'writes ContentType into the queue JSON (default LiveAction) and the job record' {
         $dir = Join-Path $TestDrive (New-Guid)

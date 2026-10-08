@@ -113,7 +113,196 @@ function Resolve-CurrentDisc {
 
 <#
 .SYNOPSIS
-    Eject the disc in the given drive via the Shell.Application COM object.
+    True when the optical drive reports media loaded (Win32_CDROMDrive.MediaLoaded).
+
+.DESCRIPTION
+    Thin wrapper so tests can mock the media-state read. A drive that cannot be
+    queried is reported as having no media.
+#>
+function Get-ArmDriveMediaLoaded {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [char] $DriveLetter
+    )
+
+    try {
+        $drive = Get-CimInstance -ClassName Win32_CDROMDrive -Filter "Drive='$([char]::ToUpper($DriveLetter)):'" -ErrorAction Stop
+        return [bool]($drive -and $drive.MediaLoaded)
+    } catch {
+        return $false
+    }
+}
+
+<#
+.SYNOPSIS
+    Ask the Explorer shell to eject the drive (Shell.Application 'Eject' verb).
+
+.DESCRIPTION
+    Wrapper so tests never touch a real drive. The verb returns without
+    throwing even when it does nothing (observed from the hidden wrm-watcher
+    task, #41), so callers must verify with Wait-ArmEjected.
+#>
+function Invoke-ArmShellEject {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [char] $DriveLetter
+    )
+
+    $shell = New-Object -ComObject Shell.Application
+    $shell.NameSpace(17).ParseName("$DriveLetter`:").InvokeVerb('Eject')
+}
+
+<#
+.SYNOPSIS
+    Compile (once per process) the kernel32 P/Invoke helper used by the IOCTL eject.
+
+.DESCRIPTION
+    Wrm.NativeEject.Eject(devicePath) opens the device (e.g. \\.\F:) and issues
+    FSCTL_LOCK_VOLUME / FSCTL_DISMOUNT_VOLUME (best effort),
+    IOCTL_STORAGE_MEDIA_REMOVAL (allow) and IOCTL_STORAGE_EJECT_MEDIA. Returns 0
+    on success, else the Win32 error code. No shell or desktop session needed.
+#>
+function Initialize-ArmNativeEject {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param()
+
+    if ('Wrm.NativeEject' -as [type]) {
+        return $true
+    }
+
+    $source = @'
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+namespace Wrm {
+    public static class NativeEject {
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern SafeFileHandle CreateFile(string fileName, uint access, uint share,
+            IntPtr security, uint disposition, uint flags, IntPtr template);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool DeviceIoControl(SafeFileHandle device, uint code,
+            byte[] inBuffer, uint inSize, IntPtr outBuffer, uint outSize, out uint returned, IntPtr overlapped);
+
+        private const uint GENERIC_READ = 0x80000000;
+        private const uint FILE_SHARE_READ_WRITE = 3;
+        private const uint OPEN_EXISTING = 3;
+        private const uint FSCTL_LOCK_VOLUME = 0x00090018;
+        private const uint FSCTL_DISMOUNT_VOLUME = 0x00090020;
+        private const uint IOCTL_STORAGE_MEDIA_REMOVAL = 0x002D4804;
+        private const uint IOCTL_STORAGE_EJECT_MEDIA = 0x002D4808;
+
+        public static int Eject(string devicePath) {
+            using (SafeFileHandle h = CreateFile(devicePath, GENERIC_READ, FILE_SHARE_READ_WRITE,
+                       IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero)) {
+                if (h.IsInvalid) {
+                    int err = Marshal.GetLastWin32Error();
+                    return err == 0 ? 1 : err;
+                }
+                uint ret;
+                DeviceIoControl(h, FSCTL_LOCK_VOLUME, null, 0, IntPtr.Zero, 0, out ret, IntPtr.Zero);
+                DeviceIoControl(h, FSCTL_DISMOUNT_VOLUME, null, 0, IntPtr.Zero, 0, out ret, IntPtr.Zero);
+                DeviceIoControl(h, IOCTL_STORAGE_MEDIA_REMOVAL, new byte[] { 0 }, 1, IntPtr.Zero, 0, out ret, IntPtr.Zero);
+                if (!DeviceIoControl(h, IOCTL_STORAGE_EJECT_MEDIA, null, 0, IntPtr.Zero, 0, out ret, IntPtr.Zero)) {
+                    int err = Marshal.GetLastWin32Error();
+                    return err == 0 ? 1 : err;
+                }
+                return 0;
+            }
+        }
+    }
+}
+'@
+    try {
+        Add-Type -TypeDefinition $source -ErrorAction Stop
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+<#
+.SYNOPSIS
+    Eject a drive with IOCTL_STORAGE_EJECT_MEDIA (shell-independent fallback).
+
+.OUTPUTS
+    [bool] $true when the ioctl was accepted (verify with Wait-ArmEjected).
+#>
+function Invoke-ArmIoctlEject {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [char] $DriveLetter,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable] $Config
+    )
+
+    if (-not (Initialize-ArmNativeEject)) {
+        Write-ArmLog -Level WARN -Message 'IOCTL eject unavailable: could not compile the native helper.' -Config $Config
+        return $false
+    }
+    try {
+        $err = [Wrm.NativeEject]::Eject("\\.\$([char]::ToUpper($DriveLetter)):")
+    } catch {
+        Write-ArmLog -Level WARN -Message "IOCTL eject of $DriveLetter`: threw: $_" -Config $Config
+        return $false
+    }
+    if ($err -ne 0) {
+        Write-ArmLog -Level WARN -Message "IOCTL eject of $DriveLetter`: failed (Win32 error $err)." -Config $Config
+        return $false
+    }
+    return $true
+}
+
+<#
+.SYNOPSIS
+    Poll until the drive reports no media, or the timeout elapses.
+
+.OUTPUTS
+    [bool] $true once media is gone, $false if it is still loaded after TimeoutSec.
+#>
+function Wait-ArmEjected {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [char] $DriveLetter,
+
+        [int] $TimeoutSec = 10,
+
+        [int] $PollMs = 500
+    )
+
+    $attempts = [Math]::Max(1, [int][Math]::Ceiling(($TimeoutSec * 1000) / [Math]::Max(1, $PollMs)))
+    for ($i = 0; $i -le $attempts; $i++) {
+        if (-not (Get-ArmDriveMediaLoaded -DriveLetter $DriveLetter)) {
+            return $true
+        }
+        if ($i -lt $attempts) {
+            Start-Sleep -Milliseconds $PollMs
+        }
+    }
+    return $false
+}
+
+<#
+.SYNOPSIS
+    Eject the disc in the given drive and verify that the media actually left.
+
+.DESCRIPTION
+    Gated on EjectWhenDone; under Simulate only logs that the physical eject is
+    skipped. Otherwise: shell 'Eject' verb, then poll Win32_CDROMDrive for up to
+    10 s. If media is still loaded (the verb silently does nothing from the
+    hidden scheduled task, #41) falls back to IOCTL_STORAGE_EJECT_MEDIA and polls
+    again. Logs INFO on success (naming the method used) and WARN on failure.
+    Never throws; returns nothing.
 
 .PARAMETER DriveLetter
     Drive letter to eject.
@@ -141,8 +330,23 @@ function Invoke-DiscEject {
     }
 
     try {
-        $shell = New-Object -ComObject Shell.Application
-        $shell.NameSpace(17).ParseName("$DriveLetter`:").InvokeVerb('Eject')
+        try {
+            Invoke-ArmShellEject -DriveLetter $DriveLetter
+        } catch {
+            Write-ArmLog -Level WARN -Message "Shell eject of $DriveLetter`: threw: $_" -Config $Config
+        }
+        if (Wait-ArmEjected -DriveLetter $DriveLetter) {
+            Write-ArmLog -Level INFO -Message "Ejected $DriveLetter`: (shell)" -Config $Config
+            return
+        }
+
+        Write-ArmLog -Level WARN -Message "Media still loaded in $DriveLetter`: after the shell eject; trying IOCTL fallback." -Config $Config
+        if ((Invoke-ArmIoctlEject -DriveLetter $DriveLetter -Config $Config) -and (Wait-ArmEjected -DriveLetter $DriveLetter)) {
+            Write-ArmLog -Level INFO -Message "Ejected $DriveLetter`: (IOCTL fallback)" -Config $Config
+            return
+        }
+
+        Write-ArmLog -Level WARN -Message "Failed to eject $DriveLetter`: media is still loaded after the shell and IOCTL attempts." -Config $Config
     } catch {
         Write-ArmLog -Level WARN -Message "Failed to eject drive $DriveLetter`: $_" -Config $Config
     }
