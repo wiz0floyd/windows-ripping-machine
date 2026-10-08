@@ -1,0 +1,25 @@
+{
+  "page": 1,
+  "results": [
+    {
+      "id": 862,
+      "title": "Toy Story",
+      "original_title": "Toy Story",
+      "release_date": "1995-10-30",
+      "popularity": 90.1,
+      "vote_average": 8.0,
+      "genre_ids": [16, 35, 10751]
+    },
+    {
+      "id": 100002,
+      "title": "Toy Story That Time Forgot",
+      "original_title": "Toy Story That Time Forgot",
+      "release_date": "2014-12-02",
+      "popularity": 3.4,
+      "vote_average": 6.9,
+      "genre_ids": [16, 35, 10751]
+    }
+  ],
+  "total_pages": 1,
+  "total_results": 2
+}

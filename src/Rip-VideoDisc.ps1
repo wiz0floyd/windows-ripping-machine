@@ -242,16 +242,19 @@ function Write-MakeMkvProgress {
     Write a hand-editable metadata.json into a rip's staging output dir.
 
 .DESCRIPTION
-    Lets the user correct/fill in Title and Year while the rip is still
-    running; re-read later by Resolve-TitleOverride before the destination
-    folder name is finalized. Never throws - logs a WARN on failure.
+    Lets the user correct/fill in Title and Year (and override ContentType:
+    'Animation' or 'LiveAction') while the rip is still running; re-read later
+    by Resolve-TitleOverride before the destination folder name is finalized.
+    ContentTypeNote records an LLM/TMDb disagreement for sample review. Never
+    throws - logs a WARN on failure.
 
     Skips the write if metadata.json already exists in OutputDir, so a
     retried rip of the same disc (staging dir reused) never clobbers an
     edit the user made during a prior attempt.
 
     -Force overwrites an existing file (used by the web UI's manual edit). The
-    write is atomic (temp file in the same dir, then rename) so a concurrent
+    write merges: ContentType/ContentTypeNote the caller did not pass keep their
+    value from the existing file. The write is atomic (temp file in the same dir, then rename) so a concurrent
     Resolve-TitleOverride never reads a half-written file. Still never throws;
     callers that must know whether it worked read the file back.
 #>
@@ -267,6 +270,12 @@ function Set-ArmMetadataFile {
         [AllowNull()]
         [string] $Year,
 
+        [AllowNull()]
+        [string] $ContentType,
+
+        [AllowNull()]
+        [string] $ContentTypeNote,
+
         [Parameter(Mandatory = $true)]
         [hashtable] $Config,
 
@@ -276,13 +285,36 @@ function Set-ArmMetadataFile {
     $tmp = $null
     try {
         $path = Join-Path $OutputDir 'metadata.json'
-        if ((Test-Path -LiteralPath $path) -and -not $Force) {
+        $exists = Test-Path -LiteralPath $path
+        if ($exists -and -not $Force) {
             return
         }
-        $json = [pscustomobject]@{
+
+        # Merge, don't replace: a field the caller did not pass keeps its value in an
+        # existing file (so a web UI Title edit via -Force never wipes ContentType /
+        # ContentTypeNote). Not passed and nothing on disk -> the key is omitted.
+        $existing = $null
+        if ($exists) {
+            try {
+                $existing = Get-Content -LiteralPath $path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            } catch {
+                $existing = $null
+            }
+        }
+        $out = [ordered]@{
             Title = if ($Title) { $Title } else { '' }
             Year  = if ($Year) { "$Year" } else { '' }
-        } | ConvertTo-Json
+        }
+        foreach ($field in @('ContentType', 'ContentTypeNote')) {
+            if ($PSBoundParameters.ContainsKey($field)) {
+                $value = Get-Variable -Name $field -ValueOnly
+                $out[$field] = if ($value) { $value } else { '' }
+            } elseif ($existing -is [pscustomobject]) {
+                $prop = $existing.PSObject.Properties[$field]
+                if ($prop -and $null -ne $prop.Value) { $out[$field] = [string]$prop.Value }
+            }
+        }
+        $json = $out | ConvertTo-Json
         $tmp = "$path.$([guid]::NewGuid().ToString('N')).tmp"
         [System.IO.File]::WriteAllText($tmp, $json, [System.Text.UTF8Encoding]::new($false))
         [System.IO.File]::Move($tmp, $path, $true)
@@ -383,7 +415,11 @@ function Invoke-VideoRip {
         }
 
         $resolved = Resolve-Title -DiscLabel $discLabel -Config $Config
-        Set-ArmMetadataFile -OutputDir $outputDir -Title $resolved.Title -Year $resolved.Year -Config $Config
+        $ctProp = $resolved.PSObject.Properties['ContentType']
+        $ctNoteProp = $resolved.PSObject.Properties['ContentTypeNote']
+        Set-ArmMetadataFile -OutputDir $outputDir -Title $resolved.Title -Year $resolved.Year `
+            -ContentType $(if ($ctProp) { $ctProp.Value } else { 'LiveAction' }) `
+            -ContentTypeNote $(if ($ctNoteProp) { $ctNoteProp.Value } else { '' }) -Config $Config
 
         # The only point where the staging dir is known while the rip is still
         # running - the web UI needs it to show/edit metadata.json mid-rip.

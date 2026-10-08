@@ -207,6 +207,26 @@ Describe 'Invoke-VideoRip' {
         $metadata = Get-Content $metadataPath -Raw | ConvertFrom-Json
         $metadata.Title | Should -Be ''
         $metadata.Year | Should -Be ''
+        $metadata.ContentType | Should -Be 'LiveAction'
+        $metadata.ContentTypeNote | Should -Be ''
+    }
+
+    It 'writes the resolved ContentType (Animation) and ContentTypeNote into metadata.json' {
+        Mock Resolve-Title {
+            [pscustomobject]@{
+                FolderName = 'Toy Story (1995)'; Matched = $true; Title = 'Toy Story'; Year = 1995
+                ContentType = 'Animation'; ContentTypeNote = 'TMDb genres say Animation but the LLM says not animated; using TMDb''s Animation'
+            }
+        }
+        Mock Invoke-ArmTool (New-VideoRipMock -MkvFileNames @('title_t00.mkv'))
+
+        $result = Invoke-VideoRip -DriveLetter 'D' -Config $script:Config
+
+        $metadata = Get-Content (Join-Path $result.OutputDir 'metadata.json') -Raw | ConvertFrom-Json
+        $metadata.Title | Should -Be 'Toy Story'
+        $metadata.ContentType | Should -Be 'Animation'
+        $metadata.ContentTypeNote | Should -BeLike 'TMDb genres say Animation*'
+        $result.Resolved.ContentType | Should -Be 'Animation'
     }
 
     It 'with -JobId, marks the job Ripping with StagingDir/DiscLabel before the long rip runs' {

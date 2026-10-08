@@ -98,3 +98,32 @@ Describe 'Resolve-Title - live LLM validation (manual, not run in CI)' {
         $result.Title | Should -Be $ExpectedTitle
     }
 }
+
+BeforeDiscovery {
+    # ContentType detection (issue #25). Expected = $null means "mixed content: record
+    # what TMDb genres + the LLM say, assert nothing" (Roger Rabbit, Sesame Street).
+    $script:ContentTypeFixtures = @(
+        @{ DiscLabel = 'TOY_STORY'; Expected = 'Animation' }
+        @{ DiscLabel = 'SNOOPY_COME_HOME'; Expected = 'Animation' }
+        @{ DiscLabel = 'CAST_AWAY'; Expected = 'LiveAction' }
+        @{ DiscLabel = 'WHO_FRAMED_ROGER_RABBIT'; Expected = $null }
+        @{ DiscLabel = 'SESAME_STREET'; Expected = $null }
+    )
+}
+
+Describe 'Resolve-Title - live ContentType detection (manual, not run in CI)' {
+    It 'reports ContentType for "<DiscLabel>" (TMDb genre_ids + LLM animated cross-check)' -ForEach $script:ContentTypeFixtures {
+        if ($script:SkipReason) {
+            Set-ItResult -Skipped -Because $script:SkipReason
+            return
+        }
+
+        $result = Resolve-Title -DiscLabel $DiscLabel -Config $script:Config
+
+        Write-Host "[$DiscLabel] Matched=$($result.Matched) Title='$($result.Title)' ContentType=$($result.ContentType) Note='$($result.ContentTypeNote)'"
+        $result.ContentType | Should -BeIn @('Animation', 'LiveAction')
+        if ($Expected) {
+            $result.ContentType | Should -Be $Expected
+        }
+    }
+}
