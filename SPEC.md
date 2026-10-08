@@ -255,8 +255,15 @@ Send-ArmNotification -Title <string> -Message <string> -Level <Info|Error>
 Get-InterlaceType -InputFile <string> -Config <hashtable>
 #  -> 'Telecined'|'Interlaced'|'Progressive'
 #  ffmpeg -filter:v idet -frames:v 2000 -an -f null - ; parse "Multi frame detection"
-#  TFF+BFF vs Progressive counts: >80% progressive → Progressive; repeated-field
-#  pattern (idet repeat counts) → Telecined; else Interlaced.
+#  and "Repeated Fields". ffmpeg 8.x prints the idet summary TWICE (a throw-away
+#  probe graph's all-zero summary, then the real one; older builds print once), so
+#  the LAST match of each line is used (issue #30). Decision table, first match wins:
+#    Progressive share of Multi-frame total >= 0.5  → Progressive
+#    else (Top+Bottom)/(Neither+Top+Bottom) of Repeated Fields > 0.15 → Telecined
+#    else → Interlaced
+#  Missing/unparseable Multi-frame line, or counts totalling zero → Interlaced plus
+#  a WARN log naming the file. The 0.5 cut sits mid-gap of 18 surveyed DVD rips:
+#  film/progressive video read 80.9-100% progressive, interlaced/hard-telecined 0-1.5%.
 
 Get-VideoFrameRate -InputFile <string> -Config <hashtable> [-Seek 600] [-Duration 60] -> [string]|$null
 #  Decodes a short window (`ffmpeg -ss -t -i -map 0:v:0 -f null -`; retries from 0),

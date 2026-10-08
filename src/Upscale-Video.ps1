@@ -7,14 +7,20 @@ $ErrorActionPreference = 'Stop'
 
 .DESCRIPTION
     Runs `ffmpeg -filter:v idet -frames:v 2000 -an -f null -` via Invoke-ArmTool and
-    parses the two summary lines idet writes to stderr:
+    parses the two summary lines idet writes to stderr. ffmpeg 8.x prints the whole
+    summary twice (an all-zero one from a throw-away probe graph, then the real one);
+    the LAST occurrence of each line is used:
 
         Repeated Fields: Neither: <n> Top: <n> Bottom: <n>
         Multi frame detection: TFF: <n> BFF: <n> Progressive: <n> Undetermined: <n>
 
     Classification (in order, first match wins):
-      1. Progressive  - Multi frame detection Progressive count is >80% of the
+      1. Progressive  - Multi frame detection Progressive count is >=50% of the
                          Multi frame detection total (TFF+BFF+Progressive+Undetermined).
+                         Measured on 18 real DVD rips: film and progressive video read
+                         80.9-100%; interlaced and hard-telecined sources read 0-1.5%.
+                         Any threshold in roughly 5-75% separates them; 0.5 is the
+                         midpoint.
       2. Telecined    - Repeated Fields (Top+Bottom) is >15% of the Repeated Fields
                          total (Neither+Top+Bottom). This is the 3:2 pulldown cadence
                          signature; both telecined and interlaced sources can show high
@@ -23,7 +29,8 @@ $ErrorActionPreference = 'Stop'
                          discriminator.
       3. Interlaced   - Anything else (significant TFF/BFF, no repeated-field cadence).
 
-    If stderr does not contain a parseable "Multi frame detection" line, defaults to
+    If stderr has no parseable "Multi frame detection" line, or its counts total zero,
+    logs a WARN naming the file and defaults to
     'Interlaced' (the safer preprocessing choice - bwdif is a no-op-ish pass on
     progressive content, whereas skipping deinterlacing on genuinely interlaced
     content produces visible combing after upscale).
@@ -62,31 +69,38 @@ function Get-InterlaceType {
 
     $stderrText = ($result.StdErr -join "`n")
 
-    $multiMatch = [regex]::Match(
+    # ffmpeg 8.x prints the idet summary TWICE: first an all-zero one from a
+    # throw-away probe filtergraph, then the real one. Older builds print it once.
+    # Always take the LAST summary (issue #30).
+    $multiMatches = [regex]::Matches(
         $stderrText,
         'Multi frame detection:\s*TFF:\s*(\d+)\s*BFF:\s*(\d+)\s*Progressive:\s*(\d+)\s*Undetermined:\s*(\d+)'
     )
-    $repeatMatch = [regex]::Match(
+    $repeatMatches = [regex]::Matches(
         $stderrText,
         'Repeated Fields:\s*Neither:\s*(\d+)\s*Top:\s*(\d+)\s*Bottom:\s*(\d+)'
     )
 
-    if (-not $multiMatch.Success) {
-        Write-ArmLog -Level WARN -Message "Get-InterlaceType: could not parse idet output for $InputFile; defaulting to Interlaced" -Config $Config
+    $multiTotal = 0
+    $progressive = 0
+    if ($multiMatches.Count -gt 0) {
+        $multiMatch = $multiMatches[$multiMatches.Count - 1]
+        $progressive = [int]$multiMatch.Groups[3].Value
+        $multiTotal = [int]$multiMatch.Groups[1].Value + [int]$multiMatch.Groups[2].Value +
+            $progressive + [int]$multiMatch.Groups[4].Value
+    }
+
+    if ($multiTotal -le 0) {
+        Write-ArmLog -Level WARN -Message "Get-InterlaceType: could not parse idet output (missing or all-zero counts) for $InputFile; defaulting to Interlaced" -Config $Config
         return 'Interlaced'
     }
 
-    $tff = [int]$multiMatch.Groups[1].Value
-    $bff = [int]$multiMatch.Groups[2].Value
-    $progressive = [int]$multiMatch.Groups[3].Value
-    $undetermined = [int]$multiMatch.Groups[4].Value
-    $multiTotal = $tff + $bff + $progressive + $undetermined
-
-    if ($multiTotal -gt 0 -and ($progressive / $multiTotal) -gt 0.80) {
+    if (($progressive / $multiTotal) -ge 0.5) {
         return 'Progressive'
     }
 
-    if ($repeatMatch.Success) {
+    if ($repeatMatches.Count -gt 0) {
+        $repeatMatch = $repeatMatches[$repeatMatches.Count - 1]
         $neither = [int]$repeatMatch.Groups[1].Value
         $top = [int]$repeatMatch.Groups[2].Value
         $bottom = [int]$repeatMatch.Groups[3].Value

@@ -1,0 +1,16 @@
+ffmpeg version 8.1.2-full_build-www.gyan.dev Copyright (c) 2000-2026 the FFmpeg developers
+  built with gcc 15.2.0 (Rev8, Built by MSYS2 project)
+Input #0, matroska,webm, from 'sample.mkv':
+  Duration: 00:52:12.45, start: 0.000000, bitrate: 6500 kb/s
+  Stream #0:0: Video: mpeg2video (Main), yuv420p(tv, top first), 720x480 [SAR 8:9 DAR 4:3], 29.97 fps, 29.97 tbr, 1k tbn (default)
+Stream mapping:
+  Stream #0:0 -> #0:0 (mpeg2video (native) -> wrapped_avframe (native))
+Press [q] to stop, [?] for help
+[Parsed_idet_0 @ 000001a2b3c4d5e0] Repeated Fields: Neither:     0 Top:     0 Bottom:     0
+[Parsed_idet_0 @ 000001a2b3c4d5e0] Single frame detection: TFF:     0 BFF:     0 Progressive:     0 Undetermined:     0
+[Parsed_idet_0 @ 000001a2b3c4d5e0] Multi frame detection: TFF:     0 BFF:     0 Progressive:     0 Undetermined:     0
+[Parsed_idet_0 @ 000001a2b3c4d6f0] Repeated Fields: Neither:  2000 Top:     1 Bottom:     0
+[Parsed_idet_0 @ 000001a2b3c4d6f0] Single frame detection: TFF:  1713 BFF:    11 Progressive:    41 Undetermined:   236
+[Parsed_idet_0 @ 000001a2b3c4d6f0] Multi frame detection: TFF:  1944 BFF:     0 Progressive:     0 Undetermined:    57
+frame= 2001 fps=399 q=-0.0 Lsize=N/A time=00:01:23.45 bitrate=N/A speed=13.3x
+video:0KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown

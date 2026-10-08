@@ -75,6 +75,90 @@ Describe 'Get-InterlaceType' {
         $result | Should -Be 'Interlaced'
     }
 
+    Context 'ffmpeg 8.x double idet summary (first all-zero, then real)' {
+        It 'classifies a progressive source from the LAST summary' {
+            Mock Invoke-ArmTool {
+                [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = Get-FixtureLines 'ffmpeg-idet-double-progressive.txt' }
+            }
+            Get-InterlaceType -InputFile 'C:\fake\p.mkv' -Config $script:Config | Should -Be 'Progressive'
+        }
+
+        It 'classifies an interlaced (TFF-dominant, ~0% progressive) source as Interlaced' {
+            Mock Invoke-ArmTool {
+                [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = Get-FixtureLines 'ffmpeg-idet-double-interlaced.txt' }
+            }
+            Get-InterlaceType -InputFile 'C:\fake\i.mkv' -Config $script:Config | Should -Be 'Interlaced'
+        }
+
+        It 'classifies a hard-telecined source (high repeated fields) as Telecined' {
+            Mock Invoke-ArmTool {
+                [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = Get-FixtureLines 'ffmpeg-idet-double-telecined.txt' }
+            }
+            Get-InterlaceType -InputFile 'C:\fake\t.mkv' -Config $script:Config | Should -Be 'Telecined'
+        }
+
+        It 'does not log a WARN when the last summary is valid' {
+            Mock Invoke-ArmTool {
+                [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = Get-FixtureLines 'ffmpeg-idet-double-progressive.txt' }
+            }
+            Mock Write-ArmLog {}
+            Get-InterlaceType -InputFile 'C:\fake\p.mkv' -Config $script:Config | Out-Null
+            Should -Invoke Write-ArmLog -Times 0 -ParameterFilter { $Level -eq 'WARN' }
+        }
+
+        It 'returns Interlaced and logs a WARN naming the file when both summaries are all zero' {
+            Mock Invoke-ArmTool {
+                $zero = @(
+                    '[Parsed_idet_0 @ 0000] Repeated Fields: Neither:     0 Top:     0 Bottom:     0'
+                    '[Parsed_idet_0 @ 0000] Single frame detection: TFF:     0 BFF:     0 Progressive:     0 Undetermined:     0'
+                    '[Parsed_idet_0 @ 0000] Multi frame detection: TFF:     0 BFF:     0 Progressive:     0 Undetermined:     0'
+                )
+                [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @($zero + $zero) }
+            }
+            Mock Write-ArmLog {}
+            Get-InterlaceType -InputFile 'C:\fake\zeros.mkv' -Config $script:Config | Should -Be 'Interlaced'
+            Should -Invoke Write-ArmLog -Times 1 -ParameterFilter { $Level -eq 'WARN' -and $Message -match 'zeros\.mkv' }
+        }
+    }
+
+    Context 'older single-summary build' {
+        It 'still classifies a single-summary progressive output' {
+            Mock Invoke-ArmTool {
+                [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = Get-FixtureLines 'ffmpeg-idet-progressive.txt' }
+            }
+            Get-InterlaceType -InputFile 'C:\fake\p.mkv' -Config $script:Config | Should -Be 'Progressive'
+        }
+    }
+
+    Context 'progressive threshold boundary (>= 0.5 of the multi-frame total)' {
+        BeforeAll {
+            function New-IdetStderr([int] $Progressive, [int] $Total) {
+                $other = $Total - $Progressive
+                @(
+                    '[Parsed_idet_0 @ 0000] Repeated Fields: Neither:     0 Top:     0 Bottom:     0'
+                    '[Parsed_idet_0 @ 0000] Multi frame detection: TFF:     0 BFF:     0 Progressive:     0 Undetermined:     0'
+                    '[Parsed_idet_0 @ 0001] Repeated Fields: Neither:  1000 Top:     0 Bottom:     0'
+                    "[Parsed_idet_0 @ 0001] Multi frame detection: TFF: $other BFF: 0 Progressive: $Progressive Undetermined: 0"
+                )
+            }
+        }
+
+        It 'treats exactly 50% progressive as Progressive' {
+            Mock Invoke-ArmTool { [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = New-IdetStderr -Progressive 500 -Total 1000 } }
+            Get-InterlaceType -InputFile 'C:\fake\b.mkv' -Config $script:Config | Should -Be 'Progressive'
+        }
+
+        It 'treats just under 50% progressive (499/1000) as Interlaced' {
+            Mock Invoke-ArmTool { [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = New-IdetStderr -Progressive 499 -Total 1000 } }
+            Get-InterlaceType -InputFile 'C:\fake\b.mkv' -Config $script:Config | Should -Be 'Interlaced'
+        }
+
+        It 'treats the lowest measured real progressive share (80.9%) as Progressive' {
+            Mock Invoke-ArmTool { [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = New-IdetStderr -Progressive 809 -Total 1000 } }
+            Get-InterlaceType -InputFile 'C:\fake\b.mkv' -Config $script:Config | Should -Be 'Progressive'
+        }
+    }
+
     It 'calls Invoke-ArmTool with the ffmpeg idet filter and 2000 frame limit' {
         Mock Invoke-ArmTool {
             [pscustomobject]@{
@@ -89,6 +173,29 @@ Describe 'Get-InterlaceType' {
         Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter {
             $Name -eq 'ffmpeg' -and ($Arguments -join ' ') -match 'idet' -and ($Arguments -join ' ') -match '2000'
         }
+    }
+}
+
+Describe 'stub-ffmpeg idet probe detection' {
+    BeforeEach {
+        $script:Config = @{ Simulate = $true; LogDir = $script:TestDir }
+    }
+
+    It 'treats the Get-InterlaceType probe shape as an idet probe (real stub, end to end)' {
+        Get-InterlaceType -InputFile 'C:\fake\movie.mkv' -Config $script:Config | Should -Be 'Progressive'
+    }
+
+    It 'does not treat a preprocess call whose chain contains idet as a probe' {
+        $out = Join-Path $script:TestDir "preprocess-$(New-Guid).mkv"
+        $r = Invoke-ArmTool -Name ffmpeg -Config $script:Config -Arguments @(
+            '-i', 'C:\fake\movie.mkv',
+            '-vf', 'idet,bwdif=mode=send_frame:deint=interlaced',
+            '-c:v', 'ffv1',
+            $out
+        )
+        $r.ExitCode | Should -Be 0
+        ($r.StdErr -join "`n") | Should -Not -Match 'Multi frame detection'
+        Test-Path -LiteralPath $out | Should -Be $true
     }
 }
 
