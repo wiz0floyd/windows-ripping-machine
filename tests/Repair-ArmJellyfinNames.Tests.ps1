@@ -93,6 +93,25 @@ Describe 'Repair-ArmJellyfinNames' {
         $rows[0].Action | Should -Be 'Skipped'
     }
 
+    It 'skips raw files that a pending queue entry (.json or .awaiting-review) points at, ignoring junk queue files' {
+        $q = Join-Path $TestDrive "queue-$(New-Guid)"
+        $null = New-Item -ItemType Directory -Path $q
+        $script:Config.UpscaleQueueDir = $q
+        $a = New-MovieDir 'Grease (1978)' @{ 'B1_t00.mkv' = 'raw' }
+        $b = New-MovieDir 'Alien (1979)' @{ 'B1_t00.mkv' = 'raw'; 'B1_t00 [AI upscale 1080p].mkv' = 'up' }
+        $c = New-MovieDir 'Heat (1995)' @{ 'B1_t00.mkv' = 'raw' }
+        ([ordered]@{ Source = (Join-Path $a 'b1_t00.mkv') } | ConvertTo-Json) | Set-Content -LiteralPath (Join-Path $q 'Grease (1978).json')
+        ([ordered]@{ Source = (Join-Path $b 'B1_t00.mkv') } | ConvertTo-Json) | Set-Content -LiteralPath (Join-Path $q 'Alien (1979).awaiting-review')
+        Set-Content -LiteralPath (Join-Path $q 'junk.json') -Value 'not json'
+
+        $rows = @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config)
+
+        Get-Names $a | Should -Be @('B1_t00.mkv')
+        Get-Names $b | Should -Be @('B1_t00 [AI upscale 1080p].mkv', 'B1_t00.mkv')
+        Get-Names $c | Should -Be @('Heat (1995).mkv')
+        @($rows | Where-Object { $_.Action -eq 'Skipped' -and $_.Reason -eq 'queued for upscale (worker renames it on completion)' }).Count | Should -Be 2
+    }
+
     It '-WhatIf makes no changes but reports what it would rename' {
         $a = New-MovieDir 'Grease (1978)' @{ 'B1_t00.mkv' = 'raw'; 'B1_t00 [AI upscale 1080p].mkv' = 'up' }
         $b = New-MovieDir 'Alien (1979)' @{ 'B1_t00.mkv' = 'raw' }

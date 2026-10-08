@@ -76,6 +76,23 @@ function Repair-ArmJellyfinNames {
 
     $rows = [System.Collections.Generic.List[object]]::new()
 
+    # Files that a pending upscale queue entry points at must keep their name: the
+    # worker renames them itself on completion, and a rename here would fail the job.
+    $queued = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $queueDir = if ($Config.ContainsKey('UpscaleQueueDir')) { [string] $Config.UpscaleQueueDir } else { $null }
+    if ($queueDir -and (Test-Path -LiteralPath $queueDir -PathType Container)) {
+        foreach ($qf in @(Get-ChildItem -LiteralPath $queueDir -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Extension -in '.json', '.awaiting-review' })) {
+            try {
+                $q = Get-Content -LiteralPath $qf.FullName -Raw | ConvertFrom-Json
+                if ($q.PSObject.Properties.Name -contains 'Source' -and $q.Source) { $null = $queued.Add([string] $q.Source) }
+            } catch {
+                Write-ArmLog -Level WARN -Message "Ignoring unreadable queue file '$($qf.FullName)': $_" -Config $Config
+            }
+        }
+    }
+    $queuedReason = 'queued for upscale (worker renames it on completion)'
+
     foreach ($dir in @(Get-ChildItem -LiteralPath $Path -Directory | Sort-Object -Property Name)) {
         $folder = $dir.Name
         $top = @(Get-ChildItem -LiteralPath $dir.FullName -File -Filter '*.mkv')
@@ -90,6 +107,10 @@ function Repair-ArmJellyfinNames {
                 continue
             }
             $file = $raws[0]
+            if ($queued.Contains($file.FullName)) {
+                $rows.Add((New-RepairRow $folder $file.Name 'Skipped' $null $queuedReason))
+                continue
+            }
             $target = "$folder.mkv"
             if (Test-Path -LiteralPath (Join-Path $dir.FullName $target)) {
                 $rows.Add((New-RepairRow $folder $file.Name 'Skipped' $target 'target name already exists'))
@@ -122,6 +143,10 @@ function Repair-ArmJellyfinNames {
             continue
         }
         $src = $source[0]
+        if ($queued.Contains($src.FullName)) {
+            $rows.Add((New-RepairRow $folder $src.Name 'Skipped' $null $queuedReason))
+            continue
+        }
 
         $height = $null
         try {
