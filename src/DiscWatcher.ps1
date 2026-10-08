@@ -42,7 +42,25 @@ $script:SimDiscEnvVar = 'WRM_SIM_DISC'
 # (the DRV: line's "D:" field), so Invoke-VideoRip's disc-index lookup resolves
 # in simulate mode without a real optical drive.
 $script:SimDriveLetter = [char] 'D'
-$script:MutexName = 'Global\wrm-rip'
+
+<#
+.SYNOPSIS
+    Name of the single-flight rip mutex. A sandboxed config (SimulateSandboxRoot
+    set) uses 'Global\wrm-rip-sim' so it never contends with a live watcher;
+    everything else, including an explicit -ConfigPath under Simulate on real
+    paths, keeps 'Global\wrm-rip'.
+#>
+function Get-ArmRipMutexName {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [hashtable] $Config
+    )
+    if ($Config -and $Config.ContainsKey('SimulateSandboxRoot') -and $Config.SimulateSandboxRoot) {
+        return 'Global\wrm-rip-sim'
+    }
+    return 'Global\wrm-rip'
+}
 
 <#
 .SYNOPSIS
@@ -733,7 +751,7 @@ function Invoke-DiscMutexDispatch {
         [hashtable] $Config
     )
 
-    $mutex = New-Object System.Threading.Mutex($false, $script:MutexName)
+    $mutex = New-Object System.Threading.Mutex($false, (Get-ArmRipMutexName -Config $Config))
     $acquired = $false
     try {
         $acquired = $mutex.WaitOne(0)
@@ -877,10 +895,7 @@ function Start-DiscWatcherLoop {
 # Guarded so the file can be dot-sourced by tests (functions only) without
 # starting the watcher loop or touching real hardware/config.
 if ($MyInvocation.InvocationName -ne '.') {
-    $armConfig = Get-ArmConfig -Path $ConfigPath
-    if ($Simulate) {
-        $armConfig.Simulate = $true
-    }
+    $armConfig = Get-ArmConfig -Path $ConfigPath -Simulate:$Simulate
 
     if ($Once) {
         $disc = Resolve-CurrentDisc -Config $armConfig

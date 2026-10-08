@@ -106,13 +106,20 @@ wrm/
 ## Common.ps1 (foundation — everything imports this)
 
 ```powershell
-Get-ArmConfig [-Path <string>] -> [hashtable]
+Get-ArmConfig [-Path <string>] [-Simulate] -> [hashtable]
 #  Loads config/config.psd1; falls back to config.example.psd1 with a WARN log.
 #  Checks presence/truthiness of NasVideoPath/NasMusicPath (throws if missing
 #  or blank) unless Simulate; no type validation is performed on any key.
 #  Expands relative paths. FfprobePath, when absent from config.psd1, is derived
 #  (Resolve-ArmFfprobePath) before the example backfill: '<dir of FfmpegPath>\ffprobe.exe'
 #  if FfmpegPath has a directory part, else the bare 'ffprobe' (resolved via PATH).
+#  Simulate sandbox: when Simulate (switch or config key) AND no explicit -Path was
+#  passed (so the example fallback and the default config.psd1 both qualify), NasVideoPath, NasMusicPath,
+#  StagingDir, UpscaleQueueDir, LogDir and StateDir are rebased onto
+#  <TEMP>\wrm-sim\{nas-video,nas-music,staging,upscale-queue,logs,state}; the root
+#  is created, logged at INFO, and recorded as SimulateSandboxRoot. Only an explicit -Path
+#  is never rebased. -Simulate also sets Simulate=$true and satisfies the Nas*Path required-key check.
+#  Entry points pass -Simulate:$Simulate (they no longer set the key themselves).
 
 Resolve-ArmFfprobePath -Config <hashtable> -> [string]
 #  Pure. $Config.FfprobePath if set, else ffprobe.exe beside a full-path FfmpegPath,
@@ -402,7 +409,9 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #  Param: [-ConfigPath] [-Simulate] [-Once] (-Once: process current disc then exit —
 #  used by tests). Register-WmiEvent Win32_VolumeChangeEvent EventType 2 + 30s poll
 #  fallback (compare Get-DiscType per optical drive). Single-flight lock via named
-#  mutex 'wrm-rip'. Dispatch:
+#  mutex 'Global\wrm-rip' (Get-ArmRipMutexName -Config; a sandboxed config, i.e. one with
+#  SimulateSandboxRoot, uses 'Global\wrm-rip-sim' so smoke runs/tests never contend with
+#  a live watcher; explicit -ConfigPath + Simulate keeps 'Global\wrm-rip'). Dispatch:
 #    Video  → Invoke-VideoRip (captures Resolve-Title result on .Resolved before
 #             the rip runs) → Resolve-TitleOverride (re-reads metadata.json for
 #             a user Title/Year/ContentType edit, else falls back to .Resolved) → rename
