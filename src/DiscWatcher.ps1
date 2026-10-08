@@ -506,6 +506,11 @@ function Invoke-VideoDispatch {
     if (-not $extrasResult.Success) {
         Write-ArmLog -Level WARN -Message "Could not arrange extras subfolder: $($extrasResult.Error)" -Config $Config
     }
+    # Jellyfin groups versions by file-name prefix = folder name (see Rename-ArmMainFeature).
+    $renameResult = Rename-ArmMainFeature -Dir $renamedDir -Config $Config -MainFeature $extrasResult.MainFeature
+    if (-not $renameResult.Success) {
+        Write-ArmLog -Level WARN -Message "Could not rename main feature: $($renameResult.Error)" -Config $Config
+    }
 
     $moveResult = Move-ToNas -SourceDir $renamedDir -DestRoot $Config.NasVideoPath -Config $Config
 
@@ -520,15 +525,23 @@ function Invoke-VideoDispatch {
 
     if ($ripResult.DiscType -eq 'DVD' -and $Config.UpscaleDvds) {
         try {
-            $mainMkv = Get-ChildItem -Path $moveResult.DestDir -Recurse -Filter '*.mkv' -ErrorAction SilentlyContinue |
-                Sort-Object -Property Length -Descending | Select-Object -First 1
+            # Queue the file THIS rip produced (an existing NAS folder may already hold a
+            # bigger upscale). Fall back to the largest top-level .mkv (never extras/).
+            $mainMkv = $null
+            if ($renameResult.Path) {
+                $mainMkv = Get-Item -LiteralPath (Join-Path $moveResult.DestDir (Split-Path -Leaf $renameResult.Path)) -ErrorAction SilentlyContinue
+            }
+            if (-not $mainMkv) {
+                $mainMkv = Get-ChildItem -LiteralPath $moveResult.DestDir -File -Filter '*.mkv' -ErrorAction SilentlyContinue |
+                    Sort-Object -Property Length -Descending | Select-Object -First 1
+            }
             if ($mainMkv) {
                 $ctProp = if ($resolved) { $resolved.PSObject.Properties['ContentType'] } else { $null }
                 $contentType = if ($ctProp -and $ctProp.Value -ieq 'Animation') { 'Animation' } else { 'LiveAction' }
                 New-UpscaleQueueEntry -MkvPath $mainMkv.FullName -DestDir $moveResult.DestDir `
                     -FolderName $actualFolderName -ContentType $contentType -Config $Config
             } else {
-                Write-ArmLog -Level WARN -Message "UpscaleDvds set but no .mkv found under $($moveResult.DestDir)" -Config $Config
+                Write-ArmLog -Level WARN -Message "UpscaleDvds set but no top-level .mkv found in $($moveResult.DestDir)" -Config $Config
             }
         } catch {
             Write-ArmLog -Level WARN -Message "Failed to queue upscale job: $_" -Config $Config

@@ -178,7 +178,7 @@ function ConvertTo-ArmWebJob {
     $names = $Job.PSObject.Properties.Name
     $out = [ordered]@{}
     foreach ($field in @('Id', 'Kind', 'State', 'Title', 'DiscLabel', 'DiscType', 'Drive', 'StagingDir',
-            'DestDir', 'QueueFile', 'SamplePath', 'ContentType', 'Engine', 'InterlaceType', 'Error')) {
+            'DestDir', 'QueueFile', 'SamplePath', 'OutputFile', 'ContentType', 'Engine', 'InterlaceType', 'Error')) {
         $out[$field] = if ($names -contains $field -and $null -ne $Job.$field) { [string]$Job.$field } else { $null }
     }
     $out.Created = if ($names -contains 'Created') { ConvertTo-ArmIsoTimestamp -Value $Job.Created } else { $null }

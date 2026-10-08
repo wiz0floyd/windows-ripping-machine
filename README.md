@@ -90,7 +90,7 @@ ignored with a WARN in the log. Changing `Title` alone does not re-query TMDb: t
 - When a DVD rip completes, a sample (2 min) is auto-generated if `AutoUpscale=false` (default).
 - Review the sample → approve (rename from `<name>.awaiting-review` to `<name>.json` in the queue folder) → full upscale runs at off-peak hours.
 - Or set `AutoUpscale=true` to skip the review gate and upscale everything automatically.
-- Result: `Title (Year) [AI upscale 1080p].mkv` alongside the original.
+- Result: `Title (Year) - 1080p.mkv` next to the original (renamed `Title (Year) - 480p.mkv`, `576p`, or `DVD` if the height is unknown), so Jellyfin shows one movie with two versions and plays the 1080p by default.
 
 ### Web UI
 Open `http://localhost:8765/` on the ripping machine (or over RDP). The page shows:
@@ -163,7 +163,7 @@ When a DVD rip completes and `UpscaleDvds=true`, the Upscale-Worker daemon proce
 4. You review the sample for quality (deinterlace method, upscale artifacts, audio sync)
 5. If approved: rename `.awaiting-review` back to `.json` in the queue folder (`C:\rips\upscale-queue\` by default)
 6. Upscale-Worker picks up the renamed file and runs the full upscale pipeline off-peak
-7. Result lands as `Title (Year) [AI upscale 1080p].mkv` alongside the original rip
+7. Result lands as `Title (Year) - 1080p.mkv` next to the original rip (renamed `Title (Year) - 480p.mkv`, `576p`, or `DVD`)
 
 **Automatic upscale (set `AutoUpscale=true`):**
 - Skips the 2-minute sample and review gate; queued rips are upscaled in full immediately
@@ -214,7 +214,7 @@ The following tests require physical media and cannot be automated. Insert each 
    - Open the sample MKV at the path in the notification — review image quality, deinterlace method, audio sync (2-minute clip from 10:00–12:00)
    - If satisfied: rename `.awaiting-review` back to `.json`
    - Monitor logs; full upscale should complete off-peak (respecting `UpscaleActiveHours`)
-   - Final upscaled MKV lands as `Title (Year) [AI upscale 1080p].mkv` alongside the original
+   - Final upscale lands as `Title (Year) - 1080p.mkv` next to the original, which is renamed `Title (Year) - 480p.mkv` (or `576p`, or `DVD` if the height is unknown); Jellyfin shows one movie with two versions and plays the 1080p by default
    - Content type: for an animated DVD, `metadata.json` in the staging dir shows `"ContentType": "Animation"`, the queue JSON has the same, and the web UI / log shows `Engine=anime4k`; for a live-action DVD `LiveAction` / `openproteus`. Also run `Invoke-Pester -Path tests/manual` (live TMDb + LLM) and record the ContentType lines it prints.
 
 **Note:** MakeMKV beta key expires ~monthly. If rips fail with "Key expired" in logs, refresh the key at https://www.makemkv.com or purchase a license.
@@ -227,6 +227,7 @@ Key failure cases:
 - **MakeMKV key expired:** watcher detects and notifies (refresh key or buy license at makemkv.com).
 - **NAS unreachable:** robocopy fails; disc stays in drive, staging kept for forensics.
 - **Upscale queue file stuck:** rename from `.failed` back to `.json` after checking logs.
+- **Movie shows twice / titled `B1_t00` in Jellyfin:** Jellyfin only groups files as versions of one movie when each file name starts with the folder name. Rips made before this was fixed kept the MakeMKV name (`B1_t00.mkv`) and the upscale (`B1_t00 [AI upscale 1080p].mkv`) next to it. Repair the existing library with `tools\Repair-ArmJellyfinNames.ps1 -Path <movies root>`: run it with `-WhatIf` first (changes nothing, prints what it would rename), then without, then rescan the library in Jellyfin. The largest raw file is taken as the movie and everything else as extras: it renames the largest to `<Folder>.mkv` and moves the other raw files into `extras\`; an upscale becomes `<Folder> - 1080p.mkv` and its source `<Folder> - <H>p.mkv` (`DVD` if the height is unknown). It skips and lists a folder when a file there is waiting in the upscale queue (including `.failed` entries), when a target name already exists, or when there are several upscale files.
 
 ## Project structure
 

@@ -19,7 +19,7 @@ $ErrorActionPreference = 'Stop'
     reach a path outside the jobs directory.
 
     Record fields (in order): Id, Kind, State, Title, DiscLabel, DiscType,
-    Drive, StagingDir, DestDir, QueueFile, SamplePath, Error, Created, Updated,
+    Drive, StagingDir, DestDir, QueueFile, SamplePath, OutputFile, Error, Created, Updated,
     History. History is an array of @{ State; At } appended whenever State
     changes. Timestamps are ISO 8601 round-trip strings (local time).
 
@@ -31,7 +31,7 @@ $ErrorActionPreference = 'Stop'
 
 $script:ArmJobFields = @(
     'Id', 'Kind', 'State', 'Title', 'DiscLabel', 'DiscType', 'Drive', 'StagingDir',
-    'DestDir', 'QueueFile', 'SamplePath', 'ContentType', 'Engine', 'InterlaceType', 'Error', 'Created', 'Updated', 'History'
+    'DestDir', 'QueueFile', 'SamplePath', 'OutputFile', 'ContentType', 'Engine', 'InterlaceType', 'Error', 'Created', 'Updated', 'History'
 )
 $script:ArmJobIdPattern = '^\d{8}-\d{6}-[0-9a-f]{6}$'
 $script:ArmJobTerminalStates = @('Complete', 'Failed', 'Cancelled')
