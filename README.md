@@ -97,6 +97,8 @@ Edit `config\config.psd1` (created at setup):
 - `HaWebhookUrl` — optional Home Assistant webhook for notifications.
 - `UpscaleDvds`, `AutoUpscale`, `UpscaleActiveHours` — upscale behavior.
 - `WebUiEnabled`, `WebUiPort` — the local status page.
+- `WebUiOpenOnDisc` (default `$true`) — open the dashboard in your default browser when a disc is
+  detected (never in `-Simulate`, or when `WebUiEnabled` is `$false`).
 
 Full options are documented in `SPEC.md`.
 

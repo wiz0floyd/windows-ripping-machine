@@ -362,6 +362,41 @@ function Invoke-AudioDispatch {
 
 <#
 .SYNOPSIS
+    Open the web UI dashboard in the default browser when a disc is detected.
+
+.DESCRIPTION
+    Skipped when -Simulate, when WebUiEnabled is $false, or when WebUiOpenOnDisc
+    is $false (default $true). Never throws: failing to open a browser must not
+    affect the rip. The watcher runs in the logged-in user's session, so the
+    page appears on their desktop.
+#>
+function Open-ArmWebUi {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable] $Config
+    )
+
+    if ($Config.ContainsKey('Simulate') -and $Config.Simulate) { return $false }
+    if ($Config.ContainsKey('WebUiEnabled') -and -not $Config.WebUiEnabled) { return $false }
+    if ($Config.ContainsKey('WebUiOpenOnDisc') -and -not $Config.WebUiOpenOnDisc) { return $false }
+
+    $port = if ($Config.ContainsKey('WebUiPort') -and $Config.WebUiPort) { [int]$Config.WebUiPort } else { 8765 }
+    # 'localhost' exactly: HTTP.sys rejects 127.0.0.1 with 400 Invalid Hostname.
+    $url = "http://localhost:$port/"
+    try {
+        Start-Process -FilePath $url -ErrorAction Stop
+        Write-ArmLog -Level INFO -Message "Opened web UI at $url" -Config $Config
+        return $true
+    } catch {
+        Write-ArmLog -Level WARN -Message "Could not open web UI at ${url}: $_" -Config $Config
+        return $false
+    }
+}
+
+<#
+.SYNOPSIS
     Route a detected disc to the appropriate rip/move/eject/notify pipeline.
 
 .DESCRIPTION
@@ -406,6 +441,7 @@ function Invoke-DiscDispatch {
     try {
         if ($DiscType -in @('Video', 'AudioCD')) {
             $jobId = New-ArmJob -Kind Rip -Properties @{ State = 'Detected'; Drive = "$DriveLetter`:"; DiscType = $DiscType } -Config $Config
+            $null = Open-ArmWebUi -Config $Config
         }
 
         switch ($DiscType) {

@@ -636,3 +636,56 @@ Describe 'New-UpscaleQueueEntry' {
         $files[0].BaseName | Should -Not -Match '_'
     }
 }
+
+Describe 'Open-ArmWebUi' {
+    BeforeEach {
+        Mock Start-Process { }
+        Mock Write-ArmLog { }
+        $script:Cfg = @{ Simulate = $false; WebUiEnabled = $true; WebUiPort = 9123; LogDir = $TestDrive }
+    }
+
+    It 'opens the dashboard on localhost at the configured port in the default browser' {
+        Open-ArmWebUi -Config $script:Cfg | Should -BeTrue
+        Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter { $FilePath -eq 'http://localhost:9123/' }
+    }
+
+    It 'defaults to port 8765 when WebUiPort is missing' {
+        $script:Cfg.Remove('WebUiPort')
+        Open-ArmWebUi -Config $script:Cfg | Should -BeTrue
+        Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter { $FilePath -eq 'http://localhost:8765/' }
+    }
+
+    It 'does nothing under <Name>' -ForEach @(
+        @{ Name = 'Simulate'; Key = 'Simulate'; Value = $true }
+        @{ Name = 'WebUiEnabled = $false'; Key = 'WebUiEnabled'; Value = $false }
+        @{ Name = 'WebUiOpenOnDisc = $false'; Key = 'WebUiOpenOnDisc'; Value = $false }
+    ) {
+        $script:Cfg[$Key] = $Value
+        Open-ArmWebUi -Config $script:Cfg | Should -BeFalse
+        Should -Invoke Start-Process -Times 0 -Exactly
+    }
+
+    It 'never throws when the browser cannot be launched' {
+        Mock Start-Process { throw 'no default browser' }
+        { Open-ArmWebUi -Config $script:Cfg } | Should -Not -Throw
+        Open-ArmWebUi -Config $script:Cfg | Should -BeFalse
+        Should -Invoke Write-ArmLog -ParameterFilter { $Level -eq 'WARN' }
+    }
+}
+
+Describe 'Invoke-DiscDispatch web UI' {
+    It 'opens the web UI when a video or audio disc is detected, not for Data/None' {
+        Mock Open-ArmWebUi { $true }
+        Mock Invoke-VideoDispatch { }
+        Mock Invoke-AudioDispatch { }
+        Mock Send-ArmNotification { }
+        Mock Write-ArmLog { }
+        $cfg = @{ Simulate = $true; LogDir = $TestDrive }
+
+        Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Video' -Config $cfg
+        Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'AudioCD' -Config $cfg
+        Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Data' -Config $cfg
+        Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'None' -Config $cfg
+        Should -Invoke Open-ArmWebUi -Times 2 -Exactly
+    }
+}
