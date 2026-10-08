@@ -221,23 +221,27 @@ Describe 'Register-ArmScheduledTask / Unregister-ArmScheduledTask' {
         }
     }
 
-    It 'defaults the task principal to the current env user when -RunAsUser is not supplied' {
+    It 'defaults the task principal to the current identity when -RunAsUser is not supplied' {
         Mock Get-ScheduledTask { $null }
         Mock Register-ScheduledTask { }
+        Mock Get-ArmCurrentUserName { 'THEBEAST\studio' }
 
         Register-ArmScheduledTask -TaskName 'wrm-watcher' -ScriptPath 'C:\dev\src\DiscWatcher.ps1'
 
+        Should -Invoke Get-ArmCurrentUserName -Times 1
         Should -Invoke Register-ScheduledTask -Times 1 -ParameterFilter {
-            $Principal.UserId -eq "$env:USERDOMAIN\$env:USERNAME"
+            $Principal.UserId -eq 'THEBEAST\studio'
         }
     }
 
     It 'uses the explicitly supplied -RunAsUser for the task principal' {
         Mock Get-ScheduledTask { $null }
         Mock Register-ScheduledTask { }
+        Mock Get-ArmCurrentUserName { 'THEBEAST\studio' }
 
         Register-ArmScheduledTask -TaskName 'wrm-watcher' -ScriptPath 'C:\dev\src\DiscWatcher.ps1' -RunAsUser 'CONTOSO\originaluser'
 
+        Should -Invoke Get-ArmCurrentUserName -Times 0
         Should -Invoke Register-ScheduledTask -Times 1 -ParameterFilter {
             $Principal.UserId -eq 'CONTOSO\originaluser'
         }
@@ -276,6 +280,60 @@ Describe 'Get-ArmScheduledTaskList' {
         foreach ($task in Get-ArmScheduledTaskList -RepoRoot (Join-Path $PSScriptRoot '..')) {
             Test-Path -LiteralPath $task.ScriptPath -PathType Leaf | Should -BeTrue -Because $task.TaskName
         }
+    }
+}
+
+Describe 'Get-ArmCurrentUserName' {
+    It 'returns the process Windows identity' {
+        Get-ArmCurrentUserName | Should -Be ([Security.Principal.WindowsIdentity]::GetCurrent().Name)
+    }
+
+    It 'does not depend on $env:USERDOMAIN (WORKGROUP regression, issue #38)' {
+        $saved = $env:USERDOMAIN
+        try {
+            $env:USERDOMAIN = 'WORKGROUP'
+            Get-ArmCurrentUserName | Should -Be ([Security.Principal.WindowsIdentity]::GetCurrent().Name)
+        } finally {
+            $env:USERDOMAIN = $saved
+        }
+    }
+}
+
+Describe 'Get-ArmElevatedArgumentList' {
+    BeforeAll {
+        $script:scriptPath = 'C:\dev\setup.ps1'
+    }
+
+    It 'appends the pre-elevation identity as -RunAsUser when it was not bound' {
+        Mock Get-ArmCurrentUserName { 'THEBEAST\studio' }
+
+        $argList = Get-ArmElevatedArgumentList -ScriptPath $script:scriptPath -BoundParameters @{}
+
+        $argList | Should -Contain '-RunAsUser'
+        $argList[$argList.IndexOf('-RunAsUser') + 1] | Should -Be '"THEBEAST\studio"'
+        ($argList[0..4] -join ' ') | Should -Be '-NoProfile -ExecutionPolicy Bypass -File "C:\dev\setup.ps1"'
+    }
+
+    It 'passes an explicit -RunAsUser through unchanged and does not re-capture the identity' {
+        Mock Get-ArmCurrentUserName { 'THEBEAST\studio' }
+
+        $argList = Get-ArmElevatedArgumentList -ScriptPath $script:scriptPath -BoundParameters @{ RunAsUser = 'CONTOSO\originaluser' }
+
+        $argList | Should -Contain '"CONTOSO\originaluser"'
+        @($argList | Where-Object { $_ -eq '-RunAsUser' }).Count | Should -Be 1
+        $argList | Should -Not -Contain '"THEBEAST\studio"'
+        Should -Invoke Get-ArmCurrentUserName -Times 0
+    }
+
+    It 'emits switches only when present and forwards other bound values' {
+        Mock Get-ArmCurrentUserName { 'THEBEAST\studio' }
+
+        $argList = Get-ArmElevatedArgumentList -ScriptPath $script:scriptPath -BoundParameters @{ NonInteractive = [System.Management.Automation.SwitchParameter]$true; Uninstall = [System.Management.Automation.SwitchParameter]$false; TmdbApiKey = 'abc' }
+
+        $argList | Should -Contain '-NonInteractive'
+        $argList | Should -Not -Contain '-Uninstall'
+        $argList | Should -Contain '-TmdbApiKey'
+        $argList | Should -Contain '"abc"'
     }
 }
 

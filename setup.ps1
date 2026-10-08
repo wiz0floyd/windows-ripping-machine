@@ -314,6 +314,30 @@ function New-ArmConfigFile {
 
 <#
 .SYNOPSIS
+    Return the current Windows identity as "DOMAIN\User" (or "COMPUTER\User" on
+    a workgroup machine).
+
+.DESCRIPTION
+    Uses the security token of the running process rather than the
+    $env:USERDOMAIN / $env:USERNAME variables. On workgroup machines
+    USERDOMAIN can be 'WORKGROUP' while the account really belongs to the
+    computer, and Register-ScheduledTask then fails with "No mapping between
+    account names and security IDs was done". Kept as its own function so
+    Pester can mock it.
+
+.OUTPUTS
+    [string] The account name from [Security.Principal.WindowsIdentity]::GetCurrent().
+#>
+function Get-ArmCurrentUserName {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+
+    return [Security.Principal.WindowsIdentity]::GetCurrent().Name
+}
+
+<#
+.SYNOPSIS
     Register a hidden, at-logon scheduled task running an entry-point script for
     the current user (idempotent: skips if the task already exists).
 
@@ -324,13 +348,16 @@ function New-ArmConfigFile {
     Full path to the pwsh entry-point script to run.
 
 .PARAMETER RunAsUser
-    The "DOMAIN\User" the task's principal should run as. Defaults to the
-    current process's user, which is only correct when this function runs
-    un-elevated or in a session that was never relaunched for elevation. When
-    setup.ps1 relaunches itself elevated (Start-Process -Verb RunAs), the
-    elevated child's $env:USERNAME may be a different (admin) account than the
-    user who invoked setup.ps1, so the entry point captures the original
-    identity before relaunching and passes it through explicitly here.
+    The "DOMAIN\User" (or "COMPUTER\User") the task's principal should run as.
+    Defaults to Get-ArmCurrentUserName (the process's Windows identity, not
+    $env:USERDOMAIN\$env:USERNAME, which can be 'WORKGROUP\user' on workgroup
+    machines and makes Register-ScheduledTask fail). That default is only
+    correct when this function runs un-elevated or in a session that was never
+    relaunched for elevation. When setup.ps1 relaunches itself elevated
+    (Start-Process -Verb RunAs), the elevated child's identity may be a
+    different (admin) account than the user who invoked setup.ps1, so the
+    entry point captures the original identity before relaunching and passes
+    it through explicitly here.
 #>
 function Register-ArmScheduledTask {
     [CmdletBinding()]
@@ -341,7 +368,7 @@ function Register-ArmScheduledTask {
         [Parameter(Mandatory = $true)]
         [string] $ScriptPath,
 
-        [string] $RunAsUser = "$env:USERDOMAIN\$env:USERNAME"
+        [string] $RunAsUser = (Get-ArmCurrentUserName)
     )
 
     $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -513,6 +540,54 @@ function Invoke-ArmElevatedRelaunch {
     }
 }
 
+<#
+.SYNOPSIS
+    Build the pwsh argument list used to relaunch setup.ps1 elevated.
+
+.DESCRIPTION
+    Re-emits every bound parameter. If -RunAsUser was not bound, it appends
+    the pre-elevation identity from Get-ArmCurrentUserName, captured here in
+    the un-elevated parent, so the elevated child registers the scheduled
+    tasks for the day-to-day user rather than the admin account UAC uses.
+
+.PARAMETER ScriptPath
+    Path to setup.ps1 (normally $PSCommandPath).
+
+.PARAMETER BoundParameters
+    The caller's $PSBoundParameters.
+
+.OUTPUTS
+    [string[]] Arguments for Invoke-ArmElevatedRelaunch.
+#>
+function Get-ArmElevatedArgumentList {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $ScriptPath,
+
+        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        $BoundParameters
+    )
+
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$ScriptPath`"")
+    foreach ($key in $BoundParameters.Keys) {
+        $value = $BoundParameters[$key]
+        if ($value -is [switch]) {
+            if ($value.IsPresent) { $argList += "-$key" }
+        } else {
+            $argList += "-$key"
+            $argList += "`"$value`""
+        }
+    }
+    if ($BoundParameters.Keys -notcontains 'RunAsUser') {
+        $argList += '-RunAsUser'
+        $argList += "`"$(Get-ArmCurrentUserName)`""
+    }
+    return $argList
+}
+
 # --- Thin entry point --------------------------------------------------------
 # Guarded so the file can be dot-sourced by tests (functions only) without
 # installing software, writing config, or registering scheduled tasks.
@@ -533,30 +608,17 @@ Administrator (Run as Administrator) pwsh window.
 '@
         }
         Write-Host 'Registering scheduled tasks requires elevation; relaunching as Administrator...'
-        $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
-        foreach ($key in $PSBoundParameters.Keys) {
-            $value = $PSBoundParameters[$key]
-            if ($value -is [switch]) {
-                if ($value.IsPresent) { $argList += "-$key" }
-            } else {
-                $argList += "-$key"
-                $argList += "`"$value`""
-            }
-        }
-        if ($PSBoundParameters.Keys -notcontains 'RunAsUser') {
-            # Capture the ORIGINAL (pre-elevation) identity so the elevated
-            # child registers the scheduled task for the actual day-to-day
-            # user, not whatever admin account UAC elevates to.
-            $argList += '-RunAsUser'
-            $argList += "`"$env:USERDOMAIN\$env:USERNAME`""
-        }
+        # Passes the ORIGINAL (pre-elevation) identity via -RunAsUser so the
+        # elevated child registers the tasks for the day-to-day user, not
+        # whatever admin account UAC elevates to.
+        $argList = Get-ArmElevatedArgumentList -ScriptPath $PSCommandPath -BoundParameters $PSBoundParameters
         Invoke-ArmElevatedRelaunch -ArgumentList $argList
         return
     }
 
     $repoRoot = $PSScriptRoot
     $tasks = Get-ArmScheduledTaskList -RepoRoot $repoRoot
-    $effectiveRunAsUser = if ($RunAsUser) { $RunAsUser } else { "$env:USERDOMAIN\$env:USERNAME" }
+    $effectiveRunAsUser = if ($RunAsUser) { $RunAsUser } else { Get-ArmCurrentUserName }
 
     if ($Uninstall) {
         foreach ($task in $tasks) {
