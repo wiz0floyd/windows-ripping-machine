@@ -328,9 +328,6 @@ function Start-UpscaleWorker {
     )
 
     $config = Get-ArmConfig -Path $ConfigPath -Simulate:$Simulate
-    if ($Simulate) {
-        $config.Simulate = $true
-    }
 
     try {
         $proc = Get-Process -Id $PID

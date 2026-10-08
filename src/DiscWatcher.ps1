@@ -45,8 +45,10 @@ $script:SimDriveLetter = [char] 'D'
 
 <#
 .SYNOPSIS
-    Name of the single-flight rip mutex. Simulate runs (and tests) use a
-    per-process name so they never contend with a live watcher.
+    Name of the single-flight rip mutex. A sandboxed config (SimulateSandboxRoot
+    set) uses 'Global\wrm-rip-sim' so it never contends with a live watcher;
+    everything else, including an explicit -ConfigPath under Simulate on real
+    paths, keeps 'Global\wrm-rip'.
 #>
 function Get-ArmRipMutexName {
     [CmdletBinding()]
@@ -54,8 +56,8 @@ function Get-ArmRipMutexName {
     param(
         [hashtable] $Config
     )
-    if ($Config -and $Config.ContainsKey('Simulate') -and $Config.Simulate) {
-        return "Global\wrm-rip-sim-$PID"
+    if ($Config -and $Config.ContainsKey('SimulateSandboxRoot') -and $Config.SimulateSandboxRoot) {
+        return 'Global\wrm-rip-sim'
     }
     return 'Global\wrm-rip'
 }
@@ -894,9 +896,6 @@ function Start-DiscWatcherLoop {
 # starting the watcher loop or touching real hardware/config.
 if ($MyInvocation.InvocationName -ne '.') {
     $armConfig = Get-ArmConfig -Path $ConfigPath -Simulate:$Simulate
-    if ($Simulate) {
-        $armConfig.Simulate = $true
-    }
 
     if ($Once) {
         $disc = Resolve-CurrentDisc -Config $armConfig

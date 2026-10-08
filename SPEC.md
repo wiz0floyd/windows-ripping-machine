@@ -116,9 +116,10 @@ Get-ArmConfig [-Path <string>] [-Simulate] -> [hashtable]
 #  Simulate sandbox: when Simulate (switch or config key) AND no explicit -Path was
 #  passed (so the example fallback and the default config.psd1 both qualify), NasVideoPath, NasMusicPath,
 #  StagingDir, UpscaleQueueDir, LogDir and StateDir are rebased onto
-#  <TEMP>\wrm-sim-<PID>\{nas-video,nas-music,staging,upscale-queue,logs,state}; the root
+#  <TEMP>\wrm-sim\{nas-video,nas-music,staging,upscale-queue,logs,state}; the root
 #  is created, logged at INFO, and recorded as SimulateSandboxRoot. Only an explicit -Path
-#  is never rebased. Entry points pass -Simulate:$Simulate.
+#  is never rebased. -Simulate also sets Simulate=$true and satisfies the Nas*Path required-key check.
+#  Entry points pass -Simulate:$Simulate (they no longer set the key themselves).
 
 Resolve-ArmFfprobePath -Config <hashtable> -> [string]
 #  Pure. $Config.FfprobePath if set, else ffprobe.exe beside a full-path FfmpegPath,
@@ -408,9 +409,9 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #  Param: [-ConfigPath] [-Simulate] [-Once] (-Once: process current disc then exit —
 #  used by tests). Register-WmiEvent Win32_VolumeChangeEvent EventType 2 + 30s poll
 #  fallback (compare Get-DiscType per optical drive). Single-flight lock via named
-#  mutex 'Global\wrm-rip' (Get-ArmRipMutexName -Config; under Simulate it is the
-#  per-process 'Global\wrm-rip-sim-<PID>' so smoke runs/tests never contend with a live
-#  watcher). Dispatch:
+#  mutex 'Global\wrm-rip' (Get-ArmRipMutexName -Config; a sandboxed config, i.e. one with
+#  SimulateSandboxRoot, uses 'Global\wrm-rip-sim' so smoke runs/tests never contend with
+#  a live watcher; explicit -ConfigPath + Simulate keeps 'Global\wrm-rip'). Dispatch:
 #    Video  → Invoke-VideoRip (captures Resolve-Title result on .Resolved before
 #             the rip runs) → Resolve-TitleOverride (re-reads metadata.json for
 #             a user Title/Year/ContentType edit, else falls back to .Resolved) → rename

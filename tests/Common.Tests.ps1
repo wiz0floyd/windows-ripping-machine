@@ -71,12 +71,20 @@ Describe 'Get-ArmConfig' {
 
     Context 'Simulate sandbox (no explicit -Path)' {
         BeforeAll {
+            # Keep sandbox dirs out of the real temp folder.
+            $script:SavedTmp = @{}
+            foreach ($v in 'TEMP', 'TMP', 'TMPDIR') { $script:SavedTmp[$v] = [Environment]::GetEnvironmentVariable($v) }
+            foreach ($v in 'TEMP', 'TMP', 'TMPDIR') { [Environment]::SetEnvironmentVariable($v, "$TestDrive") }
             $script:SandboxKeys = @('NasVideoPath', 'NasMusicPath', 'StagingDir', 'UpscaleQueueDir', 'LogDir', 'StateDir')
+        }
+
+        AfterAll {
+            foreach ($v in 'TEMP', 'TMP', 'TMPDIR') { [Environment]::SetEnvironmentVariable($v, $script:SavedTmp[$v]) }
         }
 
         It 'rebases every directory/NAS key under the temp sandbox' {
             $config = Get-ArmConfig -Simulate
-            $root = Join-Path ([IO.Path]::GetTempPath()) "wrm-sim-$PID"
+            $root = Join-Path ([IO.Path]::GetTempPath()) 'wrm-sim'
             $config.SimulateSandboxRoot | Should -Be $root
             Test-Path $root | Should -BeTrue
             $seen = @{}
@@ -102,7 +110,7 @@ Describe 'Get-ArmConfig' {
             $out = & pwsh -NoProfile -Command ". '$common'; `$c = Get-ArmConfig -Simulate; `$c.SimulateSandboxRoot; `$c.StagingDir; `$c.NasVideoPath" 2>&1
             $lines = @($out | Where-Object { $_ -and $_ -notmatch 'WARN|INFO' })
             $lines.Count | Should -Be 3
-            $lines[0] | Should -BeLike '*wrm-sim-*'
+            $lines[0] | Should -BeLike "$TestDrive*wrm-sim"
             $lines[1] | Should -BeLike "$($lines[0])*"
             $lines[2] | Should -BeLike "$($lines[0])*"
         }
@@ -113,7 +121,7 @@ Describe 'Get-ArmConfig' {
             Copy-Item $examplePath -Destination $cfgPath
             $config = Get-ArmConfig -Path $cfgPath -Simulate
             $config.ContainsKey('SimulateSandboxRoot') | Should -BeFalse
-            foreach ($k in $script:SandboxKeys) { $config[$k] | Should -Not -BeLike '*wrm-sim-*' }
+            foreach ($k in $script:SandboxKeys) { $config[$k] | Should -Not -BeLike '*wrm-sim*' }
             $config.NasVideoPath | Should -BeLike '*nas*import*movies'
             $config.LogDir | Should -BeLike '*rips*logs'
         }
@@ -121,7 +129,7 @@ Describe 'Get-ArmConfig' {
         It 'leaves paths untouched when not Simulate' {
             $config = Get-ArmConfig
             $config.ContainsKey('SimulateSandboxRoot') | Should -BeFalse
-            $config.NasVideoPath | Should -Not -BeLike '*wrm-sim-*'
+            $config.NasVideoPath | Should -Not -BeLike '*wrm-sim*'
         }
     }
 

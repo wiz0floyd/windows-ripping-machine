@@ -70,6 +70,7 @@ BeforeAll {
             UpscaleDvds       = $false
             AutoUpscale       = $false
             Simulate          = $true
+            SimulateSandboxRoot = $StagingDir   # sandboxed config => isolated test mutex name
         }
     }
 }
@@ -496,9 +497,12 @@ Describe 'Get-ArmRipMutexName' {
         Get-ArmRipMutexName -Config @{ Simulate = $false } | Should -Be 'Global\wrm-rip'
         Get-ArmRipMutexName | Should -Be 'Global\wrm-rip'
     }
-    It 'uses a distinct per-process name under Simulate' {
-        $n = Get-ArmRipMutexName -Config @{ Simulate = $true }
-        $n | Should -Be "Global\wrm-rip-sim-$PID"
+    It 'keeps the live name for Simulate on real paths (no sandbox)' {
+        Get-ArmRipMutexName -Config @{ Simulate = $true } | Should -Be 'Global\wrm-rip'
+    }
+    It 'uses a distinct name for a sandboxed config' {
+        $n = Get-ArmRipMutexName -Config @{ Simulate = $true; SimulateSandboxRoot = 'X' }
+        $n | Should -Be 'Global\wrm-rip-sim'
         $n | Should -Not -Be (Get-ArmRipMutexName -Config @{ Simulate = $false })
     }
 }

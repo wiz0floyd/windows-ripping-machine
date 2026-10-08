@@ -1232,9 +1232,6 @@ function Start-ArmWebUi {
     )
 
     $config = Get-ArmConfig -Path $ConfigPath -Simulate:$Simulate
-    if ($Simulate) {
-        $config.Simulate = $true
-    }
 
     if ($config.ContainsKey('WebUiEnabled') -and -not $config.WebUiEnabled) {
         Write-ArmLog -Level INFO -Message 'Web UI disabled (WebUiEnabled = $false); exiting.' -Config $config

@@ -44,9 +44,10 @@ function Resolve-ArmFfprobePath {
     Path to config file. Defaults to config/config.psd1 in the script root.
 
 .PARAMETER Simulate
-    Treat the config as Simulate. If the config fell back to config.example.psd1
-    (no explicit -Path, no config.psd1), all directory/NAS paths are rebased onto
-    a temp sandbox (`$env:TEMP\wrm-sim-<PID>`). Explicit/real configs are untouched.
+    Treat the config as Simulate (sets Simulate = $true). When no explicit -Path
+    was given (example fallback or the default config.psd1), all directory/NAS
+    paths are rebased onto a shared temp sandbox (<TEMP>\wrm-sim). An explicit
+    -Path is never rebased.
 
 .OUTPUTS
     [hashtable] Configuration with expanded paths.
@@ -109,6 +110,7 @@ function Get-ArmConfig {
     }
 
     # Validate required keys (check with ContainsKey for strict mode)
+    if ($Simulate) { $config['Simulate'] = $true }
     $configSimulate = $config.ContainsKey('Simulate') -and $config.Simulate
     if (-not $configSimulate) {
         if (-not $config.ContainsKey('NasVideoPath') -or -not $config.NasVideoPath) {
@@ -121,10 +123,11 @@ function Get-ArmConfig {
 
     # Simulate without an explicit -Path (example fallback OR the default
     # config.psd1): production C:\rips\... and \\nas\... paths must never be
-    # touched, so rebase every directory / NAS destination onto a per-process
-    # temp sandbox. Only an explicit -Path is the user opting in.
-    if (($Simulate -or $configSimulate) -and -not $explicitPath) {
-        $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) "wrm-sim-$PID"
+    # touched, so rebase every directory / NAS destination onto a stable temp
+    # sandbox shared by all simulate processes (so DiscWatcher -> Upscale-Worker
+    # hand-off works). Only an explicit -Path is the user opting in.
+    if ($configSimulate -and -not $explicitPath) {
+        $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) "wrm-sim"
         $sandboxDirs = [ordered]@{
             NasVideoPath    = 'nas-video'
             NasMusicPath    = 'nas-music'
@@ -143,7 +146,7 @@ function Get-ArmConfig {
         }
         $config['Simulate'] = $true
         $config['SimulateSandboxRoot'] = $sandbox
-        Write-ArmLog -Level INFO -Message "Simulate with example config: using sandbox $sandbox instead of production paths" -Config $config
+        Write-ArmLog -Level INFO -Message "Simulate without explicit -Path: using sandbox $sandbox instead of production paths" -Config $config
     }
 
     # Expand relative paths to absolute. Bare tool names (no path separator, e.g.

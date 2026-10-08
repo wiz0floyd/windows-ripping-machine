@@ -36,7 +36,7 @@ A native Windows replacement for the Linux Automatic Ripping Machine: insert a d
 
 3. **Verify installation** (simulate mode — no disc or NAS required):
    ```powershell
-   # Simulate runs without an explicit -ConfigPath are sandboxed under %TEMP%\wrm-sim-<PID> (never C:\rips or the NAS)
+   # Simulate runs without an explicit -ConfigPath are sandboxed under %TEMP%\wrm-sim (never C:\rips or the NAS)
    # Run a quick smoke test with all stubs
    Invoke-Pester -Path tests/Common.Tests.ps1 -Passthru
    
