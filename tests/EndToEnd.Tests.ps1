@@ -211,7 +211,7 @@ Describe 'End-to-end: Upscale-Worker.ps1 -Simulate -Once' {
             Set-ItResult -Skipped -Because 'src/Upscale-Video.ps1 does not exist yet'
             return
         }
-        foreach ($stub in @('stub-ffmpeg.ps1', 'stub-video2x.ps1')) {
+        foreach ($stub in @('stub-ffmpeg.ps1', 'stub-ffprobe.ps1', 'stub-video2x.ps1')) {
             if (-not (Test-Path (Join-Path $script:StubDir $stub))) {
                 Set-ItResult -Skipped -Because "tests/stubs/$stub does not exist yet"
                 return

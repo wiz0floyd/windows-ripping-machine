@@ -11,7 +11,7 @@ Pipeline: `DiscWatcher` → `Invoke-VideoRip` (calls `Resolve-Title` up front, w
 ## Rules that aren't obvious from the code
 
 - **`SPEC.md` is the authoritative contract** for every function signature, parameters, and return shape. Read the relevant section before module work; update it in the same change if a signature/behavior changes. Don't duplicate its details here.
-- **Never call `makemkvcon`/`freaccmd`/`ffmpeg`/`video2x`/`ncnn` (venv python running `tools/ncnn_upscale.py`) directly** — go through `Invoke-ArmTool`, which routes to `tests/stubs/stub-<name>.ps1` when `$Config.Simulate`. This is what makes everything testable without hardware.
+- **Never call `makemkvcon`/`freaccmd`/`ffmpeg`/`ffprobe`/`video2x`/`ncnn` (venv python running `tools/ncnn_upscale.py`) directly** — go through `Invoke-ArmTool`, which routes to `tests/stubs/stub-<name>.ps1` when `$Config.Simulate`. This is what makes everything testable without hardware.
 - Pipeline functions **don't throw** for expected failures — return `New-ArmResult` / `@{ Success=$false; Error=<msg> }` so the watcher loop survives. Exceptions = programmer errors only.
 - `src/*.ps1` libraries are dot-sourced and have **no top-level side effects**. Only `DiscWatcher.ps1`, `Upscale-Worker.ps1`, `WebUi.ps1`, `setup.ps1` run top-level logic, guarded by `if ($MyInvocation.InvocationName -ne '.')` so tests can dot-source their functions.
 - Filenames: always sanitize via `ConvertTo-ArmSafeFileName` (the single canonical rule).
@@ -65,7 +65,7 @@ Plain `Invoke-Pester -Path tests` also picks up `tests/manual` — use the confi
 | `src/Resolve-Title.ps1` | `Resolve-Title`, `Resolve-TitleOverride`, `Get-ArmCleanDiscLabel`, `ConvertTo-ArmTitleCase`, `Invoke-ArmTmdbSearch`, `Test-ArmTmdbAcceptance`, `Invoke-ArmLlmDisambiguation`, `ConvertTo-ArmFolderName` |
 | `src/Move-ToNas.ps1` | `Move-ToNas`, `Invoke-Robocopy` |
 | `src/Send-Notification.ps1` | `Send-ArmNotification` |
-| `src/Upscale-Video.ps1` | `Get-InterlaceType`, `Get-VideoDisplayAspect`, `Get-UpscaleSetting`, `Invoke-Upscale` (engine per `-ContentType`: openproteus / anime4k / legacy realesrgan) |
+| `src/Upscale-Video.ps1` | `Get-InterlaceType`, `Get-VideoSourceInfo` (ffprobe, source probed once), `Get-VideoFrameRate`, `Get-UpscalePlan` (pure) + `Get-Upscale{Preprocess,Engine,Encode}ArgumentList`, `Get-UpscaleSetting`, `Invoke-Upscale` (engine per `-ContentType`: openproteus / anime4k / legacy realesrgan) |
 | `tools/ncnn_upscale.py` | ffmpeg → `upscale-ncnn-py` (custom ncnn model) → ffmpeg runner for the openproteus engine; deps pinned in `tools/requirements-ncnn.txt`, installed by `setup.ps1` (`Install-NcnnUpscaler`) |
 | `src/Upscale-Worker.ps1` | Entry point (`-ConfigPath -Simulate -Once`): `Test-ArmActiveWindow`, `Invoke-ArmUpscaleQueueItem`, `Invoke-ArmUpscaleQueuePass`, `Start-UpscaleWorker` |
 | `src/JobState.ps1` | Job-state store (one JSON file per job in `StateDirjobs`): `New-ArmJob`, `Update-ArmJob`, `Get-ArmJob`, `Get-ArmJobList`, `Remove-ArmStaleJobs`. Never throws. Field whitelist `$script:ArmJobFields` — new job fields must be added there and in `ConvertTo-ArmWebJob` |
@@ -75,7 +75,7 @@ Plain `Invoke-Pester -Path tests` also picks up `tests/manual` — use the confi
 | `tests/<Name>.Tests.ps1` | One per `src/<Name>.ps1` (+ `Setup.Tests.ps1`), success + failure paths |
 | `tests/EndToEnd.Tests.ps1` | Runs the watcher + worker entry points `-Simulate -Once`, asserts NAS-root folder layout |
 | `tests/manual/` | Live TMDb/LLM suite — excluded from CI |
-| `tests/stubs/stub-{makemkvcon,freaccmd,ffmpeg,video2x,ncnn}.ps1` | Simulate-mode tool stubs used by `Invoke-ArmTool` |
+| `tests/stubs/stub-{makemkvcon,freaccmd,ffmpeg,ffprobe,video2x,ncnn}.ps1` | Simulate-mode tool stubs used by `Invoke-ArmTool` |
 | `tests/fixtures/` | Recorded makemkvcon robot output (incl. expired key), ffmpeg `idet` samples (interlaced/progressive/telecined), `tmdb-search.json` |
 
 Testing: no real tools or network in `tests/` — use stubs/fixtures or `Mock Invoke-RestMethod`.

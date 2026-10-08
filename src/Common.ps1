@@ -3,6 +3,36 @@ $ErrorActionPreference = 'Stop'
 
 <#
 .SYNOPSIS
+    Resolve the ffprobe executable for a config. Pure: no I/O.
+
+.DESCRIPTION
+    Returns $Config.FfprobePath when set. Otherwise ffprobe ships beside ffmpeg, so a
+    FfmpegPath with a directory part yields '<that dir>\ffprobe.exe'; a bare or absent
+    FfmpegPath yields the bare 'ffprobe' (resolved via PATH by Invoke-ArmTool).
+
+.OUTPUTS
+    [string]
+#>
+function Resolve-ArmFfprobePath {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable] $Config
+    )
+
+    if ($Config.ContainsKey('FfprobePath') -and $Config['FfprobePath']) {
+        return [string]$Config['FfprobePath']
+    }
+    $ffmpegPath = if ($Config.ContainsKey('FfmpegPath') -and $Config['FfmpegPath']) { [string]$Config['FfmpegPath'] } else { 'ffmpeg' }
+    if ($ffmpegPath -match '[\\/]') {
+        return Join-Path (Split-Path -Parent $ffmpegPath) 'ffprobe.exe'
+    }
+    return 'ffprobe'
+}
+
+<#
+.SYNOPSIS
     Load wrm configuration from config/config.psd1 or config.example.psd1.
 
 .DESCRIPTION
@@ -55,6 +85,14 @@ function Get-ArmConfig {
         $exampleConfig = @{}
     }
 
+    # FfprobePath defaults to the ffprobe next to FfmpegPath (they ship together), so
+    # configs written before the key existed keep working with a full-path FfmpegPath.
+    # Resolve it from the user's own config before the example backfill below would
+    # fill in the bare PATH-resolved 'ffprobe'.
+    if (-not $config.ContainsKey('FfprobePath') -or -not $config['FfprobePath']) {
+        $config['FfprobePath'] = Resolve-ArmFfprobePath -Config $config
+    }
+
     # Backfill missing keys from example config
     foreach ($key in $exampleConfig.Keys) {
         if (-not $config.ContainsKey($key)) {
@@ -76,7 +114,7 @@ function Get-ArmConfig {
     # Expand relative paths to absolute. Bare tool names (no path separator, e.g.
     # FfmpegPath = 'ffmpeg') are left untouched so Invoke-ArmTool/Test-Path can
     # resolve them via PATH instead of joining them onto the repo root.
-    $pathKeys = @('StagingDir', 'UpscaleQueueDir', 'LogDir', 'StateDir', 'MakeMkvConPath', 'FreacCmdPath', 'FfmpegPath', 'Video2xPath', 'NcnnPath', 'NcnnModelDir')
+    $pathKeys = @('StagingDir', 'UpscaleQueueDir', 'LogDir', 'StateDir', 'MakeMkvConPath', 'FreacCmdPath', 'FfmpegPath', 'FfprobePath', 'Video2xPath', 'NcnnPath', 'NcnnModelDir')
     foreach ($key in $pathKeys) {
         if ($config.ContainsKey($key) -and $config[$key] -and -not [System.IO.Path]::IsPathRooted($config[$key])) {
             $hasSeparator = $config[$key] -match '[\\/]'
@@ -150,14 +188,14 @@ function Write-ArmLog {
     Execute an external tool, optionally routing to a test stub in simulation mode.
 
 .DESCRIPTION
-    Runs an external tool (makemkvcon, freaccmd, ffmpeg, video2x, or ncnn - the venv python.exe that runs tools/ncnn_upscale.py) with given arguments.
+    Runs an external tool (makemkvcon, freaccmd, ffmpeg, ffprobe, video2x, or ncnn - the venv python.exe that runs tools/ncnn_upscale.py) with given arguments.
     Returns a hashtable with ExitCode, StdOut (array of lines), and StdErr (array of lines).
 
     When $Config.Simulate is $true, runs tests/stubs/stub-<name>.ps1 instead.
     Streams stdout lines to Write-ArmLog at INFO level with prefix "[<name>]".
 
 .PARAMETER Name
-    Tool name: makemkvcon, freaccmd, ffmpeg, video2x, or ncnn.
+    Tool name: makemkvcon, freaccmd, ffmpeg, ffprobe, video2x, or ncnn.
 
 .PARAMETER Arguments
     String array of command-line arguments.
@@ -179,7 +217,7 @@ function Invoke-ArmTool {
     [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateSet('makemkvcon', 'freaccmd', 'ffmpeg', 'video2x', 'ncnn')]
+        [ValidateSet('makemkvcon', 'freaccmd', 'ffmpeg', 'ffprobe', 'video2x', 'ncnn')]
         [string] $Name,
 
         [Parameter(Mandatory = $true)]
@@ -213,7 +251,8 @@ function Invoke-ArmTool {
             $argumentList = @('-NoProfile', '-File', $stubPath) + $Arguments
         } else {
             # Run real tool
-            $filePath = $Config["$($Name)Path"]
+            # ffprobe's path falls back to the file beside FfmpegPath (see Resolve-ArmFfprobePath).
+            $filePath = if ($Name -eq 'ffprobe') { Resolve-ArmFfprobePath -Config $Config } else { $Config["$($Name)Path"] }
             if (-not $filePath) {
                 throw "No path configured for $Name"
             }

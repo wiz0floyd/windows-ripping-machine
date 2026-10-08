@@ -93,6 +93,65 @@ Describe 'Get-ArmConfig' {
     }
 }
 
+Describe 'FfprobePath' {
+    BeforeAll {
+        function Write-TestConfig([string] $Name, [string] $Body) {
+            Copy-Item (Join-Path $PSScriptRoot '..' 'config' 'config.example.psd1') -Destination (Join-Path $script:ConfigDir 'config.example.psd1') -Force
+            $path = Join-Path $script:ConfigDir $Name
+            "@{ Simulate = `$true`n$Body`n}" | Set-Content $path
+            $path
+        }
+    }
+
+    It 'is documented in config.example.psd1 as the bare PATH-resolved ffprobe' {
+        $example = Import-PowerShellDataFile -Path (Join-Path $PSScriptRoot '..' 'config' 'config.example.psd1')
+        $example.FfprobePath | Should -Be 'ffprobe'
+    }
+
+    It 'falls back to the default for an existing config that predates the key' {
+        $config = Get-ArmConfig -Path (Write-TestConfig 'old-bare.psd1' "FfmpegPath = 'ffmpeg'")
+        $config.FfprobePath | Should -Be 'ffprobe'
+
+        $config = Get-ArmConfig -Path (Write-TestConfig 'old-nokey.psd1' '')
+        $config.FfprobePath | Should -Be 'ffprobe'
+    }
+
+    It 'defaults to the ffprobe.exe next to a full-path FfmpegPath' {
+        $config = Get-ArmConfig -Path (Write-TestConfig 'old-full.psd1' "FfmpegPath = 'C:\tools\ffmpeg\bin\ffmpeg.exe'")
+        $config.FfprobePath | Should -Be 'C:\tools\ffmpeg\bin\ffprobe.exe'
+    }
+
+    It 'keeps an explicit FfprobePath' {
+        $config = Get-ArmConfig -Path (Write-TestConfig 'explicit.psd1' "FfmpegPath = 'C:\a\ffmpeg.exe'`nFfprobePath = 'D:\b\ffprobe.exe'")
+        $config.FfprobePath | Should -Be 'D:\b\ffprobe.exe'
+    }
+
+    It 'Resolve-ArmFfprobePath: explicit key, beside ffmpeg, else bare' {
+        Resolve-ArmFfprobePath -Config @{ FfprobePath = 'X:\p.exe'; FfmpegPath = 'C:\f\ffmpeg.exe' } | Should -Be 'X:\p.exe'
+        Resolve-ArmFfprobePath -Config @{ FfmpegPath = 'C:\f\ffmpeg.exe' } | Should -Be 'C:\f\ffprobe.exe'
+        Resolve-ArmFfprobePath -Config @{ FfmpegPath = 'ffmpeg' } | Should -Be 'ffprobe'
+        Resolve-ArmFfprobePath -Config @{} | Should -Be 'ffprobe'
+    }
+
+    It 'Invoke-ArmTool routes ffprobe to tests/stubs/stub-ffprobe.ps1 in Simulate mode' {
+        $r = Invoke-ArmTool -Name ffprobe -Arguments @('-v', 'error', 'C:\fake\a.mkv') -Config @{ Simulate = $true; LogDir = $script:LogDir }
+        $r.ExitCode | Should -Be 0
+        ($r.StdOut -join "`n") | Should -Match '"codec_type": "video"'
+    }
+
+    It 'Invoke-ArmTool runs the configured FfprobePath in real mode' {
+        # pwsh stands in for the ffprobe binary
+        $config = @{ Simulate = $false; FfprobePath = 'pwsh'; LogDir = $script:LogDir }
+        $r = Invoke-ArmTool -Name ffprobe -Arguments @('-NoProfile', '-Command', 'exit 0') -Config $config
+        $r.ExitCode | Should -Be 0
+    }
+
+    It 'Invoke-ArmTool returns ExitCode -1 (no throw) when ffprobe is missing in real mode' {
+        $config = @{ Simulate = $false; FfprobePath = 'nonexistent-ffprobe.exe'; LogDir = $script:LogDir }
+        (Invoke-ArmTool -Name ffprobe -Arguments @('-version') -Config $config).ExitCode | Should -Be -1
+    }
+}
+
 Describe 'Write-ArmLog' {
     It 'writes to console and logs file' {
         $config = @{

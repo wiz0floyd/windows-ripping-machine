@@ -33,14 +33,14 @@ wrm/
 ├── docs/PLAN.md                 # approved plan
 ├── config/config.example.psd1   # template; real config.psd1 is gitignored
 ├── src/
-│   ├── Common.ps1               # Get-ArmConfig, Write-ArmLog, Invoke-ArmTool, Get-DiscType
+│   ├── Common.ps1               # Get-ArmConfig, Resolve-ArmFfprobePath, Write-ArmLog, Invoke-ArmTool, Get-DiscType
 │   ├── JobState.ps1             # New-ArmJob, Update-ArmJob, Get-ArmJob, Get-ArmJobList, Remove-ArmStaleJobs
 │   ├── Rip-VideoDisc.ps1        # Invoke-VideoRip, Set-ArmMetadataFile
 │   ├── Rip-AudioCd.ps1          # Invoke-AudioRip
 │   ├── Resolve-Title.ps1        # Resolve-Title
 │   ├── Move-ToNas.ps1           # Move-ToNas
 │   ├── Send-Notification.ps1    # Send-ArmNotification
-│   ├── Upscale-Video.ps1        # Get-InterlaceType, Invoke-Upscale
+│   ├── Upscale-Video.ps1        # Get-InterlaceType, Get-VideoSourceInfo, Get-VideoFrameRate, Get-UpscalePlan, Invoke-Upscale
 │   ├── DiscWatcher.ps1          # entry point (event loop)
 │   ├── Upscale-Worker.ps1       # entry point (queue loop)
 │   ├── WebUi.ps1                # entry point (localhost status page; Invoke-ArmWebRequest)
@@ -48,8 +48,8 @@ wrm/
 ├── setup.ps1
 ├── tests/
 │   ├── *.Tests.ps1              # Pester 5, one per src module
-│   ├── stubs/                   # stub-makemkvcon.ps1, stub-freaccmd.ps1, stub-video2x.ps1, stub-ncnn.ps1
-│   ├── fixtures/                # makemkvcon robot output, TMDb JSON, ffmpeg idet output samples
+│   ├── stubs/                   # stub-makemkvcon.ps1, stub-freaccmd.ps1, stub-ffmpeg.ps1, stub-ffprobe.ps1, stub-video2x.ps1, stub-ncnn.ps1
+│   ├── fixtures/                # makemkvcon robot output, TMDb JSON, ffmpeg idet samples, ffprobe JSON, golden upscale args
 │   └── browser/                 # Playwright specs for the web UI (Node, test-only)
 ├── .gitignore                   # config/config.psd1, logs/, *.log
 └── README.md
@@ -70,6 +70,7 @@ wrm/
     MakeMkvConPath    = 'C:\Program Files (x86)\MakeMKV\makemkvcon64.exe'
     FreacCmdPath      = 'C:\Program Files\fre-ac\freaccmd.exe'
     FfmpegPath        = 'ffmpeg'
+    FfprobePath       = 'ffprobe'      # omitted => ffprobe.exe next to FfmpegPath (bare 'ffprobe' if FfmpegPath is bare)
     Video2xPath       = 'C:\Program Files\Video2X\video2x.exe'
     NcnnPath          = 'C:\ProgramData\wrm\venv\Scripts\python.exe'   # venv python running tools/ncnn_upscale.py
     NcnnModelDir      = 'C:\ProgramData\wrm\models'                      # openproteus-x2.param/.bin
@@ -109,18 +110,26 @@ Get-ArmConfig [-Path <string>] -> [hashtable]
 #  Loads config/config.psd1; falls back to config.example.psd1 with a WARN log.
 #  Checks presence/truthiness of NasVideoPath/NasMusicPath (throws if missing
 #  or blank) unless Simulate; no type validation is performed on any key.
-#  Expands relative paths.
+#  Expands relative paths. FfprobePath, when absent from config.psd1, is derived
+#  (Resolve-ArmFfprobePath) before the example backfill: '<dir of FfmpegPath>\ffprobe.exe'
+#  if FfmpegPath has a directory part, else the bare 'ffprobe' (resolved via PATH).
+
+Resolve-ArmFfprobePath -Config <hashtable> -> [string]
+#  Pure. $Config.FfprobePath if set, else ffprobe.exe beside a full-path FfmpegPath,
+#  else 'ffprobe'. Used by Get-ArmConfig, Invoke-ArmTool (-Name ffprobe) and the
+#  openproteus plan (the runner's --ffprobe).
 
 Write-ArmLog -Level <INFO|WARN|ERROR> -Message <string> [-Config <hashtable>]
 #  Timestamped line to console AND $Config.LogDir\wrm-<yyyyMMdd>.log.
 #  Must never throw (log dir auto-created; falls back to console-only).
 
-Invoke-ArmTool -Name <makemkvcon|freaccmd|ffmpeg|video2x|ncnn> -Arguments <string[]>
+Invoke-ArmTool -Name <makemkvcon|freaccmd|ffmpeg|ffprobe|video2x|ncnn> -Arguments <string[]>
                -Config <hashtable> [-TimeoutSec <int>] -> [pscustomobject]
 #  Returns @{ ExitCode=[int]; StdOut=[string[]]; StdErr=[string[]] }.
 #  When $Config.Simulate: runs tests/stubs/stub-<name>.ps1 with same args instead.
 #  `ncnn` runs $Config.NcnnPath (the venv python.exe); its Arguments start with
 #  `-I <repo>\tools\ncnn_upscale.py`. Default -TimeoutSec is 3600; Invoke-Upscale passes 86400.
+#  `ffprobe` runs Resolve-ArmFfprobePath (i.e. $Config.FfprobePath).
 #  Streams stdout lines to Write-ArmLog at INFO level (prefix "[<name>]").
 
 Get-DiscType -DriveLetter <char> -> 'AudioCD'|'Video'|'Data'|'None'
@@ -286,7 +295,7 @@ Send-ArmNotification -Title <string> -Message <string> -Level <Info|Error>
 #  POST JSON @{title;message;level} with 5s timeout, failures logged WARN only.
 
 # Upscale-Video.ps1
-Get-InterlaceType -InputFile <string> -Config <hashtable>
+Get-InterlaceType -InputFile <string> -Config <hashtable> [-Seek <int>] [-Duration <int>]
 #  -> 'Telecined'|'Interlaced'|'Progressive'
 #  ffmpeg -filter:v idet -frames:v 2000 -an -f null - ; parse "Multi frame detection"
 #  and "Repeated Fields". ffmpeg 8.x prints the idet summary TWICE (a throw-away
@@ -304,25 +313,85 @@ Get-VideoFrameRate -InputFile <string> -Config <hashtable> [-Seek 600] [-Duratio
 #  snaps frames/time to a standard rate ('24000/1001', '30000/1001', ...; within 2%).
 #  Needed because soft-telecined DVD rips decode at 23.976 but carry a 29.97 header.
 
-Get-VideoDisplayAspect -InputFile <string> -Config <hashtable> -> [double]
-#  `ffmpeg -hide_banner -i` stderr; last `DAR a:b` on the Video: line (bracketed or
-#  trailing form), else frame-size ratio, else 16:9 with a WARN.
+Get-VideoSourceInfo -InputFile <string> -Config <hashtable> -> [pscustomobject]
+#  Probes the SOURCE once with `ffprobe -v error -show_entries stream=...:format=duration
+#  -of json=compact=1 <file>` (Invoke-ArmTool -Name ffprobe). Never throws; replaces the
+#  old Get-VideoDisplayAspect (which parsed an `ffmpeg -i` banner of the intermediate).
+#  @{ Success; Error;
+#     Width; Height;                      # $null if unknown
+#     SampleAspectRatio; DisplayAspectRatio;   # 'n:d' as ffprobe printed them, else $null
+#     DisplayAspect;                      # [double] width/height of the displayed picture, never $null
+#     DisplayAspectSource;                # 'sar' | 'dar' | 'frame-size' | 'assumed'
+#     PixelFormat; ColorSpace; ColorPrimaries; ColorTransfer; ColorRange; FieldOrder;
+#     FrameRate;                          # HEADER rate, e.g. '30000/1001' (soft telecine lies; see Get-VideoFrameRate)
+#     DurationSec;                        # [double] or $null
+#     AudioStreamCount;                   # [int]
+#     Warnings }                          # [string[]], already logged at WARN
+#  DisplayAspect = frame size x SAR; else display_aspect_ratio; else frame-size ratio;
+#  else 16:9 with a WARN (the same chain the banner parse used). ffprobe's 'unknown'/
+#  'N/A' tags read as $null. A failed probe (non-zero exit, no JSON, no video stream)
+#  returns Success=$false, the 16:9 fallback, and WARNs.
+#  ConvertTo-VideoSourceInfo -Json <string> [-InputFile <string>] is the pure parser.
+
+# Probe window: Get-InterlaceType and Get-VideoFrameRate take the same optional -Seek/-Duration:
+#  Get-InterlaceType -Seek <int> -Duration <int>   (defaults -1 / 0 = omitted, i.e. probe from 0:00)
+#  Get-VideoFrameRate -Seek <int=600> -Duration <int=60>
+#  Invoke-Upscale does not pass a window to Get-InterlaceType yet (windowed/multi-sample
+#  classification is #30); the parameters exist so that change is a call-site edit.
+#  Unlike Get-VideoFrameRate, Get-InterlaceType does NOT retry from 0:00 when the seek
+#  lands past the end of a short file: idet then reports zero counts, which classifies
+#  as Interlaced with a WARN (the safe default). #30 owns adding that fallback.
+
+Get-UpscalePlan -InputFile <string> -SourceInfo <pscustomobject> -InterlaceType <Telecined|Interlaced|Progressive>
+                -FrameRate <string|$null> -Config <hashtable> [-ContentType <LiveAction|Animation>]
+                [-SampleOnly] -> [pscustomobject]
+#  PURE: no I/O, no process launches, no logging - every decision lives here and is
+#  unit-tested on its fields. Inputs are the facts Invoke-Upscale gathered
+#  (Get-VideoSourceInfo, Get-InterlaceType, Get-VideoFrameRate [skipped for Telecined]).
+#  @{ InputFile; BaseName; ContentType; SampleOnly; InterlaceType;
+#     Window            # $null, or @{ Seek=600; Duration=120 } for -SampleOnly
+#     Preprocess        # @{ Filter; FrameRate }  Filter = ONE -vf chain string or $null
+#                       #   (Telecined 'fieldmatch,yadif=deint=interlaced,decimate',
+#                       #    Interlaced 'bwdif=mode=send_frame', Progressive $null);
+#                       #   FrameRate = measured rate for `-fps_mode cfr -r`, $null for
+#                       #   Telecined or when unmeasured (then Warnings has the WARN)
+#     Engine; EngineTool; EngineLabel   # EngineTool = 'ncnn' | 'video2x'
+#     Target            # @{ Width; Height; DisplayAspect }, Width = 2*round(Height*DAR/2); $null for realesrgan
+#     Upscale           # engine params: Model/Scale | Shader | Runner/ModelBase/Ffmpeg/Ffprobe/RequiredFiles
+#     Encode            # @{ Codec='libx265'; Crf; Preset='slow'; AudioCodec='copy'; ResetSar }
+#     Colour            # @{ Space; Primaries; Transfer; Range; Action='none' } - source tags carried for #29
+#     Source; OutputFileName; Warnings; Error }
+#  Error is non-$null for an unknown engine or the realesrgan-plus x4-only mismatch;
+#  the plan never throws, Invoke-Upscale fails fast on it (before the slow preprocess).
+#  Pure argument builders turn a plan into the stage command lines:
+#    Get-UpscalePreprocessArgumentList -Plan -OutputFile            (ffmpeg -> ffv1 intermediate)
+#    Get-UpscaleEngineArgumentList -Plan -InputFile -OutputFile     (Invoke-ArmTool -Name $Plan.EngineTool)
+#    Get-UpscaleEncodeArgumentList -Plan -UpscaledFile -OutputFile  (ffmpeg libx265 mux)
+#  tests/fixtures/golden-upscale-args.json pins the exact argument lists for 26
+#  scenarios (captured before the plan refactor); tests assert the plan-built args
+#  equal them. Changing an ffmpeg/runner argument means regenerating that file on purpose.
 
 Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
                [-ContentType <LiveAction|Animation>] [-SampleOnly] -> [pscustomobject]
 #  @{ Success; OutputFile; InterlaceType; Engine; Error }   # Engine = openproteus|anime4k|realesrgan ($null if failed before engine selection)
-#  Chain: (a) classify; (b) preprocess with ffmpeg:
+#  Probe, plan, execute. (a) Probe: Get-VideoSourceInfo (ffprobe, source file),
+#  Get-InterlaceType, and - unless Telecined - Get-VideoFrameRate. Then Get-UpscalePlan;
+#  plan Warnings are logged, plan Error and (non-Simulate) missing openproteus
+#  runner/model files (error points at setup.ps1) fail the run before any encode.
+#  (b) preprocess with ffmpeg:
 #     Telecined  → -vf fieldmatch,yadif=deint=interlaced,decimate  (→23.976p)
 #     Interlaced → -vf bwdif=mode=send_frame
 #     Progressive→ passthrough
-#     encode intermediate ffv1|x264 crf 10 to temp;  -SampleOnly: -ss 600 -t 120.
+#     encode intermediate ffv1 to temp;  -SampleOnly: -ss 600 -t 120.
 #     Non-Telecined sources also get `-fps_mode cfr -r <Get-VideoFrameRate>` so the
 #     intermediate's header rate matches its timestamps (else downstream tools
 #     re-time soft-telecined 23.976 frames at 29.97: video ~25% fast, audio clipped).
 #  (c) engine = UpscaleAnimation (ContentType Animation) or UpscaleLiveAction, at
-#      W x H where H=UpscaleHeight, W=round(H*DAR/2)*2 (anamorphic-safe):
+#      W x H where H=UpscaleHeight, W=round(H*DAR/2)*2 (anamorphic-safe; DAR from the
+#      SOURCE's Get-VideoSourceInfo):
 #        openproteus -> ncnn tool: tools/ncnn_upscale.py (ffmpeg -> upscale-ncnn-py
-#                       OpenProteus 2x -> ffmpeg lanczos to WxH, setsar=1, x264 crf12 temp)
+#                       OpenProteus 2x -> ffmpeg lanczos to WxH, setsar=1, x264 crf12 temp;
+#                       --ffmpeg $FfmpegPath --ffprobe Resolve-ArmFfprobePath)
 #        anime4k     -> video2x -p libplacebo --libplacebo-shader $UpscaleShader -w W -h H
 #        realesrgan  -> legacy video2x realesrgan (model/scale from config)
 #  (d) ffmpeg mux: libx265 -crf $UpscaleCrf -preset slow, copy original audio;
