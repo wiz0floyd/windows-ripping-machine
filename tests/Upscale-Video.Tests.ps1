@@ -724,35 +724,82 @@ Describe 'Get-UpscalePlan' {
             $pal.ColorConvert | Should -Be $true
         }
 
-        It 'untagged >= 720 is assumed BT.709: tag only, no conversion' {
-            $p = New-ColourPlan -Source (New-ColourSource $null $null $null 720)
+        It 'untagged >= 720 is assumed BT.709: tag only for anime4k' {
+            $p = New-ColourPlan -ContentType Animation -Source (New-ColourSource $null $null $null 720)
             $p.ColorInput | Should -BeNullOrEmpty
             $p.ColorConvert | Should -Be $false
             $p.Colour.Action | Should -Be 'tag-only'
         }
 
-        It 'bt709-tagged source is tag only even at 480 lines' {
-            $p = New-ColourPlan -Source (New-ColourSource 'bt709' 'bt709' 'bt709' 480)
+        It 'bt709-tagged source is tag only for anime4k even at 480 lines' {
+            $p = New-ColourPlan -ContentType Animation -Source (New-ColourSource 'bt709' 'bt709' 'bt709' 480)
             $p.ColorInput | Should -BeNullOrEmpty
             $p.ColorConvert | Should -Be $false
+        }
+
+        It 'openproteus still converts a bt709-tagged source (its output is swscale BT.601)' {
+            $p = New-ColourPlan -Source (New-ColourSource 'bt709' 'bt709' 'bt709' 1080)
+            $p.ColorConvert | Should -Be $true
+            $p.ColorInputSpec | Should -Be 'ispace=bt470bg:iprimaries=bt709:itrc=bt709'
+            (Get-UpscaleEncodeArgumentList -Plan $p -UpscaledFile 'T:\u.mkv' -OutputFile 'O:\out.mkv') -join ' ' |
+                Should -Match '-vf setsar=1,colorspace=all=bt709:ispace=bt470bg:iprimaries=bt709:itrc=bt709:irange=tv:range=tv:dither=fsb -colorspace bt709 '
+        }
+
+        It 'adds a plan Warning naming an unsupported tag and falls back to height' {
+            $p = New-ColourPlan -Source (New-ColourSource 'bt2020nc' 'bt2020' 'bt709' 480)
+            ($p.Warnings -join "`n") | Should -Match 'bt2020nc'
+            $p.ColorInput | Should -Be 'bt601-6-525'
+        }
+
+        Context 'Get-UpscaleColorInput (pure helper)' {
+            It 'smpte170m matrix + bt470bg primaries (PAL DVD) is 625' {
+                (Get-UpscaleColorInput -SourceInfo (New-ColourSource 'smpte170m' 'bt470bg' 'gamma28' 576) -Engine anime4k).Input | Should -Be 'bt601-6-625'
+            }
+            It 'bt470bg matrix + smpte170m primaries is 525; primaries win' {
+                (Get-UpscaleColorInput -SourceInfo (New-ColourSource 'bt470bg' 'smpte170m' 'smpte170m' 480) -Engine anime4k).Input | Should -Be 'bt601-6-525'
+            }
+            It 'missing primaries fall back to the matrix' {
+                (Get-UpscaleColorInput -SourceInfo (New-ColourSource 'bt470bg' $null $null 576) -Engine anime4k).Input | Should -Be 'bt601-6-625'
+                (Get-UpscaleColorInput -SourceInfo (New-ColourSource 'smpte170m' $null $null 480) -Engine anime4k).InputSpec | Should -Be 'iall=bt601-6-525'
+            }
+            It 'untagged SD heights: <=500 is 525, others below 720 are 625' -ForEach @(
+                @{ H = 480; Want = 'bt601-6-525' }, @{ H = 486; Want = 'bt601-6-525' }, @{ H = 500; Want = 'bt601-6-525' },
+                @{ H = 540; Want = 'bt601-6-625' }, @{ H = 576; Want = 'bt601-6-625' }, @{ H = 704; Want = 'bt601-6-625' }
+            ) {
+                (Get-UpscaleColorInput -SourceInfo (New-ColourSource $null $null $null $H) -Engine anime4k).Input | Should -Be $Want
+            }
+            It 'untagged HD is BT.709: tag only except openproteus' {
+                $s = New-ColourSource $null $null $null 1080
+                (Get-UpscaleColorInput -SourceInfo $s -Engine anime4k).Convert | Should -Be $false
+                (Get-UpscaleColorInput -SourceInfo $s -Engine realesrgan).Convert | Should -Be $false
+                (Get-UpscaleColorInput -SourceInfo $s -Engine openproteus).InputSpec | Should -Be 'ispace=bt470bg:iprimaries=bt709:itrc=bt709'
+            }
+            It 'warns for an unsupported tag naming it, and uses the height' {
+                $r = Get-UpscaleColorInput -SourceInfo (New-ColourSource 'bt470m' 'bt470m' $null 576) -Engine anime4k
+                ($r.Warnings -join ' ') | Should -Match 'bt470m'
+                $r.Input | Should -Be 'bt601-6-625'
+            }
+            It 'does not warn for supported tags' {
+                (Get-UpscaleColorInput -SourceInfo $script:Source -Engine openproteus).Warnings.Count | Should -Be 0
+            }
         }
 
         It 'puts colorspace after setsar in ONE -vf chain and always tags the output (openproteus, anime4k)' {
             foreach ($ct in 'LiveAction', 'Animation') {
                 $a = Get-UpscaleEncodeArgumentList -Plan (New-ColourPlan -ContentType $ct) -UpscaledFile 'T:\u.mkv' -OutputFile 'O:\out.mkv'
-                ($a -join ' ') | Should -Be '-y -i T:\u.mkv -i C:\rips\movie.mkv -map 0:v:0 -map 1:a -vf setsar=1,colorspace=all=bt709:iall=bt601-6-525:irange=tv:range=tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv -c:v libx265 -crf 16 -preset slow -c:a copy -shortest O:\out.mkv'
+                ($a -join ' ') | Should -Be '-y -i T:\u.mkv -i C:\rips\movie.mkv -map 0:v:0 -map 1:a -vf setsar=1,colorspace=all=bt709:iall=bt601-6-525:irange=tv:range=tv:dither=fsb -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv -c:v libx265 -crf 16 -preset slow -c:a copy -shortest O:\out.mkv'
                 @($a | Where-Object { $_ -eq '-vf' }).Count | Should -Be 1
             }
         }
 
         It 'legacy realesrgan gets colorspace without setsar' {
             $a = Get-UpscaleEncodeArgumentList -Plan (New-ColourPlan -Override @{ UpscaleLiveAction = 'realesrgan' }) -UpscaledFile 'T:\u.mkv' -OutputFile 'O:\out.mkv'
-            ($a -join ' ') | Should -Match '-vf colorspace=all=bt709:iall=bt601-6-525:irange=tv:range=tv -colorspace bt709 '
+            ($a -join ' ') | Should -Match '-vf colorspace=all=bt709:iall=bt601-6-525:irange=tv:range=tv:dither=fsb -colorspace bt709 '
             ($a -join ' ') | Should -Not -Match 'setsar'
         }
 
-        It 'bt709 source: no colorspace filter but tags still set' {
-            $plan = New-ColourPlan -Source (New-ColourSource 'bt709' 'bt709' 'bt709' 480)
+        It 'bt709 source on anime4k: no colorspace filter but tags still set' {
+            $plan = New-ColourPlan -ContentType Animation -Source (New-ColourSource 'bt709' 'bt709' 'bt709' 480)
             $a = (Get-UpscaleEncodeArgumentList -Plan $plan -UpscaledFile 'T:\u.mkv' -OutputFile 'O:\out.mkv') -join ' '
             $a | Should -Match '-vf setsar=1 -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv -c:v libx265'
             $a | Should -Not -Match 'colorspace='
@@ -821,9 +868,9 @@ Describe 'Upscale stage argument builders' {
 
     It 'builds the mux arguments, trimming the audio input for a sample and resetting SAR' {
         (Get-UpscaleEncodeArgumentList -Plan (New-TestPlan -Sample) -UpscaledFile 'T:\u.mkv' -OutputFile 'O:\out.mkv') -join ' ' |
-            Should -Be '-y -i T:\u.mkv -ss 600 -t 120 -i C:\in\movie.mkv -map 0:v:0 -map 1:a -vf setsar=1,colorspace=all=bt709:iall=bt601-6-525:irange=tv:range=tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv -c:v libx265 -crf 16 -preset slow -c:a copy -shortest O:\out.mkv'
+            Should -Be '-y -i T:\u.mkv -ss 600 -t 120 -i C:\in\movie.mkv -map 0:v:0 -map 1:a -vf setsar=1,colorspace=all=bt709:iall=bt601-6-525:irange=tv:range=tv:dither=fsb -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv -c:v libx265 -crf 16 -preset slow -c:a copy -shortest O:\out.mkv'
         (Get-UpscaleEncodeArgumentList -Plan (New-TestPlan -Override @{ UpscaleLiveAction = 'realesrgan' }) -UpscaledFile 'T:\u.mkv' -OutputFile 'O:\out.mkv') -join ' ' |
-            Should -Be '-y -i T:\u.mkv -i C:\in\movie.mkv -map 0:v:0 -map 1:a -vf colorspace=all=bt709:iall=bt601-6-525:irange=tv:range=tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv -c:v libx265 -crf 16 -preset slow -c:a copy -shortest O:\out.mkv'
+            Should -Be '-y -i T:\u.mkv -i C:\in\movie.mkv -map 0:v:0 -map 1:a -vf colorspace=all=bt709:iall=bt601-6-525:irange=tv:range=tv:dither=fsb -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv -c:v libx265 -crf 16 -preset slow -c:a copy -shortest O:\out.mkv'
     }
 }
 
