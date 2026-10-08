@@ -701,6 +701,14 @@ Describe 'Invoke-DiscEject (verified eject, #41)' {
         Should -Invoke Write-ArmLog -Times 0 -ParameterFilter { $Level -eq 'INFO' }
     }
 
+    It 'never logs a success when the media state is unreadable ($null), only a WARN' {
+        Mock Get-ArmDriveMediaLoaded { $null }
+        Invoke-DiscEject -DriveLetter 'F' -Config $script:Config
+        Should -Invoke Invoke-ArmIoctlEject -Times 1
+        Should -Invoke Write-ArmLog -Times 0 -ParameterFilter { $Level -eq 'INFO' }
+        Should -Invoke Write-ArmLog -Times 1 -ParameterFilter { $Level -eq 'WARN' -and $Message -like 'Failed to eject F:*not confirmed*' }
+    }
+
     It 'WARNs and does not poll again when the IOCTL itself fails' {
         Mock Get-ArmDriveMediaLoaded { $true }
         Mock Invoke-ArmIoctlEject { $false }
@@ -741,6 +749,12 @@ Describe 'Wait-ArmEjected' {
         Wait-ArmEjected -DriveLetter 'F' -TimeoutSec 2 -PollMs 500 | Should -BeFalse
         Should -Invoke Get-ArmDriveMediaLoaded -Times 5
         Should -Invoke Start-Sleep -Times 4
+    }
+
+    It 'does not treat an unreadable state ($null) as ejected' {
+        Mock Get-ArmDriveMediaLoaded { $null }
+        Wait-ArmEjected -DriveLetter 'F' -TimeoutSec 1 -PollMs 500 | Should -BeFalse
+        Should -Invoke Get-ArmDriveMediaLoaded -Times 3
     }
 
     It 'returns $true as soon as the media leaves' {

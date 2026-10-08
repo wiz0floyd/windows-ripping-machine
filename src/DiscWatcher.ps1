@@ -116,12 +116,14 @@ function Resolve-CurrentDisc {
     True when the optical drive reports media loaded (Win32_CDROMDrive.MediaLoaded).
 
 .DESCRIPTION
-    Thin wrapper so tests can mock the media-state read. A drive that cannot be
-    queried is reported as having no media.
+    Thin wrapper so tests can mock the media-state read. Three-state: $true
+    (media loaded), $false (drive found, no media), $null (state unknown: CIM
+    error, or the drive was not found). Callers must treat $null as "cannot
+    tell", never as "empty".
 #>
 function Get-ArmDriveMediaLoaded {
     [CmdletBinding()]
-    [OutputType([bool])]
+    [OutputType([bool], [object])]
     param(
         [Parameter(Mandatory = $true)]
         [char] $DriveLetter
@@ -129,9 +131,12 @@ function Get-ArmDriveMediaLoaded {
 
     try {
         $drive = Get-CimInstance -ClassName Win32_CDROMDrive -Filter "Drive='$([char]::ToUpper($DriveLetter)):'" -ErrorAction Stop
-        return [bool]($drive -and $drive.MediaLoaded)
+        if (-not $drive -or $null -eq $drive.MediaLoaded) {
+            return $null
+        }
+        return [bool] $drive.MediaLoaded
     } catch {
-        return $false
+        return $null
     }
 }
 
@@ -263,10 +268,11 @@ function Invoke-ArmIoctlEject {
 
 <#
 .SYNOPSIS
-    Poll until the drive reports no media, or the timeout elapses.
+    Poll until the drive definitely reports no media, or the timeout elapses.
 
 .OUTPUTS
-    [bool] $true once media is gone, $false if it is still loaded after TimeoutSec.
+    [bool] $true once the drive reports MediaLoaded = $false; $false if media is
+    still loaded, or its state stayed unreadable ($null), after TimeoutSec.
 #>
 function Wait-ArmEjected {
     [CmdletBinding()]
@@ -282,7 +288,8 @@ function Wait-ArmEjected {
 
     $attempts = [Math]::Max(1, [int][Math]::Ceiling(($TimeoutSec * 1000) / [Math]::Max(1, $PollMs)))
     for ($i = 0; $i -le $attempts; $i++) {
-        if (-not (Get-ArmDriveMediaLoaded -DriveLetter $DriveLetter)) {
+        $loaded = Get-ArmDriveMediaLoaded -DriveLetter $DriveLetter
+        if ($loaded -is [bool] -and -not $loaded) {
             return $true
         }
         if ($i -lt $attempts) {
@@ -340,13 +347,13 @@ function Invoke-DiscEject {
             return
         }
 
-        Write-ArmLog -Level WARN -Message "Media still loaded in $DriveLetter`: after the shell eject; trying IOCTL fallback." -Config $Config
+        Write-ArmLog -Level WARN -Message "Media still loaded in $DriveLetter`: (or its state is unreadable) after the shell eject; trying IOCTL fallback." -Config $Config
         if ((Invoke-ArmIoctlEject -DriveLetter $DriveLetter -Config $Config) -and (Wait-ArmEjected -DriveLetter $DriveLetter)) {
             Write-ArmLog -Level INFO -Message "Ejected $DriveLetter`: (IOCTL fallback)" -Config $Config
             return
         }
 
-        Write-ArmLog -Level WARN -Message "Failed to eject $DriveLetter`: media is still loaded after the shell and IOCTL attempts." -Config $Config
+        Write-ArmLog -Level WARN -Message "Failed to eject $DriveLetter`: media is still loaded (or its state is unreadable) after the shell and IOCTL attempts; eject not confirmed." -Config $Config
     } catch {
         Write-ArmLog -Level WARN -Message "Failed to eject drive $DriveLetter`: $_" -Config $Config
     }

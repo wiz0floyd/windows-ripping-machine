@@ -422,7 +422,8 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #    No-op unless EjectWhenDone; under Simulate logs INFO "Simulate: skipping physical
 #    eject of X:" and touches nothing. Otherwise the eject is VERIFIED (#41): Shell.Application
 #    'Eject' verb (Invoke-ArmShellEject), then Wait-ArmEjected polls Win32_CDROMDrive
-#    MediaLoaded (Get-ArmDriveMediaLoaded) every 500 ms for up to 10 s. Gone -> INFO
+#    MediaLoaded (Get-ArmDriveMediaLoaded: $true / $false / $null = unreadable or drive not
+#    found; only a definite $false counts as ejected) every 500 ms for up to 10 s. Gone -> INFO
 #    "Ejected X: (shell)". Still loaded (the verb silently does nothing from the hidden
 #    wrm-watcher task) -> WARN, then Invoke-ArmIoctlEject (kernel32 P/Invoke compiled by
 #    Initialize-ArmNativeEject: open \\.\X:, FSCTL_LOCK_VOLUME/FSCTL_DISMOUNT_VOLUME best
