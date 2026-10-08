@@ -18,7 +18,25 @@
 # file to work with.
 
 $argList = @($args)
-$isIdet = ($argList -join ' ') -match 'idet'
+
+# The idet probe (Get-InterlaceType) is a null-sink run whose video filter is
+# exactly `idet`: `... -filter:v idet ... -f null -`. A preprocess call may carry
+# `idet` inside a longer chain (e.g. `idet,bwdif=...`) but writes a real output
+# file, so matching `idet` anywhere in the args would misdetect it as the probe.
+$isIdet = $false
+if ($argList.Count -gt 0 -and $argList[$argList.Count - 1] -eq '-') {
+    for ($i = 0; $i -lt $argList.Count - 1; $i++) {
+        if ($argList[$i] -notin @('-filter:v', '-vf', '-filter')) { continue }
+        $valueIdx = $i + 1
+        # When pwsh launches the stub, `-filter:v` reaches $args split in two
+        # (`-filter`, `v`) - skip the stream-specifier remnant.
+        if ($argList[$i] -eq '-filter' -and $argList[$valueIdx] -eq 'v' -and $valueIdx + 1 -lt $argList.Count) { $valueIdx++ }
+        if ($argList[$valueIdx] -match '^idet(=[^,]*)?$') {
+            $isIdet = $true
+            break
+        }
+    }
+}
 
 if ($isIdet) {
     $fixturePath = Join-Path $PSScriptRoot '..' 'fixtures' 'ffmpeg-idet-progressive.txt'
