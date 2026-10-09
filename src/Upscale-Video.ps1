@@ -1,6 +1,14 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# ncnn engines (tools/ncnn_upscale.py via the 'ncnn' tool): engine name -> model file base
+# name in NcnnModelDir (<base>.param / <base>.bin). Every model here is 2x, RGB in/out,
+# with 'data' / 'output' blobs; setup.ps1 installs them.
+$script:ArmNcnnEngineModels = [ordered]@{
+    openproteus = 'openproteus-x2'   # 2x OpenProteus Compact (Sirosky), downloaded
+    liveaction  = 'liveaction-x2'    # 2xLiveActionV1_SPAN (jcj83429), bundled in tools/models
+}
+
 <#
 .SYNOPSIS
     Classify the interlace type of a video file using ffmpeg's idet filter.
@@ -484,10 +492,11 @@ function Get-VideoFrameRate {
     color_primaries, else from the space); bt709 = BT.709. Untagged: height < 720 is BT.601
     (<= 500 lines NTSC/525, else PAL/625); >= 720 or unknown height is BT.709.
     Tags outside smpte170m/bt470bg/bt709 add a Warning and fall back to the height rule.
-    openproteus (tools/ncnn_upscale.py) re-encodes RGB to YUV with the swscale default, so its
-    output is BT.601 matrix with the source's primaries whatever the source was: a BT.709 or
-    untagged-HD source still converts (ispace=bt470bg, iprimaries/itrc bt709). anime4k and
-    realesrgan keep the source matrix and are tag only for BT.709 sources.
+    The ncnn engines (openproteus, liveaction: tools/ncnn_upscale.py) re-encode RGB to YUV with
+    the swscale default, so their output is BT.601 matrix with the source's primaries whatever
+    the source was: a BT.709 or untagged-HD source still converts (ispace=bt470bg,
+    iprimaries/itrc bt709). anime4k and realesrgan keep the source matrix and are tag only
+    for BT.709 sources.
 #>
 function Get-UpscaleColorInput {
     [CmdletBinding()]
@@ -521,7 +530,7 @@ function Get-UpscaleColorInput {
     $matrix = $null
     $spec = $null
     if ($kind -eq '709') {
-        if ($Engine -eq 'openproteus') {
+        if ($Engine -in $script:ArmNcnnEngineModels.Keys) {
             $matrix = 'bt601-matrix-bt709-primaries'
             $spec = 'ispace=bt470bg:iprimaries=bt709:itrc=bt709'
         }
@@ -559,16 +568,17 @@ function Get-UpscaleColorInput {
                                             for non-Telecined sources whose decoded rate
                                             was measured (soft-telecined rips decode at
                                             23.976 under a 29.97 header).
-      Engine                   'openproteus' | 'anime4k' | 'realesrgan' (as configured;
+      Engine                   'openproteus' | 'liveaction' | 'anime4k' | 'realesrgan' (as configured;
                                may be invalid - see Error)
       EngineTool               Invoke-ArmTool name for the upscale stage: 'ncnn' | 'video2x'
       EngineLabel              name used in failure messages
-      Target                   @{ Width; Height; DisplayAspect } for openproteus/anime4k
+      Target                   @{ Width; Height; DisplayAspect } for the ncnn engines/anime4k
                                (width = 2 * round(height * DAR / 2)); $null for realesrgan
       Upscale                  engine parameters: Model/Scale (realesrgan), Shader
                                (anime4k), Runner/ModelBase/Ffmpeg/Ffprobe/RequiredFiles
-                               (openproteus)
+                               (ncnn engines: openproteus, liveaction)
       Encode                   @{ Codec; Crf; Preset; AudioCodec; ResetSar }
+                               (Preset from UpscalePreset, default 'slow')
       Colour                   @{ Space; Primaries; Transfer; Range; Action } - the source's
                                colour tags; Action is 'convert-to-bt709' or 'tag-only'.
       ColorInput / ColorInputSpec / ColorConvert   from Get-UpscaleColorInput: the engine output's
@@ -687,7 +697,7 @@ function Get-UpscalePlan {
         $engineLabel = 'video2x'
         $upscale['Model'] = $Config.UpscaleModel
         $upscale['Scale'] = $Config.UpscaleScale
-    } elseif ($engine -in @('openproteus', 'anime4k')) {
+    } elseif ($engine -in @(@($script:ArmNcnnEngineModels.Keys) + 'anime4k')) {
         # Target size from the display aspect ratio, not the frame size: DVD rips are
         # anamorphic (720x480 with SAR 853:720 is 16:9), and video2x keeps the SAR.
         $targetHeight = [int](Get-UpscaleSetting -Config $Config -Name 'UpscaleHeight' -Default 1080)
@@ -697,9 +707,9 @@ function Get-UpscalePlan {
             Height        = $targetHeight
             DisplayAspect = $dar
         }
-        if ($engine -eq 'openproteus') {
+        if ($engine -in $script:ArmNcnnEngineModels.Keys) {
             $runner = Join-Path $PSScriptRoot '..' 'tools' 'ncnn_upscale.py'
-            $modelBase = Join-Path (Get-UpscaleSetting -Config $Config -Name 'NcnnModelDir' -Default 'C:\ProgramData\wrm\models') 'openproteus-x2'
+            $modelBase = Join-Path (Get-UpscaleSetting -Config $Config -Name 'NcnnModelDir' -Default 'C:\ProgramData\wrm\models') $script:ArmNcnnEngineModels[$engine]
             $engineTool = 'ncnn'
             $engineLabel = 'ncnn upscale'
             $upscale['Runner'] = $runner
@@ -713,7 +723,7 @@ function Get-UpscalePlan {
             $upscale['Shader'] = Get-UpscaleSetting -Config $Config -Name 'UpscaleShader' -Default 'anime4k-v4-a+a'
         }
     } else {
-        $planError = "Unknown upscale engine '$engine' for ContentType $ContentType (expected openproteus, anime4k, or realesrgan)"
+        $planError = "Unknown upscale engine '$engine' for ContentType $ContentType (expected openproteus, liveaction, anime4k, or realesrgan)"
     }
 
     # Colour policy (#29): see Get-UpscaleColorInput.
@@ -738,7 +748,7 @@ function Get-UpscalePlan {
         Encode         = [ordered]@{
             Codec      = 'libx265'
             Crf        = $Config.UpscaleCrf
-            Preset     = 'slow'
+            Preset     = Get-UpscaleSetting -Config $Config -Name 'UpscalePreset' -Default 'slow'
             AudioCodec = 'copy'
             # Upscaled to the exact display size; drop the source's anamorphic SAR
             # (video2x carries it through) so players don't stretch the frame twice.
@@ -800,6 +810,20 @@ function Get-UpscaleEngineArgumentList {
         [Parameter(Mandatory = $true)] [string] $OutputFile
     )
 
+    if ($Plan.Engine -in $script:ArmNcnnEngineModels.Keys) {
+        return [string[]]@(
+            '-I', $Plan.Upscale.Runner,
+            '--input', $InputFile,
+            '--param', "$($Plan.Upscale.ModelBase).param",
+            '--bin', "$($Plan.Upscale.ModelBase).bin",
+            '--scale', '2',
+            '--out-width', "$($Plan.Target.Width)",
+            '--out-height', "$($Plan.Target.Height)",
+            '--ffmpeg', $Plan.Upscale.Ffmpeg,
+            '--ffprobe', $Plan.Upscale.Ffprobe,
+            '--output', $OutputFile
+        )
+    }
     switch ($Plan.Engine) {
         'realesrgan' {
             return [string[]]@(
@@ -808,20 +832,6 @@ function Get-UpscaleEngineArgumentList {
                 '--realesrgan-model', $Plan.Upscale.Model,
                 '-s', "$($Plan.Upscale.Scale)",
                 '-o', $OutputFile
-            )
-        }
-        'openproteus' {
-            return [string[]]@(
-                '-I', $Plan.Upscale.Runner,
-                '--input', $InputFile,
-                '--param', "$($Plan.Upscale.ModelBase).param",
-                '--bin', "$($Plan.Upscale.ModelBase).bin",
-                '--scale', '2',
-                '--out-width', "$($Plan.Target.Width)",
-                '--out-height', "$($Plan.Target.Height)",
-                '--ffmpeg', $Plan.Upscale.Ffmpeg,
-                '--ffprobe', $Plan.Upscale.Ffprobe,
-                '--output', $OutputFile
             )
         }
         'anime4k' {
@@ -893,7 +903,7 @@ function Get-UpscaleEncodeArgumentList {
 
 <#
 .SYNOPSIS
-    Deinterlace/IVTC, upscale (OpenProteus ncnn runner, Video2X libplacebo/Anime4K, or Real-ESRGAN), and re-encode a DVD-sourced video.
+    Deinterlace/IVTC, upscale (ncnn runner: OpenProteus or LiveAction SPAN, Video2X libplacebo/Anime4K, or Real-ESRGAN), and re-encode a DVD-sourced video.
 
 .DESCRIPTION
     Probe, plan, execute:
@@ -902,7 +912,7 @@ function Get-UpscaleEncodeArgumentList {
          non-Telecined sources, Get-VideoFrameRate (decoded rate).
       1. Get-UpscalePlan (pure) turns those facts + config + -ContentType + -SampleOnly
          into a plan object; an invalid plan (unknown engine, realesrgan model/scale
-         mismatch, missing OpenProteus runner/model) fails here, before any slow work.
+         mismatch, missing ncnn runner/model) fails here, before any slow work.
       2. ffmpeg preprocess to a temporary intermediate:
            Telecined  -> -vf fieldmatch,yadif=deint=interlaced,decimate
            Interlaced -> -vf idet,bwdif=mode=send_frame:deint=interlaced
@@ -917,12 +927,14 @@ function Get-UpscaleEncodeArgumentList {
            openproteus -> tools/ncnn_upscale.py via the 'ncnn' tool: OpenProteus 2x ncnn
                           model (NcnnModelDir\openproteus-x2.*), scaled to the exact
                           UpscaleHeight x DAR-derived width, SAR reset to 1.
+           liveaction  -> same runner with the 2xLiveActionV1_SPAN model
+                          (NcnnModelDir\liveaction-x2.*).
            anime4k     -> video2x -p libplacebo --libplacebo-shader $Config.UpscaleShader
                           at the same DAR-derived output size.
            realesrgan  -> legacy video2x realesrgan with UpscaleModel/UpscaleScale.
          Output width = round(UpscaleHeight x source DAR / 2) * 2, so anamorphic DVDs
          (e.g. 720x480 SAR 853:720) come out at the right aspect.
-      4. ffmpeg mux: re-encode video libx265 -crf $Config.UpscaleCrf -preset slow,
+      4. ffmpeg mux: re-encode video libx265 -crf $Config.UpscaleCrf -preset $Config.UpscalePreset (default slow),
          copy the original file's audio stream(s) untouched. -SampleOnly also trims
          the audio input to the same 10:00-12:00 window as the (already-trimmed)
          video intermediate, plus -shortest, so the sample's audio matches its video
@@ -951,7 +963,7 @@ function Get-UpscaleEncodeArgumentList {
     file - used for review before committing to AutoUpscale=$false's full run.
 
 .OUTPUTS
-    [pscustomobject] @{ Success; OutputFile; InterlaceType; Engine; Error }  (Engine: openproteus | anime4k | realesrgan; $null if it failed before engine selection)
+    [pscustomobject] @{ Success; OutputFile; InterlaceType; Engine; Error }  (Engine: openproteus | liveaction | anime4k | realesrgan; $null if it failed before engine selection)
 
 .EXAMPLE
     Invoke-Upscale -InputFile 'C:\rips\staging\movie.mkv' -OutputDir 'C:\rips\staging' -Config $config
@@ -1022,7 +1034,7 @@ function Invoke-Upscale {
             foreach ($required in $plan.Upscale.RequiredFiles) {
                 if (-not (Test-Path -LiteralPath $required)) {
                     $engine = $plan.Engine
-                    throw "OpenProteus engine needs '$required' - run setup.ps1 to install the ncnn runner and model"
+                    throw "$($plan.Engine) engine needs '$required' - run setup.ps1 to install the ncnn runner and model"
                 }
             }
         }

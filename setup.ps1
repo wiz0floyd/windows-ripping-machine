@@ -111,8 +111,65 @@ function Expand-ArmTarGz {
 
 <#
 .SYNOPSIS
-    Install the ncnn upscale runtime used by the 'openproteus' engine: a dedicated
-    Python venv with tools/requirements-ncnn.txt, plus the OpenProteus 2x ncnn model.
+    Copy a repo-bundled ncnn model (tools/models/<Name>.param/.bin) into ModelDir after
+    checking both files against pinned SHA256 values. Returns $true when installed or
+    already present.
+
+.DESCRIPTION
+    Non-fatal: a missing or mismatched source file is a warning and nothing is copied.
+    An existing pair in ModelDir is left alone (same idempotency rule as the OpenProteus
+    download). The default is 2xLiveActionV1_SPAN (jcj83429, CC BY-NC-SA 4.0), converted
+    by tools/convert_span_ncnn.py; see tools/models/README.md.
+#>
+function Install-ArmBundledNcnnModel {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)] [string] $SourceDir,
+        [Parameter(Mandatory = $true)] [string] $ModelDir,
+        [string] $Name = 'liveaction-x2',
+        [string] $ParamSha256 = '2b0a04ad8519d2bc526227e7fedde9b7ebe7bce2f42476ad73c3431c49928bdc',
+        [string] $BinSha256 = '5395811c56e60f39e42d9a3587fba1fa7af07a3aed1dfca26ae38e580d3b6f27'
+    )
+
+    $targets = @(
+        @{ Ext = 'param'; Sha = $ParamSha256 }
+        @{ Ext = 'bin'; Sha = $BinSha256 }
+    )
+    if (@($targets | Where-Object { -not (Test-Path -LiteralPath (Join-Path $ModelDir "$Name.$($_.Ext)")) }).Count -eq 0) {
+        Write-Host "$Name model already installed: $ModelDir"
+        return $true
+    }
+    try {
+        foreach ($t in $targets) {
+            $src = Join-Path $SourceDir "$Name.$($t.Ext)"
+            if (-not (Test-Path -LiteralPath $src)) {
+                Write-Warning "Bundled model file $src is missing; the '$Name' model was NOT installed."
+                return $false
+            }
+            $actual = (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
+            if ($actual -ne $t.Sha.ToUpperInvariant()) {
+                Write-Warning "$src SHA256 mismatch (expected $($t.Sha), got $($actual.ToLowerInvariant())); the '$Name' model was NOT installed."
+                return $false
+            }
+        }
+        $null = New-Item -ItemType Directory -Force -Path $ModelDir
+        foreach ($t in $targets) {
+            Copy-Item -LiteralPath (Join-Path $SourceDir "$Name.$($t.Ext)") -Destination (Join-Path $ModelDir "$Name.$($t.Ext)") -Force
+        }
+        Write-Host "Installed $Name model to $ModelDir"
+        return $true
+    } catch {
+        Write-Warning "$Name model install failed: $_"
+        return $false
+    }
+}
+
+<#
+.SYNOPSIS
+    Install the ncnn upscale runtime used by the 'openproteus' and 'liveaction' engines: a
+    dedicated Python venv with tools/requirements-ncnn.txt, the repo-bundled LiveAction SPAN
+    model (Install-ArmBundledNcnnModel), and the OpenProteus 2x ncnn model.
 
 .DESCRIPTION
     Idempotent and non-fatal: every failure is a warning (the pipeline still works
@@ -128,7 +185,10 @@ function Expand-ArmTarGz {
     Target venv python.exe (config key NcnnPath). Created if missing.
 
 .PARAMETER ModelDir
-    Directory receiving openproteus-x2.param/.bin (config key NcnnModelDir).
+    Directory receiving openproteus-x2 / liveaction-x2 .param/.bin (config key NcnnModelDir).
+
+.PARAMETER BundledModelDir
+    Repo directory holding the bundled models (default tools/models next to this script).
 
 .PARAMETER BasePython
     Python used to create the venv (default: python on PATH).
@@ -140,6 +200,7 @@ function Install-NcnnUpscaler {
         [Parameter(Mandatory = $true)] [string] $PythonPath,
         [Parameter(Mandatory = $true)] [string] $ModelDir,
         [string] $BasePython = 'python',
+        [string] $BundledModelDir = (Join-Path $PSScriptRoot 'tools' 'models'),
         [string] $ModelUrl = 'https://github.com/TNTwise/real-video-enhancer-models/releases/download/models/2x_OpenProteus_Compact_i2_70K.tar.gz',
         [string] $ModelSha256 = '0d96689273650613726ebae4482cdc56943f46e819f99109054d0ca325d6a7c7'
     )
@@ -150,7 +211,7 @@ function Install-NcnnUpscaler {
         Write-Host "Creating Python venv: $venvDir"
         $rc = Invoke-ArmPython -Python $BasePython -Arguments @('-m', 'venv', $venvDir)
         if ($rc -ne 0 -or -not (Test-Path -LiteralPath $PythonPath)) {
-            Write-Warning "Could not create the Python venv at $venvDir (is Python 3.10+ on PATH?). The 'openproteus' engine will be unavailable; set UpscaleLiveAction = 'anime4k' or install Python and re-run setup."
+            Write-Warning "Could not create the Python venv at $venvDir (is Python 3.10+ on PATH?). The 'openproteus' and 'liveaction' engines will be unavailable; set UpscaleLiveAction = 'anime4k' or install Python and re-run setup."
             return
         }
     } else {
@@ -158,11 +219,14 @@ function Install-NcnnUpscaler {
     }
     $rc = Invoke-ArmPython -Python $PythonPath -Arguments @('-I', '-m', 'pip', 'install', '--quiet', '-r', $RequirementsPath)
     if ($rc -ne 0) {
-        Write-Warning "pip install -r $RequirementsPath failed (exit $rc); the 'openproteus' engine may not work."
+        Write-Warning "pip install -r $RequirementsPath failed (exit $rc); the 'openproteus' and 'liveaction' engines may not work."
         return
     }
 
-    # --- model ---
+    # --- bundled model (no download) ---
+    $null = Install-ArmBundledNcnnModel -SourceDir $BundledModelDir -ModelDir $ModelDir
+
+    # --- OpenProteus model ---
     $paramFile = Join-Path $ModelDir 'openproteus-x2.param'
     $binFile = Join-Path $ModelDir 'openproteus-x2.bin'
     if ((Test-Path -LiteralPath $paramFile) -and (Test-Path -LiteralPath $binFile)) {
@@ -638,7 +702,7 @@ Administrator (Run as Administrator) pwsh window.
     $examplePath = Join-Path $repoRoot 'config' 'config.example.psd1'
     $example = Import-PowerShellDataFile -Path $examplePath
     Install-NcnnUpscaler -RequirementsPath (Join-Path $repoRoot 'tools' 'requirements-ncnn.txt') `
-        -PythonPath $example.NcnnPath -ModelDir $example.NcnnModelDir
+        -PythonPath $example.NcnnPath -ModelDir $example.NcnnModelDir -BundledModelDir (Join-Path $repoRoot 'tools' 'models')
     Initialize-ArmDirectories -Paths @{
         StagingDir      = $example.StagingDir
         UpscaleQueueDir = $example.UpscaleQueueDir

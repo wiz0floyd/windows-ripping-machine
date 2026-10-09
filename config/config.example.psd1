@@ -13,7 +13,7 @@
     FfprobePath       = 'ffprobe'      # if omitted from config.psd1, defaults to the ffprobe.exe next to FfmpegPath (bare 'ffprobe' when FfmpegPath is bare)
     Video2xPath       = 'C:\Program Files\Video2X\video2x.exe'
     NcnnPath          = 'C:\ProgramData\wrm\venv\Scripts\python.exe'   # venv python that runs tools/ncnn_upscale.py (setup.ps1 creates it)
-    NcnnModelDir      = 'C:\ProgramData\wrm\models'                      # holds openproteus-x2.param/.bin (setup.ps1 downloads them)
+    NcnnModelDir      = 'C:\ProgramData\wrm\models'                      # holds openproteus-x2 / liveaction-x2 .param/.bin (setup.ps1 installs them)
     # --- Behavior ---
     MinTitleLengthSec = 600
     RipAllTitles      = $true          # else main title only
@@ -29,13 +29,14 @@
     UpscaleDvds       = $false
     AutoUpscale       = $false         # $false => stop after -SampleOnly clip, notify for review
     UpscaleActiveHours= @('23:00','08:00')
-    UpscaleLiveAction = 'openproteus'  # engine for live-action: openproteus (2x ncnn, natural) | anime4k (sharper) | realesrgan (legacy, uses UpscaleModel/UpscaleScale)
+    UpscaleLiveAction = 'openproteus'  # engine for live-action: openproteus (2x ncnn, natural) | liveaction (2x ncnn SPAN, fixes compression/halos/deinterlace jaggies) | anime4k (sharper) | realesrgan (legacy, uses UpscaleModel/UpscaleScale)
     UpscaleAnimation  = 'anime4k'      # engine for ContentType=Animation (queue item field `ContentType`); same choices
     UpscaleHeight     = 1080           # output height; width comes from the source display aspect ratio
     UpscaleShader     = 'anime4k-v4-a+a'   # libplacebo shader used by the anime4k engine
     UpscaleModel      = 'realesrgan-plus'  # legacy realesrgan engine only: video2x 6.4 models realesr-animevideov3, realesrgan-plus-anime, realesrgan-plus
     UpscaleScale      = 4                  # legacy realesrgan engine only: plus/-anime ship x4 only; use realesr-animevideov3 for x2/x3
     UpscaleCrf        = 16
+    UpscalePreset     = 'slow'         # libx265 preset for the final encode; 'medium' is ~2.5x faster for ~0.0005 SSIM (docs/upscaler-spike-2026-10.md)
     # --- Web UI (http://localhost:<WebUiPort>/, this machine only) ---
     WebUiEnabled      = $true          # $false => the wrm-webui task exits immediately
     WebUiPort         = 8765
