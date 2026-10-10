@@ -26,15 +26,16 @@ $ErrorActionPreference = 'Stop'
     States:
       Rip     : Detected -> Ripping -> Moving -> Complete | Failed
       Upscale : Queued -> Sampling -> AwaitingReview -> Upscaling -> Complete | Failed
-                (Cancelled is reserved for the web UI's cancel action)
+                (Cancelled is reserved for the web UI's cancel action;
+                Skipped = the worker decided no upscale is needed, Reason says why)
 #>
 
 $script:ArmJobFields = @(
     'Id', 'Kind', 'State', 'Title', 'DiscLabel', 'DiscType', 'Drive', 'StagingDir',
-    'DestDir', 'QueueFile', 'SamplePath', 'OutputFile', 'ContentType', 'Engine', 'InterlaceType', 'Error', 'Created', 'Updated', 'History'
+    'DestDir', 'QueueFile', 'SamplePath', 'OutputFile', 'ContentType', 'Engine', 'InterlaceType', 'Error', 'Reason', 'Created', 'Updated', 'History'
 )
 $script:ArmJobIdPattern = '^\d{8}-\d{6}-[0-9a-f]{6}$'
-$script:ArmJobTerminalStates = @('Complete', 'Failed', 'Cancelled')
+$script:ArmJobTerminalStates = @('Complete', 'Failed', 'Cancelled', 'Skipped')
 $script:ArmJobStateDirWarned = $false
 
 <#

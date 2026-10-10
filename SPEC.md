@@ -310,7 +310,7 @@ Move-ArmExtrasToSubdir -Dir <string> -Config <hashtable> -> [pscustomobject] { S
 #  MainFeature = full path of the kept (largest) top-level .mkv, $null if none/failed.
 # Called by Invoke-VideoDispatch before Move-ToNas: keeps the largest top-level .mkv in place and moves
 # the other top-level .mkv files into <Dir>\extras\ (Jellyfin extras folder). No-op for <2 .mkv files.
-Rename-ArmMainFeature -Dir <string> -Config <hashtable> [-MainFeature <string>] -> [pscustomobject] { Success, Renamed, Path, Error }
+Rename-ArmMainFeature -Dir <string> -Config <hashtable> [-MainFeature <string>] [-Label <string>] -> [pscustomobject] { Success, Renamed, Path, Error }
 # Called right after Move-ArmExtrasToSubdir (video rips only): renames the largest top-level .mkv to
 # '<leaf of Dir>.mkv' (leaf = resolved folder name = NAS folder name, since Move-ToNas uses the source
 # leaf). Jellyfin groups files as versions of one movie only when each name is the folder name, or the folder
@@ -335,7 +335,7 @@ Rename-ArmUpscaleVersions -FolderName <string> -UpscaledFile <string> -SourceFil
 #  dir is preserved and the caller (DiscWatcher.ps1) logs/notifies for manual
 #  re-trigger.
 
-# tools/Repair-ArmJellyfinNames.ps1 -Path <movies root> [-ConfigPath] [-Simulate] [-WhatIf]
+# tools/Repair-ArmJellyfinNames.ps1 -Path <movies root> [-ConfigPath] [-Simulate] [-Since <date>] [-Until <date>] [-RemoveOrphans] [-WhatIf]
 #  One-off repair of existing libraries (SupportsShouldProcess; Repair-ArmJellyfinNames function returns
 #  rows Folder, File, Action Renamed|WouldRename|Moved|WouldMove|Skipped, NewName, Reason). Per movie
 #  folder, top-level .mkv only; the largest raw file is the main feature and every other raw file that
@@ -577,6 +577,9 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #  (+Error, QueueFile=<.failed>). An unparseable queue file becomes a new Failed
 #  job. Job-state writes never throw and can never turn a good upscale into .failed.
 #  Each pass (inside or outside active hours) first calls Remove-ArmStaleJobs.
+#  Skip check: before sampling/upscaling, Get-ArmUpscaleSkipReason probes the source (Get-VideoSourceInfo);
+#  Height >= UpscaleHeight (default 1080) -> SkipReason is written into the queue file, which is renamed
+#  '.skipped'; the job ends State=Skipped with Reason. A failed probe never skips.
 
 # JobState.ps1 (job-state store; read by the web UI)
 New-ArmJob     -Kind <Rip|Upscale> [-Properties <hashtable>] -Config <hashtable> -> [string] JobId | $null
@@ -589,7 +592,8 @@ Remove-ArmStaleJobs -Config <hashtable> -> [int] removed
 #  pattern, so an Id can never address a path outside the jobs dir.
 #  Record: { Id; Kind; State; Title; DiscLabel; DiscType; Drive; StagingDir;
 #            DestDir; QueueFile; SamplePath; OutputFile; ContentType; Engine; InterlaceType;
-#            Error; Created; Updated; History[] }
+#            Error; Reason; Created; Updated; History[] }
+#  Upscale terminal states: Complete | Failed | Cancelled | Skipped (Reason = why no upscale was needed).
 #  ContentType/Engine/InterlaceType are set on Upscale jobs only; the web UI shows them
 #  next to the sample path so a reviewer sees which engine produced the sample.
 #  History = [{ State; At }], appended on every State change. Timestamps are
@@ -729,3 +733,18 @@ Invoke-ArmWebRequest -Method <string> -Path <string> [-Query <hashtable>] [-Body
   `fixtures/seed.ps1`, which writes through the real `src/JobState.ps1`. Every spec
   fails on any browser console error.
 ```
+
+
+## CLI: `wrm` (src/wrm.ps1, bin/wrm.cmd)
+
+```
+wrm repair  [-Path <movies root>] [-Since <date>] [-Until <date>] [-RemoveOrphans] [-WhatIf]   # wraps tools/Repair-ArmJellyfinNames.ps1; -Path defaults to NasVideoPath
+wrm upscale <movie folder | movies root>... [-ContentType LiveAction|Animation] [-Force] [-WhatIf]
+wrm install-cli                                                              # adds bin\ to the user PATH
+Add-ArmUpscaleQueueFromLibrary -MovieDir <string[]> -Config <hashtable> [-ContentType] [-Force]
+    -> rows { Folder, File, Action (Queued|WouldQueue|Skipped), Reason }
+```
+`Rename-ArmMainFeature -Label <L>` names the file `<folder> - <L>.mkv` (kept as-is when it already ends in `- <N>p`/`- DVD`).
+Invoke-VideoDispatch passes `Label` = probed height (`480p`; `DVD` if unknown) for DVDs, so the original is `<folder> - 480p.mkv` from the rip.
+`Add-ArmUpscaleQueueFromLibrary` queues the largest top-level .mkv (via `New-UpscaleQueueEntry`, ContentType from metadata.json unless overridden); skips folders with an upscale (`[AI upscale Np]` or `- Hp`, H>=720), a queue entry (.json/.awaiting-review/.failed), a probe failure, or height >= 720 (unless -Force).
+`-RemoveOrphans` (opt-in, deletes): after the renames, removes top-level Jellyfin sidecars (`<stem>.nfo` except movie.nfo, `<stem>-poster|backdrop|landscape|logo|banner|thumb|clearlogo|clearart|fanart|disc.<img>`, `<stem>.trickplay\`) whose `<stem>` is not the base name of a video in the folder, using post-rename names (so `-WhatIf` previews the end state). Skips a folder with any Skipped row or no video. Rows: Removed | WouldRemove.

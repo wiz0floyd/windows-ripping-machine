@@ -17,6 +17,7 @@ foreach ($module in @(
         'Rip-AudioCd.ps1',
         'Resolve-Title.ps1',
         'Move-ToNas.ps1',
+        'Upscale-Video.ps1',
         'Send-Notification.ps1'
     )) {
     $modulePath = Join-Path $script:ArmModuleRoot $module
@@ -507,7 +508,21 @@ function Invoke-VideoDispatch {
         Write-ArmLog -Level WARN -Message "Could not arrange extras subfolder: $($extrasResult.Error)" -Config $Config
     }
     # Jellyfin groups versions by file-name prefix = folder name (see Rename-ArmMainFeature).
-    $renameResult = Rename-ArmMainFeature -Dir $renamedDir -Config $Config -MainFeature $extrasResult.MainFeature
+    # A DVD that will be upscaled gets its resolution tag up front ('<Folder> - 480p.mkv'), so the
+    # original and the upscale read as two versions of one movie from the first scan.
+    $renameArgs = @{ Dir = $renamedDir; Config = $Config; MainFeature = $extrasResult.MainFeature }
+    if ($ripResult.DiscType -eq 'DVD') {
+        $renameArgs.Label = 'DVD'
+        try {
+            if ($extrasResult.MainFeature -and (Test-Path -LiteralPath $extrasResult.MainFeature)) {
+                $srcInfo = Get-VideoSourceInfo -InputFile $extrasResult.MainFeature -Config $Config
+                if ($srcInfo.Success -and $srcInfo.Height -and [int] $srcInfo.Height -gt 0) { $renameArgs.Label = "$([int] $srcInfo.Height)p" }
+            }
+        } catch {
+            Write-ArmLog -Level WARN -Message "Could not probe source height for the version label: $_" -Config $Config
+        }
+    }
+    $renameResult = Rename-ArmMainFeature @renameArgs
     if (-not $renameResult.Success) {
         Write-ArmLog -Level WARN -Message "Could not rename main feature: $($renameResult.Error)" -Config $Config
     }

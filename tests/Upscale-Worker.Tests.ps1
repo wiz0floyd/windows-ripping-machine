@@ -244,6 +244,46 @@ Describe 'Invoke-ArmUpscaleQueueItem job state' {
         @($job.History).State | Should -Be @('Queued', 'Sampling', 'AwaitingReview')
     }
 
+    It 'skips a source already at the target height: .skipped file with SkipReason, job Skipped with Reason, no upscale' -ForEach @(
+        @{ Height = 1080 }, @{ Height = 2160 }
+    ) {
+        Mock Get-VideoSourceInfo { [pscustomobject]@{ Success = $true; Height = $Height } }
+        Mock Invoke-Upscale { throw 'must not run' }
+
+        Invoke-ArmUpscaleQueueItem -QueueFile $script:QueueFile -Config $script:Config
+
+        Should -Invoke Invoke-Upscale -Times 0
+        Test-Path -LiteralPath $script:QueueFile | Should -BeFalse
+        $skipped = Join-Path $script:QueueDir 'movie.skipped'
+        $skipped | Should -Exist
+        (Get-Content -LiteralPath $skipped -Raw | ConvertFrom-Json).SkipReason | Should -Match "already ${Height}p"
+        $job = Get-ArmJob -JobId $script:JobId -Config $script:Config
+        $job.State | Should -Be 'Skipped'
+        $job.Reason | Should -Match "already ${Height}p"
+        $job.QueueFile | Should -Be $skipped
+    }
+
+    It 'does not skip a DVD-height source, or when the probe fails' -ForEach @(
+        @{ Info = [pscustomobject]@{ Success = $true; Height = 480 } }
+        @{ Info = [pscustomobject]@{ Success = $false; Height = $null } }
+    ) {
+        Mock Get-VideoSourceInfo { $Info }
+        Mock Invoke-Upscale {
+            [pscustomobject]@{ Success = $true; OutputFile = (Join-Path $script:QueueDir 'movie [AI upscale 1080p].mkv'); InterlaceType = 'Progressive'; Error = $null }
+        }
+        Invoke-ArmUpscaleQueueItem -QueueFile $script:QueueFile -Config $script:Config
+        Should -Invoke Invoke-Upscale -Times 1
+        (Get-ArmJob -JobId $script:JobId -Config $script:Config).State | Should -Be 'AwaitingReview'
+    }
+
+    It 'honours UpscaleHeight as the skip threshold' {
+        $script:Config.UpscaleHeight = 720
+        Mock Get-VideoSourceInfo { [pscustomobject]@{ Success = $true; Height = 720 } }
+        Mock Invoke-Upscale { throw 'must not run' }
+        Invoke-ArmUpscaleQueueItem -QueueFile $script:QueueFile -Config $script:Config
+        (Get-ArmJob -JobId $script:JobId -Config $script:Config).State | Should -Be 'Skipped'
+    }
+
     It 'marks the job Upscaling before the full run, then Complete' {
         $script:Config.AutoUpscale = $true
         $script:StateDuringUpscale = $null
@@ -426,8 +466,8 @@ Describe 'Invoke-ArmUpscaleQueueItem Jellyfin version names' {
         (Get-ArmJob -JobId $script:JobId -Config $script:Config).State | Should -Be 'Complete'
     }
 
-    It 'prefers a height carried by the Invoke-Upscale result over probing' {
-        Mock Get-VideoSourceInfo { throw 'must not probe' }
+    It 'prefers a height carried by the Invoke-Upscale result over probing (the only probe is the skip check)' {
+        Mock Get-VideoSourceInfo { [pscustomobject]@{ Success = $true; Height = 480 } }
         Mock Invoke-Upscale {
             Set-Content -LiteralPath $script:OutFile -Value 'upscaled'
             [pscustomobject]@{ Success = $true; OutputFile = $script:OutFile; SourceHeight = 576; Error = $null }
@@ -436,7 +476,7 @@ Describe 'Invoke-ArmUpscaleQueueItem Jellyfin version names' {
         Invoke-ArmUpscaleQueueItem -QueueFile $script:QueueFile -Config $script:Config
 
         Test-Path -LiteralPath (Join-Path $script:DestDir 'Grease (1978) - 576p.mkv') | Should -BeTrue
-        Should -Invoke Get-VideoSourceInfo -Times 0
+        Should -Invoke Get-VideoSourceInfo -Times 1 -Exactly
     }
 
     It 'survives a failed source rename: WARN logged, job still Complete, upscale still renamed' {

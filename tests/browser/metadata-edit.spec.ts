@@ -41,7 +41,7 @@ test('prefills from metadata.json, previews the folder name, saves, and the pipe
   // Finish the rip through the real Invoke-VideoDispatch tail.
   seed.finishRip(rip.JobId);
   const nasFolder = path.join(env.nasVideoPath, 'Brand New Title (2001)');
-  expect(fs.existsSync(path.join(nasFolder, 'Brand New Title (2001).mkv'))).toBe(true);
+  expect(fs.existsSync(path.join(nasFolder, 'Brand New Title (2001) - 480p.mkv'))).toBe(true);
   expect(fs.existsSync(path.join(env.nasVideoPath, 'Old Guess (1999)'))).toBe(false);
 
   await expect(card(page, rip.JobId).getByTestId('job-state')).toHaveText('Complete', { timeout: 10_000 });
@@ -53,7 +53,7 @@ test('an unedited rip keeps its original name through the pipeline', async ({ pa
   await expect(card(page, rip.JobId).getByTestId('meta-form')).toBeVisible();
 
   seed.finishRip(rip.JobId);
-  expect(fs.existsSync(path.join(env.nasVideoPath, 'Untouched Movie (1988)', 'Untouched Movie (1988).mkv'))).toBe(true);
+  expect(fs.existsSync(path.join(env.nasVideoPath, 'Untouched Movie (1988)', 'Untouched Movie (1988) - 480p.mkv'))).toBe(true);
 });
 
 test('validation: blank title and a 2-digit year show inline errors and nothing is written', async ({ page }) => {
