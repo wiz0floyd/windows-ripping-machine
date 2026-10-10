@@ -32,7 +32,7 @@ A native Windows replacement for the Linux Automatic Ripping Machine: insert a d
      to prompt on), `setup.ps1` fails fast with guidance instead of hanging — re-run it from an
      elevated local/RDP pwsh session instead.
 
-2. **Upscale stage only:** `setup.ps1` creates a Python venv (needs Python 3.10+ on PATH) at `C:\ProgramData\wrm\venv` and downloads the OpenProteus 2x model (SHA256-verified) to `C:\ProgramData\wrm\models`. For the animation engine (Anime4K) also download and install [Video2X 6.x](https://github.com/k4yt3x/video2x/releases) from GitHub (CLI installer; adds `video2x.exe` to PATH). Targets Video2X 6.4+ (verify flags match your release). Engines are chosen per content type with `UpscaleLiveAction` / `UpscaleAnimation` in `config.psd1`; the queue item's `ContentType` (`Animation` / `LiveAction`) picks which one runs. DiscWatcher fills it from the TMDb genre (see "Animation vs live action" below); you can also set `"ContentType": "Animation"` in a queue file by hand.
+2. **Upscale stage only:** `setup.ps1` creates a Python venv (needs Python 3.10+ on PATH) at `C:\ProgramData\wrm\venv`, downloads the OpenProteus 2x model and copies the bundled LiveAction SPAN model from `tools/models` (both SHA256-verified) to `C:\ProgramData\wrm\models`. For live action, `UpscaleLiveAction = 'openproteus'` (default) or `'liveaction'` ([2xLiveActionV1_SPAN](tools/models/README.md): targets compression artifacts, halos and deinterlacing jaggies; same speed class) picks the model; compare them on your own discs with the bench harness (`model-openproteus` / `model-liveaction` variants, [`docs/bench/README.md`](docs/bench/README.md)). For the animation engine (Anime4K) also download and install [Video2X 6.x](https://github.com/k4yt3x/video2x/releases) from GitHub (CLI installer; adds `video2x.exe` to PATH). Targets Video2X 6.4+ (verify flags match your release). Engines are chosen per content type with `UpscaleLiveAction` / `UpscaleAnimation` in `config.psd1`; the queue item's `ContentType` (`Animation` / `LiveAction`) picks which one runs. DiscWatcher fills it from the TMDb genre (see "Animation vs live action" below); you can also set `"ContentType": "Animation"` in a queue file by hand.
 
 3. **Verify installation** (simulate mode — no disc or NAS required):
    ```powershell
@@ -174,7 +174,7 @@ When a DVD rip completes and `UpscaleDvds=true`, the Upscale-Worker daemon proce
 - **Progressive** (no interlacing): passes through as-is
 - **Unknown** (idet output unparseable): falls back to bwdif on every frame
 
-Intermediate files are encoded lossless (ffv1) to avoid compounding generation loss before the AI upscale. Final encode uses libx265 at the quality level specified by `UpscaleCrf` (default: 16, high quality / near-transparent).
+Intermediate files are encoded lossless (ffv1) to avoid compounding generation loss before the AI upscale. Final encode uses libx265 at the quality level specified by `UpscaleCrf` (default: 16, high quality / near-transparent) and the preset in `UpscalePreset` (default `slow`; `medium` was ~2.5x faster at near-identical SSIM in the 2026-10 spike).
 
 **Queue file format:**
 ```json
