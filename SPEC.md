@@ -525,6 +525,9 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #  (+Error, QueueFile=<.failed>). An unparseable queue file becomes a new Failed
 #  job. Job-state writes never throw and can never turn a good upscale into .failed.
 #  Each pass (inside or outside active hours) first calls Remove-ArmStaleJobs.
+#  Skip check: before sampling/upscaling, Get-ArmUpscaleSkipReason probes the source (Get-VideoSourceInfo);
+#  Height >= UpscaleHeight (default 1080) -> SkipReason is written into the queue file, which is renamed
+#  '.skipped'; the job ends State=Skipped with Reason. A failed probe never skips.
 
 # JobState.ps1 (job-state store; read by the web UI)
 New-ArmJob     -Kind <Rip|Upscale> [-Properties <hashtable>] -Config <hashtable> -> [string] JobId | $null
@@ -537,7 +540,8 @@ Remove-ArmStaleJobs -Config <hashtable> -> [int] removed
 #  pattern, so an Id can never address a path outside the jobs dir.
 #  Record: { Id; Kind; State; Title; DiscLabel; DiscType; Drive; StagingDir;
 #            DestDir; QueueFile; SamplePath; OutputFile; ContentType; Engine; InterlaceType;
-#            Error; Created; Updated; History[] }
+#            Error; Reason; Created; Updated; History[] }
+#  Upscale terminal states: Complete | Failed | Cancelled | Skipped (Reason = why no upscale was needed).
 #  ContentType/Engine/InterlaceType are set on Upscale jobs only; the web UI shows them
 #  next to the sample path so a reviewer sees which engine produced the sample.
 #  History = [{ State; At }], appended on every State change. Timestamps are

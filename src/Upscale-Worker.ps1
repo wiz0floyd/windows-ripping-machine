@@ -136,6 +136,41 @@ function Get-ArmUpscaleSourceHeight {
 
 <#
 .SYNOPSIS
+    Why an upscale is not needed for a source file, or $null when it is.
+
+.DESCRIPTION
+    A source already at or above the upscale target height (UpscaleHeight, default 1080)
+    gains nothing from the pipeline. Returns a reason string in that case. A failed
+    probe returns $null so the normal path (and its own error handling) decides.
+#>
+function Get-ArmUpscaleSkipReason {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $SourceFile,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable] $Config
+    )
+
+    $target = 1080
+    if ($Config.ContainsKey('UpscaleHeight') -and "$($Config.UpscaleHeight)" -match '^\d+$' -and [int] $Config.UpscaleHeight -gt 0) {
+        $target = [int] $Config.UpscaleHeight
+    }
+    try {
+        $info = Get-VideoSourceInfo -InputFile $SourceFile -Config $Config
+        if ($info.Success -and $info.Height -and [int] $info.Height -ge $target) {
+            return "source is already $([int] $info.Height)p (target $($target)p); no upscale needed"
+        }
+    } catch {
+        Write-ArmLog -Level WARN -Message "Could not probe $SourceFile for the skip check: $_" -Config $Config
+    }
+    return $null
+}
+
+<#
+.SYNOPSIS
     Process a single upscale queue file.
 
 .DESCRIPTION
@@ -147,6 +182,9 @@ function Get-ArmUpscaleSourceHeight {
         a later poll - see README).
       - AutoUpscale = $true: runs the full Invoke-Upscale, moves the result into
         DestDir, notifies, and deletes the queue file.
+      - A source already at or above the target height (UpscaleHeight, default 1080) is
+        not upscaled: the queue file becomes '.skipped' (SkipReason inside) and the job
+        ends as Skipped with a Reason.
       - On failure (bad JSON, missing source, or Invoke-Upscale failure): renames
         the queue file to '.failed' and sends an Error notification.
 
@@ -214,6 +252,19 @@ function Invoke-ArmUpscaleQueueItem {
         $contentType = 'LiveAction'
         if ($item.PSObject.Properties.Name -contains 'ContentType' -and $item.ContentType -eq 'Animation') {
             $contentType = 'Animation'
+        }
+
+        # Nothing to gain from upscaling a source that is already at the target height:
+        # park the queue file as .skipped (with the reason inside) and finish the job.
+        $skipReason = Get-ArmUpscaleSkipReason -SourceFile $source -Config $Config
+        if ($skipReason) {
+            $item | Add-Member -MemberType NoteProperty -Name SkipReason -Value $skipReason -Force
+            $item | ConvertTo-Json | Set-Content -LiteralPath $QueueFile -Encoding utf8
+            $skippedPath = [System.IO.Path]::ChangeExtension($QueueFile, '.skipped')
+            Move-Item -LiteralPath $QueueFile -Destination $skippedPath -Force
+            Write-ArmLog -Level INFO -Message "Upscale skipped for ${source}: $skipReason" -Config $Config
+            $null = Update-ArmJob -JobId $jobId -Properties @{ State = 'Skipped'; Reason = $skipReason; QueueFile = $skippedPath; Error = $null } -Config $Config
+            return
         }
 
         if (-not $Config.AutoUpscale -and -not $approved) {

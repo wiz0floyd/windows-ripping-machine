@@ -90,7 +90,7 @@ function Add-ArmUpscaleQueueFromLibrary {
         }
         $main = $mkvs[0]
         $queueFile = Join-Path $queueDir "$(ConvertTo-ArmSafeFileName -Name $name)"
-        if ((Test-Path -LiteralPath "$queueFile.json") -or (Test-Path -LiteralPath "$queueFile.awaiting-review") -or (Test-Path -LiteralPath "$queueFile.failed")) {
+        if ((Test-Path -LiteralPath "$queueFile.json") -or (Test-Path -LiteralPath "$queueFile.awaiting-review") -or (Test-Path -LiteralPath "$queueFile.failed") -or (Test-Path -LiteralPath "$queueFile.skipped")) {
             & $row $name $main.Name 'Skipped' 'already in the upscale queue'; continue
         }
         $info = Get-VideoSourceInfo -InputFile $main.FullName -Config $Config
