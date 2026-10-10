@@ -740,6 +740,7 @@ Invoke-ArmWebRequest -Method <string> -Path <string> [-Query <hashtable>] [-Body
 ```
 wrm repair  [-Path <movies root>] [-Since <date>] [-Until <date>] [-RemoveOrphans] [-WhatIf]   # wraps tools/Repair-ArmJellyfinNames.ps1; -Path defaults to NasVideoPath
 wrm upscale <movie folder | movies root>... [-ContentType LiveAction|Animation] [-Force] [-WhatIf]
+wrm restart [-Force] [-WhatIf]                                               # Restart-WrmTask: stop+start wrm-watcher/-upscaler/-webui; throws if makemkvcon/freaccmd/robocopy/ffmpeg/video2x is running (Get-WrmBusyProcess) unless -Force; rows TaskName, Action (Restarted|WouldRestart|NotRegistered|Failed), Detail; exit 1 on Failed/NotRegistered
 wrm install-cli                                                              # adds bin\ to the user PATH
 Add-ArmUpscaleQueueFromLibrary -MovieDir <string[]> -Config <hashtable> [-ContentType] [-Force]
     -> rows { Folder, File, Action (Queued|WouldQueue|Skipped), Reason }

@@ -55,3 +55,40 @@ Describe 'Add-ArmUpscaleQueueFromLibrary' {
         $rows[2].Reason | Should -Match 'DVD resolution'
     }
 }
+
+Describe 'Restart-WrmTask' {
+    BeforeEach {
+        $script:Calls = [System.Collections.Generic.List[string]]::new()
+        Mock Get-WrmBusyProcess { @() }
+        Mock Get-ScheduledTask { [pscustomobject]@{ TaskName = $TaskName } }
+        Mock Stop-ScheduledTask { $script:Calls.Add("stop $TaskName") }
+        Mock Start-ScheduledTask { $script:Calls.Add("start $TaskName") }
+    }
+
+    It 'stops then starts each wrm task' {
+        $rows = @(Restart-WrmTask)
+        $rows.TaskName | Should -Be @('wrm-watcher', 'wrm-upscaler', 'wrm-webui')
+        $rows.Action | Should -Be @('Restarted', 'Restarted', 'Restarted')
+        $script:Calls | Should -Be @('stop wrm-watcher', 'start wrm-watcher', 'stop wrm-upscaler', 'start wrm-upscaler', 'stop wrm-webui', 'start wrm-webui')
+    }
+
+    It 'touches nothing with -WhatIf' {
+        @(Restart-WrmTask -WhatIf).Action | Should -Be @('WouldRestart', 'WouldRestart', 'WouldRestart')
+        Should -Invoke Stop-ScheduledTask -Times 0 -Exactly
+    }
+
+    It 'refuses while a rip or upscale is running, unless -Force' {
+        Mock Get-WrmBusyProcess { @([pscustomobject]@{ Name = 'makemkvcon64'; Id = 42 }) }
+        { Restart-WrmTask } | Should -Throw '*makemkvcon64 (42)*-Force*'
+        Should -Invoke Stop-ScheduledTask -Times 0 -Exactly
+        @(Restart-WrmTask -Force).Action | Should -Be @('Restarted', 'Restarted', 'Restarted')
+    }
+
+    It 'reports a task that is not registered or fails to restart, and keeps going' {
+        Mock Get-ScheduledTask { $null } -ParameterFilter { $TaskName -eq 'wrm-upscaler' }
+        Mock Stop-ScheduledTask { throw 'Access is denied.' } -ParameterFilter { $TaskName -eq 'wrm-webui' }
+        $rows = @(Restart-WrmTask)
+        $rows.Action | Should -Be @('Restarted', 'NotRegistered', 'Failed')
+        $rows[2].Detail | Should -BeLike '*Access is denied*elevated*'
+    }
+}

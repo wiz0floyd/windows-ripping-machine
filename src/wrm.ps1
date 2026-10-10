@@ -11,6 +11,9 @@
       wrm upscale <movie folder or movies root>... [-ContentType LiveAction|Animation] [-Force] [-WhatIf]
           Queue upscales of existing DVD rips (main feature under 720 lines high). Skips
           folders that already have an upscale or a queue entry.
+      wrm restart [-Force] [-WhatIf]
+          Restart the wrm-watcher, wrm-upscaler and wrm-webui scheduled tasks so they load
+          the current code. Refuses while a rip or upscale is running unless -Force.
       wrm install-cli
           Add the repo's bin\ folder (wrm.cmd) to your user PATH.
 
@@ -19,7 +22,7 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('repair', 'upscale', 'install-cli', 'help')]
+    [ValidateSet('repair', 'upscale', 'restart', 'install-cli', 'help')]
     [string] $Command = 'help',
 
     [Parameter(Position = 1, ValueFromRemainingArguments = $true)]
@@ -114,6 +117,51 @@ function Add-ArmUpscaleQueueFromLibrary {
     }
 }
 
+# Tool processes that mean a rip or upscale is in flight (makemkvcon64 included by the regex).
+function Get-WrmBusyProcess {
+    [CmdletBinding()]
+    param()
+    @(Get-Process | Where-Object { $_.Name -match '^(makemkvcon|freaccmd|robocopy|ffmpeg|video2x)' })
+}
+
+<#
+.SYNOPSIS
+    Stop and start the wrm scheduled tasks so they load the current code.
+
+.DESCRIPTION
+    Refuses while a rip/upscale tool is running (restarting kills it) unless -Force.
+    Task names match Get-ArmScheduledTaskList in setup.ps1.
+
+.OUTPUTS
+    [pscustomobject[]] TaskName, Action (Restarted | WouldRestart | NotRegistered | Failed), Detail.
+#>
+function Restart-WrmTask {
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([pscustomobject])]
+    param([switch] $Force)
+
+    $busy = @(Get-WrmBusyProcess)
+    if ($busy.Count -gt 0 -and -not $Force) {
+        $names = ($busy | ForEach-Object { "$($_.Name) ($($_.Id))" }) -join ', '
+        throw "A rip or upscale is running: $names. Restarting would kill it; wait or re-run with -Force."
+    }
+
+    foreach ($name in 'wrm-watcher', 'wrm-upscaler', 'wrm-webui') {
+        $row = { param($a, $d) [pscustomobject]@{ TaskName = $name; Action = $a; Detail = $d } }
+        if (-not (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue)) {
+            & $row 'NotRegistered' 'run setup.ps1'; continue
+        }
+        if (-not $PSCmdlet.ShouldProcess($name, 'Restart scheduled task')) { & $row 'WouldRestart' $null; continue }
+        try {
+            Stop-ScheduledTask -TaskName $name -ErrorAction Stop
+            Start-ScheduledTask -TaskName $name -ErrorAction Stop
+            & $row 'Restarted' $null
+        } catch {
+            & $row 'Failed' "$($_.Exception.Message) (try an elevated terminal)"
+        }
+    }
+}
+
 function Install-WrmCli {
     [CmdletBinding(SupportsShouldProcess)]
     param()
@@ -130,6 +178,11 @@ if ($MyInvocation.InvocationName -ne '.') {
     switch ($Command) {
         'help' { Get-Help $PSCommandPath -Full | Out-String | Write-Host }
         'install-cli' { Install-WrmCli -WhatIf:$WhatIfPreference }
+        'restart' {
+            $rows = @(Restart-WrmTask -Force:$Force -WhatIf:$WhatIfPreference)
+            $rows | Format-Table -AutoSize -Wrap | Out-String | Write-Host
+            if (@($rows | Where-Object Action -in 'Failed', 'NotRegistered').Count -gt 0) { exit 1 }
+        }
         default {
             $config = Get-ArmConfig -Path $ConfigPath
             if ($Simulate) { $config.Simulate = $true }
