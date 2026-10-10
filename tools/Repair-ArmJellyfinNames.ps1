@@ -40,6 +40,10 @@
 .PARAMETER Until
     Only movie folders created before this date/time.
 
+.PARAMETER RemoveOrphans
+    Also delete Jellyfin-generated sidecars (.nfo, -poster/-backdrop/... images, .trickplay
+    folders) whose video no longer has that name. Evaluated against the post-rename names.
+
 .EXAMPLE
     ./tools/Repair-ArmJellyfinNames.ps1 -Path \\nas\media\movies -WhatIf
     ./tools/Repair-ArmJellyfinNames.ps1 -Path \\nas\media\movies
@@ -50,7 +54,8 @@ param(
     [string] $ConfigPath,
     [switch] $Simulate,
     [Nullable[datetime]] $Since,
-    [Nullable[datetime]] $Until
+    [Nullable[datetime]] $Until,
+    [switch] $RemoveOrphans
 )
 
 Set-StrictMode -Version Latest
@@ -72,7 +77,7 @@ function New-RepairRow {
     Repair the file names under a movies root; returns one summary row per file touched or skipped.
 
 .OUTPUTS
-    [pscustomobject[]] Folder, File, Action (Renamed | WouldRename | Moved | WouldMove | Skipped),
+    [pscustomobject[]] Folder, File, Action (Renamed | WouldRename | Moved | WouldMove | Removed | WouldRemove | Skipped),
     NewName, Reason.
 #>
 function Repair-ArmJellyfinNames {
@@ -87,7 +92,9 @@ function Repair-ArmJellyfinNames {
 
         [Nullable[datetime]] $Since,
 
-        [Nullable[datetime]] $Until
+        [Nullable[datetime]] $Until,
+
+        [switch] $RemoveOrphans
     )
 
     $rows = [System.Collections.Generic.List[object]]::new()
@@ -239,6 +246,53 @@ function Repair-ArmJellyfinNames {
         }
     }
 
+    if ($RemoveOrphans) {
+        # Jellyfin sidecars (<name>.nfo, <name>-poster.jpg, <name>.trickplay\) are keyed on the video's
+        # base name. After a rename the old ones point at nothing; Jellyfin regenerates the real ones.
+        # Video names are taken as they will be after the planned renames, so -WhatIf shows the end state.
+        $videoExt = @('.mkv', '.mp4', '.m4v', '.avi')
+        $imageRx = '^(?<s>.+)-(poster|backdrop|landscape|logo|banner|thumb|clearlogo|clearart|fanart|disc)\.(jpg|jpeg|png|svg|webp)$'
+        foreach ($dir in $dirs) {
+            $folder = $dir.Name
+            $mine = @($rows | Where-Object { $_.Folder -eq $folder })
+            if (@($mine | Where-Object { $_.Action -eq 'Skipped' }).Count -gt 0) {
+                $rows.Add((New-RepairRow $folder $null 'Skipped' $null 'orphan check skipped: folder has skipped files'))
+                continue
+            }
+            $names = [System.Collections.Generic.List[string]]::new()
+            foreach ($v in @(Get-ChildItem -LiteralPath $dir.FullName -File | Where-Object { $_.Extension -in $videoExt })) { $names.Add($v.Name) }
+            foreach ($r in $mine) {
+                if ($r.Action -in 'Renamed', 'WouldRename') { $null = $names.Remove($r.File); $names.Add($r.NewName) }
+                elseif ($r.Action -eq 'WouldMove') { $null = $names.Remove($r.File) }
+            }
+            if ($names.Count -eq 0) { continue }
+            $stems = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            foreach ($n in $names) { $null = $stems.Add([System.IO.Path]::GetFileNameWithoutExtension($n)) }
+
+            foreach ($item in @(Get-ChildItem -LiteralPath $dir.FullName -Force)) {
+                $stem = $null
+                if ($item.PSIsContainer) {
+                    if ($item.Name -match '^(?<s>.+)\.trickplay$') { $stem = $Matches['s'] }
+                } elseif ($item.Name -match $imageRx) {
+                    $stem = $Matches['s']
+                } elseif ($item.Name -match '^(?<s>.+)\.nfo$' -and $item.Name -ine 'movie.nfo') {
+                    $stem = $Matches['s']
+                }
+                if (-not $stem -or $stems.Contains($stem)) { continue }
+                if ($PSCmdlet.ShouldProcess($item.FullName, 'Remove orphaned Jellyfin sidecar')) {
+                    try {
+                        Remove-Item -LiteralPath $item.FullName -Recurse -Force
+                        $rows.Add((New-RepairRow $folder $item.Name 'Removed' $null 'orphaned sidecar'))
+                    } catch {
+                        $rows.Add((New-RepairRow $folder $item.Name 'Skipped' $null "remove failed: $_"))
+                    }
+                } else {
+                    $rows.Add((New-RepairRow $folder $item.Name 'WouldRemove' $null 'orphaned sidecar'))
+                }
+            }
+        }
+    }
+
     return $rows.ToArray()
 }
 
@@ -248,13 +302,13 @@ if ($MyInvocation.InvocationName -ne '.') {
     $config = Get-ArmConfig -Path $ConfigPath
     if ($Simulate) { $config.Simulate = $true }
 
-    $rows = @(Repair-ArmJellyfinNames -Path $Path -Config $config -Since $Since -Until $Until -WhatIf:$WhatIfPreference)
+    $rows = @(Repair-ArmJellyfinNames -Path $Path -Config $config -Since $Since -Until $Until -RemoveOrphans:$RemoveOrphans -WhatIf:$WhatIfPreference)
     if ($rows.Count -eq 0) {
         Write-Host 'Nothing to rename.'
     } else {
         # Table only (no objects on the pipeline), so nothing prints twice.
         $rows | Format-Table -AutoSize -Wrap | Out-String | Write-Host
-        $done = @($rows | Where-Object { $_.Action -in 'Renamed', 'WouldRename', 'Moved', 'WouldMove' }).Count
+        $done = @($rows | Where-Object { $_.Action -in 'Renamed', 'WouldRename', 'Moved', 'WouldMove', 'Removed', 'WouldRemove' }).Count
         $skipped = @($rows | Where-Object { $_.Action -eq 'Skipped' }).Count
         Write-Host "Renamed/moved (or would): $done   Skipped: $skipped"
     }

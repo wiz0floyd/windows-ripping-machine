@@ -4,9 +4,10 @@
 
 .DESCRIPTION
     Subcommands:
-      wrm repair  [-Path <movies root>] [-Since <date>] [-Until <date>] [-WhatIf]
+      wrm repair  [-Path <movies root>] [-Since <date>] [-Until <date>] [-RemoveOrphans] [-WhatIf]
           Move extras to extras\ and name files so Jellyfin shows the original and the
-          upscale as versions of one movie (tools\Repair-ArmJellyfinNames.ps1).
+          upscale as versions of one movie; -RemoveOrphans also deletes the stale Jellyfin
+          sidecars (.nfo, posters, .trickplay) left under the old names (tools\Repair-ArmJellyfinNames.ps1).
       wrm upscale <movie folder or movies root>... [-ContentType LiveAction|Animation] [-Force] [-WhatIf]
           Queue upscales of existing DVD rips (main feature under 720 lines high). Skips
           folders that already have an upscale or a queue entry.
@@ -31,6 +32,7 @@ param(
     [ValidateSet('LiveAction', 'Animation')]
     [string] $ContentType,
     [switch] $Force,
+    [switch] $RemoveOrphans,
     [switch] $Simulate
 )
 
@@ -138,6 +140,7 @@ if ($MyInvocation.InvocationName -ne '.') {
                 if ($Simulate) { $a.Simulate = $true }
                 if ($Since) { $a.Since = $Since }
                 if ($Until) { $a.Until = $Until }
+                if ($RemoveOrphans) { $a.RemoveOrphans = $true }
                 & (Join-Path $script:WrmRoot 'tools' 'Repair-ArmJellyfinNames.ps1') @a
             } else {
                 $dirs = foreach ($f in @($Folder)) {

@@ -51,6 +51,23 @@ Describe 'Repair-ArmJellyfinNames' {
         @($rows2.Folder | Sort-Object -Unique) | Should -Be @('Old (1990)')
     }
 
+    It 'removes sidecars of old names with -RemoveOrphans and keeps the rest (previewed with -WhatIf)' {
+        $dir = New-MovieDir 'Grease (1978)' @{
+            'B1_t00.mkv' = 'raw'; 'B1_t00 [AI upscale 1080p].mkv' = 'up'; 'C1_t01.mkv' = 'x'
+            'B1_t00.nfo' = 'n'; 'B1_t00-poster.jpg' = 'p'; 'B1_t00.trickplay/320/0.jpg' = 't'
+            'C1_t01.nfo' = 'n'; 'poster.jpg' = 'keep'; 'movie.nfo' = 'keep'; 'metadata.json' = '{}'
+            'Grease (1978) - 480p.nfo' = 'keep'; 'Grease (1978) - 1080p-poster.jpg' = 'keep'
+        }
+        $preview = @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config -RemoveOrphans -WhatIf)
+        @($preview | Where-Object Action -eq 'WouldRemove').File | Sort-Object |
+            Should -Be @('B1_t00-poster.jpg', 'B1_t00.nfo', 'B1_t00.trickplay', 'C1_t01.nfo')
+        Test-Path -LiteralPath (Join-Path $dir 'B1_t00.nfo') | Should -BeTrue
+
+        $null = Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config -RemoveOrphans
+        Get-Names $dir | Should -Be @('Grease (1978) - 1080p-poster.jpg', 'Grease (1978) - 1080p.mkv', 'Grease (1978) - 480p.mkv', 'Grease (1978) - 480p.nfo', 'metadata.json', 'movie.nfo', 'poster.jpg')
+        Test-Path -LiteralPath (Join-Path $dir 'B1_t00.trickplay') | Should -BeFalse
+    }
+
     It 'leaves a correctly named movie and its extras/ alone' {
         $dir = New-MovieDir 'Alien (1979)' @{ 'Alien (1979).mkv' = 'raw'; 'extras/B1_t01.mkv' = 'x' }
         @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config).Count | Should -Be 0

@@ -312,7 +312,7 @@ Rename-ArmUpscaleVersions -FolderName <string> -UpscaledFile <string> -SourceFil
 #  dir is preserved and the caller (DiscWatcher.ps1) logs/notifies for manual
 #  re-trigger.
 
-# tools/Repair-ArmJellyfinNames.ps1 -Path <movies root> [-ConfigPath] [-Simulate] [-Since <date>] [-Until <date>] [-WhatIf]
+# tools/Repair-ArmJellyfinNames.ps1 -Path <movies root> [-ConfigPath] [-Simulate] [-Since <date>] [-Until <date>] [-RemoveOrphans] [-WhatIf]
 #  One-off repair of existing libraries (SupportsShouldProcess; Repair-ArmJellyfinNames function returns
 #  rows Folder, File, Action Renamed|WouldRename|Moved|WouldMove|Skipped, NewName, Reason). Per movie
 #  folder, top-level .mkv only; the largest raw file is the main feature and every other raw file that
@@ -682,7 +682,7 @@ Invoke-ArmWebRequest -Method <string> -Path <string> [-Query <hashtable>] [-Body
 ## CLI: `wrm` (src/wrm.ps1, bin/wrm.cmd)
 
 ```
-wrm repair  [-Path <movies root>] [-Since <date>] [-Until <date>] [-WhatIf]   # wraps tools/Repair-ArmJellyfinNames.ps1; -Path defaults to NasVideoPath
+wrm repair  [-Path <movies root>] [-Since <date>] [-Until <date>] [-RemoveOrphans] [-WhatIf]   # wraps tools/Repair-ArmJellyfinNames.ps1; -Path defaults to NasVideoPath
 wrm upscale <movie folder | movies root>... [-ContentType LiveAction|Animation] [-Force] [-WhatIf]
 wrm install-cli                                                              # adds bin\ to the user PATH
 Add-ArmUpscaleQueueFromLibrary -MovieDir <string[]> -Config <hashtable> [-ContentType] [-Force]
@@ -691,3 +691,4 @@ Add-ArmUpscaleQueueFromLibrary -MovieDir <string[]> -Config <hashtable> [-Conten
 `Rename-ArmMainFeature -Label <L>` names the file `<folder> - <L>.mkv` (kept as-is when it already ends in `- <N>p`/`- DVD`).
 Invoke-VideoDispatch passes `Label` = probed height (`480p`; `DVD` if unknown) for DVDs, so the original is `<folder> - 480p.mkv` from the rip.
 `Add-ArmUpscaleQueueFromLibrary` queues the largest top-level .mkv (via `New-UpscaleQueueEntry`, ContentType from metadata.json unless overridden); skips folders with an upscale (`[AI upscale Np]` or `- Hp`, H>=720), a queue entry (.json/.awaiting-review/.failed), a probe failure, or height >= 720 (unless -Force).
+`-RemoveOrphans` (opt-in, deletes): after the renames, removes top-level Jellyfin sidecars (`<stem>.nfo` except movie.nfo, `<stem>-poster|backdrop|landscape|logo|banner|thumb|clearlogo|clearart|fanart|disc.<img>`, `<stem>.trickplay\`) whose `<stem>` is not the base name of a video in the folder, using post-rename names (so `-WhatIf` previews the end state). Skips a folder with any Skipped row or no video. Rows: Removed | WouldRemove.
