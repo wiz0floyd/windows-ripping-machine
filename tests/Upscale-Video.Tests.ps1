@@ -938,7 +938,7 @@ Describe 'Get-UpscalePlan' {
         It 'puts colorspace after setsar in ONE -vf chain and always tags the output (openproteus, anime4k)' {
             foreach ($ct in 'LiveAction', 'Animation') {
                 $a = Get-UpscaleEncodeArgumentList -Plan (New-ColourPlan -ContentType $ct) -UpscaledFile 'T:\u.mkv' -OutputFile 'O:\out.mkv'
-                ($a -join ' ') | Should -Be '-y -i T:\u.mkv -i C:\rips\movie.mkv -map 0:v:0 -map 1:a -vf setsar=1,colorspace=all=bt709:iall=bt601-6-525:irange=tv:range=tv:dither=fsb -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv -c:v libx265 -crf 16 -preset slow -c:a copy -shortest O:\out.mkv'
+                ($a -join ' ') | Should -Be '-hide_banner -loglevel warning -nostats -y -i T:\u.mkv -i C:\rips\movie.mkv -map 0:v:0 -map 1:a -vf setsar=1,colorspace=all=bt709:iall=bt601-6-525:irange=tv:range=tv:dither=fsb -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv -c:v libx265 -crf 16 -preset slow -c:a copy -shortest O:\out.mkv'
                 @($a | Where-Object { $_ -eq '-vf' }).Count | Should -Be 1
             }
         }
@@ -1000,12 +1000,12 @@ Describe 'Upscale stage argument builders' {
 
     It 'builds the preprocess arguments in the historical order (window, filter, CFR, ffv1)' {
         $a = Get-UpscalePreprocessArgumentList -Plan (New-TestPlan -Interlace Interlaced -Sample) -OutputFile 'T:\p.mkv'
-        $a -join ' ' | Should -Be '-y -i C:\in\movie.mkv -ss 600 -t 120 -vf idet,bwdif=mode=send_frame:deint=interlaced -fps_mode cfr -r 24000/1001 -c:v ffv1 -an T:\p.mkv'
+        $a -join ' ' | Should -Be '-hide_banner -loglevel warning -nostats -y -i C:\in\movie.mkv -ss 600 -t 120 -vf idet,bwdif=mode=send_frame:deint=interlaced -fps_mode cfr -r 24000/1001 -c:v ffv1 -an T:\p.mkv'
     }
 
     It 'builds the telecined preprocess with no CFR flags' {
         $a = Get-UpscalePreprocessArgumentList -Plan (New-TestPlan -Interlace Telecined -Rate '30000/1001') -OutputFile 'T:\p.mkv'
-        $a -join ' ' | Should -Be '-y -i C:\in\movie.mkv -vf fieldmatch,yadif=deint=interlaced,decimate -c:v ffv1 -an T:\p.mkv'
+        $a -join ' ' | Should -Be '-hide_banner -loglevel warning -nostats -y -i C:\in\movie.mkv -vf fieldmatch,yadif=deint=interlaced,decimate -c:v ffv1 -an T:\p.mkv'
     }
 
     It 'builds the three engine argument lists' {
@@ -1019,9 +1019,9 @@ Describe 'Upscale stage argument builders' {
 
     It 'builds the mux arguments, trimming the audio input for a sample and resetting SAR' {
         (Get-UpscaleEncodeArgumentList -Plan (New-TestPlan -Sample) -UpscaledFile 'T:\u.mkv' -OutputFile 'O:\out.mkv') -join ' ' |
-            Should -Be '-y -i T:\u.mkv -ss 600 -t 120 -i C:\in\movie.mkv -map 0:v:0 -map 1:a -vf setsar=1,colorspace=all=bt709:iall=bt601-6-525:irange=tv:range=tv:dither=fsb -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv -c:v libx265 -crf 16 -preset slow -c:a copy -shortest O:\out.mkv'
+            Should -Be '-hide_banner -loglevel warning -nostats -y -i T:\u.mkv -ss 600 -t 120 -i C:\in\movie.mkv -map 0:v:0 -map 1:a -vf setsar=1,colorspace=all=bt709:iall=bt601-6-525:irange=tv:range=tv:dither=fsb -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv -c:v libx265 -crf 16 -preset slow -c:a copy -shortest O:\out.mkv'
         (Get-UpscaleEncodeArgumentList -Plan (New-TestPlan -Override @{ UpscaleLiveAction = 'realesrgan' }) -UpscaledFile 'T:\u.mkv' -OutputFile 'O:\out.mkv') -join ' ' |
-            Should -Be '-y -i T:\u.mkv -i C:\in\movie.mkv -map 0:v:0 -map 1:a -vf colorspace=all=bt709:iall=bt601-6-525:irange=tv:range=tv:dither=fsb -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv -c:v libx265 -crf 16 -preset slow -c:a copy -shortest O:\out.mkv'
+            Should -Be '-hide_banner -loglevel warning -nostats -y -i T:\u.mkv -i C:\in\movie.mkv -map 0:v:0 -map 1:a -vf colorspace=all=bt709:iall=bt601-6-525:irange=tv:range=tv:dither=fsb -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv -c:v libx265 -crf 16 -preset slow -c:a copy -shortest O:\out.mkv'
     }
 }
 
@@ -1345,5 +1345,123 @@ Describe 'Invoke-Upscale constant-frame-rate preprocess' {
         Should -Invoke Invoke-ArmTool -Times 0 -ParameterFilter { ($Arguments -join ' ') -match 'decimate' }
         Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter { ($Arguments -join ' ') -match '-fps_mode cfr -r 24000/1001 -c:v ffv1' }
         Should -Invoke Write-ArmLog -ParameterFilter { $Level -eq 'WARN' -and $Message -match 'soft telecine' }
+    }
+}
+
+Describe 'Write-ArmUpscaleProgress (#32)' {
+    BeforeEach {
+        Mock Write-ArmLog {}
+        $script:T0 = [datetime]'2026-10-08T12:00:00Z'
+        $script:State = @{ Stage = 'encode'; IntervalSec = 60; TotalSec = 120.0; TotalFrames = 2877; LastLog = $null }
+    }
+
+    It 'derives percent and ETA from out_time and speed (ffmpeg -progress)' {
+        $p = [pscustomobject]@{ Frame = 1440; Fps = 48.0; OutTimeSec = 60.0; Speed = 2.0; Ended = $false }
+        $r = Write-ArmUpscaleProgress -State $script:State -Progress $p -Now $script:T0
+        $r.Stage | Should -Be 'encode'
+        $r.Percent | Should -Be 50
+        $r.EtaSec | Should -Be 30
+        Should -Invoke Write-ArmLog -Times 1 -ParameterFilter {
+            $Level -eq 'INFO' -and $Message -eq 'Upscale encode progress: frame 1440/2877, 50.0%, 48.0 fps, 2.00x, ETA 00:00:30'
+        }
+    }
+
+    It 'derives percent and ETA from frames and fps when there is no out_time (ncnn runner)' {
+        $script:State.Stage = 'upscale'
+        $p = [pscustomobject]@{ Frame = 877; Fps = 20.0; OutTimeSec = $null; Speed = $null; Ended = $false }
+        $r = Write-ArmUpscaleProgress -State $script:State -Progress $p -Now $script:T0
+        [math]::Round($r.Percent, 1) | Should -Be 30.5
+        $r.EtaSec | Should -Be 100
+    }
+
+    It 'logs at most once per interval, plus once when the stage ends' {
+        $p = [pscustomobject]@{ Frame = 10; Fps = 5.0; OutTimeSec = 1.0; Speed = 1.0; Ended = $false }
+        foreach ($sec in 0, 10, 59, 60, 61, 119) {
+            $null = Write-ArmUpscaleProgress -State $script:State -Progress $p -Now $script:T0.AddSeconds($sec)
+        }
+        Should -Invoke Write-ArmLog -Times 2 -Exactly   # t=0 and t=60
+        $done = [pscustomobject]@{ Frame = 2877; Fps = 5.0; OutTimeSec = 120.0; Speed = 1.0; Ended = $true }
+        $r = Write-ArmUpscaleProgress -State $script:State -Progress $done -Now $script:T0.AddSeconds(62)
+        $r.EtaSec | Should -Be 0
+        Should -Invoke Write-ArmLog -Times 3 -Exactly
+        Should -Invoke Write-ArmLog -Times 1 -ParameterFilter { $Message -match 'progress: .*100\.0%.*done$' }
+    }
+
+    It 'reports unknown ETA without totals and never throws' {
+        $script:State.TotalSec = $null; $script:State.TotalFrames = $null
+        $p = [pscustomobject]@{ Frame = $null; Fps = $null; OutTimeSec = $null; Speed = $null; Ended = $false }
+        $r = Write-ArmUpscaleProgress -State $script:State -Progress $p -Now $script:T0
+        $r.Percent | Should -BeNullOrEmpty
+        $r.EtaSec | Should -BeNullOrEmpty
+        Should -Invoke Write-ArmLog -Times 1 -ParameterFilter { $Message -eq 'Upscale encode progress: ETA unknown' }
+    }
+}
+
+Describe 'Invoke-Upscale output handling with the Simulate stubs (#32)' {
+    BeforeAll {
+        $script:LogDir32 = Join-Path $script:TestDir "logs-$(New-Guid)"
+        $script:Config32 = @{
+            Simulate = $true; LogDir = $script:LogDir32; UpscaleLiveAction = 'openproteus'; UpscaleAnimation = 'anime4k'
+            UpscaleHeight = 1080; UpscaleCrf = 16; NcnnModelDir = 'C:\models'; FfmpegPath = 'ffmpeg'
+        }
+        $script:Input32 = Join-Path $script:TestDir 'stubbed movie.mkv'
+        Set-Content -Path $script:Input32 -Value 'fake source bytes'
+        $script:Out32 = Join-Path $script:TestDir "out32-$(New-Guid)"
+        $script:Progress32 = [System.Collections.Generic.List[object]]::new()
+        $script:Result32 = Invoke-Upscale -InputFile $script:Input32 -OutputDir $script:Out32 -Config $script:Config32 -SampleOnly -ProgressHandler {
+            param($p) $script:Progress32.Add($p)
+        }
+        $script:Log32 = @(Get-ChildItem -Path $script:LogDir32 -Filter '*.log' | Get-Content)
+    }
+
+    It 'the stub really emits the banner and metadata dump for an unquieted call (so the next tests are not vacuous)' {
+        $r = Invoke-ArmTool -Name ffmpeg -Config $script:Config32 -StdErrLevel None -Arguments @('-ss', '0', '-t', '60', '-i', $script:Input32, '-map', '0:v:0', '-f', 'null', '-')
+        ($r.StdErr -join "`n") | Should -Match 'ffmpeg version'
+        ($r.StdErr -join "`n") | Should -Match 'Input #0'
+        ($r.StdErr -join "`n") | Should -Match 'Chapter'
+    }
+
+    It 'succeeds' {
+        $script:Result32.Success | Should -Be $true -Because $script:Result32.Error
+    }
+
+    It 'logs no banner, stream metadata or raw progress lines' {
+        $noise = 'ffmpeg version|configuration:|Input #0|Metadata:|Chapter|_STATISTICS_TAGS|Stream #0|Stream mapping|Press \[q\]'
+        @($script:Log32 | Where-Object { $_ -match $noise }) | Should -BeNullOrEmpty
+        @($script:Log32 | Where-Object { $_ -match '\] \[(ffmpeg|ncnn)\] (frame|fps|out_time_us|speed|progress)=' }) | Should -BeNullOrEmpty
+    }
+
+    It 'logs throttled progress for every stage, ending at 100%' {
+        foreach ($stage in 'preprocess', 'upscale', 'encode') {
+            $lines = @($script:Log32 | Where-Object { $_ -match "\[INFO\] Upscale $stage progress: " })
+            $lines.Count | Should -BeGreaterThan 0 -Because $stage
+            $lines[-1] | Should -Match 'done$'
+        }
+        # Sample window is 120 s at the measured 24000/1001: 2877 frames expected.
+        @($script:Log32 | Where-Object { $_ -match 'Upscale upscale progress: frame 2878/2877, 100\.0%' }).Count | Should -Be 1
+    }
+
+    It 'hands every parsed block to -ProgressHandler with its stage' {
+        @($script:Progress32 | ForEach-Object Stage | Select-Object -Unique) | Should -Be @('preprocess', 'upscale', 'encode')
+        @($script:Progress32 | Where-Object Ended).Count | Should -Be 3
+        ($script:Progress32 | Where-Object { $_.Stage -eq 'encode' -and -not $_.Ended }).Percent | Should -Be 50.05
+    }
+
+    It 'runs both probes with -StdErrLevel None and the long stages with a progress handler' {
+        Mock Invoke-ArmTool {
+            param($Name, $Arguments, $Config, $TimeoutSec)
+            if ($Name -eq 'ffprobe') { return [pscustomobject]@{ ExitCode = 0; StdOut = @(New-FfprobeJson); StdErr = @() } }
+            if (($Arguments -join ' ') -match 'idet' -and $Arguments[-1] -eq '-') { return [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = Get-FixtureLines 'ffmpeg-idet-progressive.txt' } }
+            if ($Arguments[-1] -eq '-') { return [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @('frame= 1439 fps=0.0 q=-0.0 Lsize=N/A time=00:01:00.02 bitrate=N/A speed= 300x') } }
+            $out = $Arguments[-1]
+            if ($Name -eq 'ncnn') { $out = $Arguments[[array]::IndexOf($Arguments, '--output') + 1] }
+            Set-Content -LiteralPath $out -Value 'fake bytes'
+            [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @() }
+        }
+        $null = Invoke-Upscale -InputFile $script:Input32 -OutputDir $script:Out32 -Config $script:Config32 -SampleOnly
+
+        Should -Invoke Invoke-ArmTool -Times 2 -ParameterFilter { ($Arguments -join ' ') -match 'idet' -and $Arguments[-1] -eq '-' -and $StdErrLevel -eq 'None' }
+        Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter { ($Arguments -join ' ') -match '-map 0:v:0 -f null -$' -and $StdErrLevel -eq 'None' }
+        Should -Invoke Invoke-ArmTool -Times 3 -ParameterFilter { $Name -in 'ffmpeg', 'ncnn' -and $TimeoutSec -eq 86400 -and $null -ne $ProgressHandler }
     }
 }

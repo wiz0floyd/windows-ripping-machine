@@ -62,6 +62,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<InputFile>",
@@ -105,6 +111,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<TMP>\\upscaled.mkv",
@@ -202,6 +214,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<InputFile>",
@@ -249,6 +267,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<TMP>\\upscaled.mkv",
@@ -350,6 +374,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<InputFile>",
@@ -385,6 +415,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<TMP>\\upscaled.mkv",
@@ -482,6 +518,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<InputFile>",
@@ -521,6 +563,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<TMP>\\upscaled.mkv",
@@ -622,6 +670,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<InputFile>",
@@ -655,6 +709,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<TMP>\\upscaled.mkv",
@@ -752,6 +812,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<InputFile>",
@@ -789,6 +855,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<TMP>\\upscaled.mkv",
@@ -890,6 +962,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<InputFile>",
@@ -935,6 +1013,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<TMP>\\upscaled.mkv",
@@ -1032,6 +1116,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<InputFile>",
@@ -1081,6 +1171,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<TMP>\\upscaled.mkv",
@@ -1182,6 +1278,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<InputFile>",
@@ -1219,6 +1321,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<TMP>\\upscaled.mkv",
@@ -1316,6 +1424,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<InputFile>",
@@ -1357,6 +1471,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<TMP>\\upscaled.mkv",
@@ -1458,6 +1578,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<InputFile>",
@@ -1493,6 +1619,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<TMP>\\upscaled.mkv",
@@ -1590,6 +1722,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<InputFile>",
@@ -1629,6 +1767,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<TMP>\\upscaled.mkv",
@@ -1748,6 +1892,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<InputFile>",
@@ -1789,6 +1939,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<TMP>\\upscaled.mkv",
@@ -1904,6 +2060,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<InputFile>",
@@ -1949,6 +2111,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<TMP>\\upscaled.mkv",
@@ -2068,6 +2236,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<InputFile>",
@@ -2101,6 +2275,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<TMP>\\upscaled.mkv",
@@ -2216,6 +2396,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<InputFile>",
@@ -2253,6 +2439,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<TMP>\\upscaled.mkv",
@@ -2372,6 +2564,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<InputFile>",
@@ -2403,6 +2601,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<TMP>\\upscaled.mkv",
@@ -2518,6 +2722,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<InputFile>",
@@ -2553,6 +2763,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<TMP>\\upscaled.mkv",
@@ -2672,6 +2888,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<InputFile>",
@@ -2711,6 +2933,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<TMP>\\upscaled.mkv",
@@ -2808,6 +3036,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<InputFile>",
@@ -2853,6 +3087,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<TMP>\\upscaled.mkv",
@@ -2950,6 +3190,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<InputFile>",
@@ -2993,6 +3239,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<TMP>\\upscaled.mkv",
@@ -3090,6 +3342,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<InputFile>",
@@ -3125,6 +3383,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<TMP>\\upscaled.mkv",
@@ -3222,6 +3486,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<InputFile>",
@@ -3265,6 +3535,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<TMP>\\upscaled.mkv",
@@ -3362,6 +3638,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<InputFile>",
@@ -3403,6 +3685,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<TMP>\\upscaled.mkv",
@@ -3504,6 +3792,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<InputFile>",
@@ -3547,6 +3841,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<TMP>\\upscaled.mkv",
@@ -3644,6 +3944,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<InputFile>",
@@ -3679,6 +3985,12 @@
       {
         "Name": "ffmpeg",
         "Args": [
+          "-progress",
+          "pipe:1",
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-nostats",
           "-y",
           "-i",
           "<TMP>\\upscaled.mkv",

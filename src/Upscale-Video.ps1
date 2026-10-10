@@ -90,7 +90,9 @@ function Get-IdetWindowCount {
     )
     $window = @('-ss', "$Start")
     if ($Duration -gt 0) { $window += @('-t', "$Duration") }
-    $result = Invoke-ArmTool -Name ffmpeg -Config $Config -Arguments (@('-hide_banner') + @($window) + @(
+    # The idet summary prints at info level, so this probe keeps ffmpeg's default loglevel;
+    # its stderr (input/stream/chapter dump included) is data, not log material (#32).
+    $result = Invoke-ArmTool -Name ffmpeg -Config $Config -StdErrLevel None -Arguments (@('-hide_banner') + @($window) + @(
         '-i', $InputFile,
         '-filter:v', 'idet',
         '-frames:v', "$FrameCap",
@@ -446,7 +448,9 @@ function Get-VideoFrameRate {
     )
 
     foreach ($start in @($Seek, 0)) {
-        $result = Invoke-ArmTool -Name ffmpeg -Config $Config -Arguments @(
+        # Parses the stats `frame=`/`time=` lines, so keeps ffmpeg's default output; the
+        # stderr is data and is not logged (#32).
+        $result = Invoke-ArmTool -Name ffmpeg -Config $Config -StdErrLevel None -Arguments @(
             '-hide_banner', '-ss', "$start", '-t', "$Duration", '-i', $InputFile,
             '-map', '0:v:0', '-f', 'null', '-'
         )
@@ -761,6 +765,11 @@ function Get-UpscalePlan {
     }
 }
 
+# Leading options for the long ffmpeg runs (preprocess, final encode): no banner, no
+# input/stream/chapter dump, no stats line - only warnings and errors reach stderr (#32).
+# Invoke-Upscale adds `-progress pipe:1` in front when it wants progress.
+$script:ArmFfmpegQuietArgs = @('-hide_banner', '-loglevel', 'warning', '-nostats')
+
 <#
 .SYNOPSIS
     ffmpeg arguments for the preprocess stage (deinterlace/IVTC to a lossless ffv1 intermediate). Pure.
@@ -773,7 +782,7 @@ function Get-UpscalePreprocessArgumentList {
         [Parameter(Mandatory = $true)] [string] $OutputFile
     )
 
-    $preArgs = @('-y', '-i', $Plan.InputFile)
+    $preArgs = @($script:ArmFfmpegQuietArgs) + @('-y', '-i', $Plan.InputFile)
     if ($Plan.Window) {
         $preArgs += @('-ss', "$($Plan.Window.Seek)", '-t', "$($Plan.Window.Duration)")
     }
@@ -860,7 +869,7 @@ function Get-UpscaleEncodeArgumentList {
         [Parameter(Mandatory = $true)] [string] $OutputFile
     )
 
-    $muxArgs = @('-y', '-i', $UpscaledFile)
+    $muxArgs = @($script:ArmFfmpegQuietArgs) + @('-y', '-i', $UpscaledFile)
     if ($Plan.Window) {
         $muxArgs += @('-ss', "$($Plan.Window.Seek)", '-t', "$($Plan.Window.Duration)")
     }
@@ -889,6 +898,71 @@ function Get-UpscaleEncodeArgumentList {
         $OutputFile
     )
     return [string[]]$muxArgs
+}
+
+<#
+.SYNOPSIS
+    Turn one tool progress block into an upscale-stage progress object and log it at most
+    once per State.IntervalSec (and once when the stage ends). Never throws.
+
+.DESCRIPTION
+    -State is created per stage by Invoke-Upscale:
+      @{ Stage; IntervalSec; TotalSec; TotalFrames; LastLog = <datetime> }
+    Percent/ETA come from out_time vs TotalSec at the reported speed (ffmpeg -progress),
+    else from frames vs TotalFrames at the reported fps (tools/ncnn_upscale.py); either is
+    $null when unknown. -Now is injectable for tests.
+
+.OUTPUTS
+    [pscustomobject] @{ Stage; Frame; Fps; Percent; EtaSec; Ended }
+#>
+function Write-ArmUpscaleProgress {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory = $true)] [hashtable] $State,
+        [Parameter(Mandatory = $true)] [pscustomobject] $Progress,
+        [hashtable] $Config,
+        [datetime] $Now = [datetime]::UtcNow
+    )
+
+    $percent = $null
+    $eta = $null
+    try {
+        $totalSec = if ($State['TotalSec']) { [double]$State['TotalSec'] } else { 0 }
+        $totalFrames = if ($State['TotalFrames']) { [double]$State['TotalFrames'] } else { 0 }
+        if ($totalSec -gt 0 -and $null -ne $Progress.OutTimeSec) {
+            $percent = [math]::Min(100.0, 100.0 * $Progress.OutTimeSec / $totalSec)
+            if ($Progress.Speed -gt 0) { $eta = [math]::Max(0.0, ($totalSec - $Progress.OutTimeSec) / $Progress.Speed) }
+        } elseif ($totalFrames -gt 0 -and $null -ne $Progress.Frame) {
+            $percent = [math]::Min(100.0, 100.0 * $Progress.Frame / $totalFrames)
+            if ($Progress.Fps -gt 0) { $eta = [math]::Max(0.0, ($totalFrames - $Progress.Frame) / $Progress.Fps) }
+        }
+        if ($Progress.Ended) { $eta = 0 }
+
+        $due = $Progress.Ended -or -not $State['LastLog'] -or (($Now - $State['LastLog']).TotalSeconds -ge $State['IntervalSec'])
+        if ($due) {
+            $State['LastLog'] = $Now
+            $parts = @()
+            if ($null -ne $Progress.Frame) { $parts += "frame $($Progress.Frame)" + $(if ($totalFrames -gt 0) { "/$([long]$totalFrames)" } else { '' }) }
+            if ($null -ne $percent) { $parts += ('{0:0.0}%' -f $percent) }
+            if ($null -ne $Progress.Fps) { $parts += ('{0:0.0} fps' -f $Progress.Fps) }
+            if ($null -ne $Progress.Speed) { $parts += ('{0:0.00}x' -f $Progress.Speed) }
+            $parts += if ($Progress.Ended) { 'done' } elseif ($null -ne $eta) { 'ETA ' + ([timespan]::FromSeconds([math]::Round($eta))).ToString('c') } else { 'ETA unknown' }
+            Write-ArmLog -Level INFO -Message "Upscale $($State['Stage']) progress: $($parts -join ', ')" -Config $Config
+        }
+    } catch {
+        # Progress reporting must never fail an upscale.
+        Write-Verbose "Write-ArmUpscaleProgress: $_"
+    }
+
+    return [pscustomobject]@{
+        Stage   = $State['Stage']
+        Frame   = $Progress.Frame
+        Fps     = $Progress.Fps
+        Percent = $percent
+        EtaSec  = $eta
+        Ended   = [bool]$Progress.Ended
+    }
 }
 
 <#
@@ -975,11 +1049,14 @@ function Invoke-Upscale {
         [ValidateSet('LiveAction', 'Animation')]
         [string] $ContentType = 'LiveAction',
 
-        [switch] $SampleOnly
+        [switch] $SampleOnly,
+
+        [scriptblock] $ProgressHandler
     )
 
     # Invoke-ArmTool's default 3600s timeout would kill a feature-length upscale/encode.
     $longTimeoutSec = 86400
+    $progressIntervalSec = 60
 
     $interlaceType = $null
     $engine = $null
@@ -1030,10 +1107,33 @@ function Invoke-Upscale {
         $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "wrm-upscale-$(New-Guid)"
         $null = New-Item -ItemType Directory -Path $tempDir -Force
 
+        # Progress (#32): ffmpeg stages report out_time via `-progress pipe:1`; the ncnn
+        # runner reports frames. Expected totals give percent/ETA: the processed length
+        # (sample window or whole source) and, for frame counts, the intermediate's rate
+        # (decimated 24000/1001 for Telecined, else the forced or measured rate).
+        $totalSec = $sourceDuration
+        if ($plan.Window) { $totalSec = if ($sourceDuration -gt 0) { [math]::Min([double]$plan.Window.Duration, [math]::Max(0.0, $sourceDuration - $plan.Window.Seek)) } else { [double]$plan.Window.Duration } }
+        $rateText = if ($interlaceType -eq 'Telecined') { '24000/1001' } elseif ($plan.Preprocess.FrameRate) { $plan.Preprocess.FrameRate } else { $frameRate }
+        $rate = ConvertFrom-ProbeRatio $rateText
+        $totalFrames = if ($rate -and $totalSec -gt 0) { [math]::Round($totalSec * $rate.Num / $rate.Den) } else { $null }
+        $progressArgs = @('-progress', 'pipe:1')
+        $newProgressState = { param($stage) @{ Stage = $stage; IntervalSec = $progressIntervalSec; TotalSec = $totalSec; TotalFrames = $totalFrames; LastLog = $null } }
+        # Invoke-ArmTool runs this on the PowerShell thread in a child of ITS scope, so it
+        # reaches this function's variables by dynamic scoping. Use names Invoke-ArmTool
+        # does not define ($ProgressHandler/$Config there would shadow ours).
+        $upscaleProgressConfig = $Config
+        $upscaleProgressSink = $ProgressHandler
+        $onToolProgress = {
+            param($toolProgress)
+            $stageProgress = Write-ArmUpscaleProgress -State $upscaleProgressState -Progress $toolProgress -Config $upscaleProgressConfig
+            if ($upscaleProgressSink) { & $upscaleProgressSink $stageProgress }
+        }
+
         # --- (b) preprocess: deinterlace/IVTC ---
         $preprocessedFile = Join-Path $tempDir 'preprocessed.mkv'
-        $preResult = Invoke-ArmTool -Name ffmpeg -Config $Config -TimeoutSec $longTimeoutSec `
-            -Arguments (Get-UpscalePreprocessArgumentList -Plan $plan -OutputFile $preprocessedFile)
+        $upscaleProgressState = & $newProgressState 'preprocess'
+        $preResult = Invoke-ArmTool -Name ffmpeg -Config $Config -TimeoutSec $longTimeoutSec -ProgressHandler $onToolProgress `
+            -Arguments ($progressArgs + (Get-UpscalePreprocessArgumentList -Plan $plan -OutputFile $preprocessedFile))
         if ($preResult.ExitCode -ne 0) {
             throw "ffmpeg preprocess failed with exit code $($preResult.ExitCode)"
         }
@@ -1041,7 +1141,9 @@ function Invoke-Upscale {
         # --- (c) AI upscale with the engine configured for this content type ---
         $upscaledFile = Join-Path $tempDir 'upscaled.mkv'
         $engine = $plan.Engine
-        $upscaleResult = Invoke-ArmTool -Name $plan.EngineTool -Config $Config -TimeoutSec $longTimeoutSec `
+        $upscaleProgressState = & $newProgressState 'upscale'
+        $engineProgress = if ($plan.EngineTool -eq 'ncnn') { $onToolProgress } else { $null }
+        $upscaleResult = Invoke-ArmTool -Name $plan.EngineTool -Config $Config -TimeoutSec $longTimeoutSec -ProgressHandler $engineProgress `
             -Arguments (Get-UpscaleEngineArgumentList -Plan $plan -InputFile $preprocessedFile -OutputFile $upscaledFile)
         if ($upscaleResult.ExitCode -ne 0) {
             throw "$($plan.EngineLabel) failed with exit code $($upscaleResult.ExitCode) (engine: $engine)"
@@ -1053,8 +1155,9 @@ function Invoke-Upscale {
             $null = New-Item -ItemType Directory -Path $OutputDir -Force
         }
 
-        $muxResult = Invoke-ArmTool -Name ffmpeg -Config $Config -TimeoutSec $longTimeoutSec `
-            -Arguments (Get-UpscaleEncodeArgumentList -Plan $plan -UpscaledFile $upscaledFile -OutputFile $outputFile)
+        $upscaleProgressState = & $newProgressState 'encode'
+        $muxResult = Invoke-ArmTool -Name ffmpeg -Config $Config -TimeoutSec $longTimeoutSec -ProgressHandler $onToolProgress `
+            -Arguments ($progressArgs + (Get-UpscaleEncodeArgumentList -Plan $plan -UpscaledFile $upscaledFile -OutputFile $outputFile))
         if ($muxResult.ExitCode -ne 0) {
             throw "ffmpeg mux failed with exit code $($muxResult.ExitCode)"
         }

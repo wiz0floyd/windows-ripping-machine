@@ -126,18 +126,41 @@ Resolve-ArmFfprobePath -Config <hashtable> -> [string]
 #  else 'ffprobe'. Used by Get-ArmConfig, Invoke-ArmTool (-Name ffprobe) and the
 #  openproteus plan (the runner's --ffprobe).
 
-Write-ArmLog -Level <INFO|WARN|ERROR> -Message <string> [-Config <hashtable>]
-#  Timestamped line to console AND $Config.LogDir\wrm-<yyyyMMdd>.log.
-#  Must never throw (log dir auto-created; falls back to console-only).
+Write-ArmLog -Level <INFO|WARN|ERROR> -Message <string> [-Config <hashtable>] [-Context <string>]
+#  Timestamped line "[<ts>] [<LEVEL>] [<Context>] <msg>" (no "[<Context>] " without one) to
+#  console AND $Config.LogDir\wrm-<yyyyMMdd>.log. -Context defaults to $Config.LogContext
+#  (a tag such as the upscale queue item name, for interleaved logs from parallel jobs, #27).
+#  The daily file is shared by the watcher/upscaler/web UI processes: Add-ArmLogLine
+#  -Path -Line [-MaxAttempts 40] retries a sharing/lock violation (10-60 ms sleeps, ~1.5 s)
+#  instead of dropping the line; if the file stays locked the line goes to
+#  wrm-<yyyyMMdd>-pid<PID>.log beside it. Must never throw (log dir auto-created; falls
+#  back to console-only).
 
 Invoke-ArmTool -Name <makemkvcon|freaccmd|ffmpeg|ffprobe|video2x|ncnn> -Arguments <string[]>
-               -Config <hashtable> [-TimeoutSec <int>] -> [pscustomobject]
-#  Returns @{ ExitCode=[int]; StdOut=[string[]]; StdErr=[string[]] }.
+               -Config <hashtable> [-TimeoutSec <int>] [-StdErrLevel <WARN|INFO|None>]
+               [-ProgressHandler <scriptblock>] -> [pscustomobject]
+#  Returns @{ ExitCode=[int]; StdOut=[string[]]; StdErr=[string[]] } (unchanged; ExitCode -1
+#  and empty arrays on a launch failure or timeout, which also logs ERROR; never throws for those).
 #  When $Config.Simulate: runs tests/stubs/stub-<name>.ps1 with same args instead.
 #  `ncnn` runs $Config.NcnnPath (the venv python.exe); its Arguments start with
 #  `-I <repo>\tools\ncnn_upscale.py`. Default -TimeoutSec is 3600; Invoke-Upscale passes 86400.
+#  On timeout the process tree is killed ("Tool <name> timed out after <n> seconds").
 #  `ffprobe` runs Resolve-ArmFfprobePath (i.e. $Config.FfprobePath).
-#  Streams stdout lines to Write-ArmLog at INFO level (prefix "[<name>]").
+#  Streaming (#32): output is read line by line WHILE the tool runs - the calling thread
+#  waits on one pending ReadLineAsync per stream in <=250 ms slices and handles each line
+#  on the PowerShell thread (no .NET event handlers, so handlers are safe scriptblocks).
+#  Lines split on CR, LF or CRLF (ffmpeg's CR-separated stats arrive as separate lines);
+#  empty lines are dropped. stdout lines are logged at INFO "[<name>] <line>" as they arrive.
+#  -StdErrLevel: WARN (default) logs stderr as "[<name>] STDERR: <line>" at WARN; INFO logs
+#  it at INFO; None keeps it only in StdErr (probe output that is data). In every mode an
+#  error-looking line (error|fatal|failed|invalid|cannot|could not) is logged at WARN.
+#  -ProgressHandler: stdout key=value lines (ffmpeg `-progress pipe:1`, tools/ncnn_upscale.py)
+#  are folded by Update-ArmToolProgress -State -Key -Value [-Tool]; each block closing with
+#  `progress=continue|end` calls the handler with
+#  @{ Tool; Frame; Fps; OutTimeSec; Speed; Ended; Values } (numbers $null when absent/N/A;
+#  OutTimeSec from out_time_us, else out_time_ms, both microseconds). Consumed key=value
+#  lines are neither logged nor kept in StdOut. A throwing handler is logged at WARN once
+#  and never fails the run. Without a handler key=value lines are ordinary stdout.
 
 Get-DiscType -DriveLetter <char> -> 'AudioCD'|'Video'|'Data'|'None'
 #  AudioCD: media loaded (Win32_CDROMDrive.MediaLoaded) but no mountable filesystem.
@@ -348,6 +371,8 @@ Get-InterlaceType -InputFile <string> -Config <hashtable> [-SourceDuration <doub
 #    else (counts parsed)                                             → Interlaced
 #    counts unparseable / all zero                                    → Unknown (planned as
 #       blanket bwdif, the pre-#30 behaviour) + a WARN naming the file with the first 300 chars of the raw output
+#  The probe runs at ffmpeg's default loglevel (the idet summary is info-level) with
+#  Invoke-ArmTool -StdErrLevel None: its banner/input/chapter dump is parsed, not logged (#32).
 #  The parsed counts and windows are logged at INFO for every classification. The 0.5 cut
 #  sits mid-gap of 18 surveyed DVD rips: film/progressive video read 80.9-100% progressive,
 #  interlaced/hard-telecined 0-1.5%.
@@ -356,6 +381,8 @@ Get-VideoFrameRate -InputFile <string> -Config <hashtable> [-Seek 600] [-Duratio
 #  Decodes a short window (`ffmpeg -ss -t -i -map 0:v:0 -f null -`; retries from 0),
 #  snaps frames/time to a standard rate ('24000/1001', '30000/1001', ...; within 2%).
 #  Needed because soft-telecined DVD rips decode at 23.976 but carry a 29.97 header.
+#  Parses the stats `frame=`/`time=` lines from stderr (last match), so it keeps ffmpeg's
+#  default output; run with -StdErrLevel None (not logged, #32).
 
 Get-VideoSourceInfo -InputFile <string> -Config <hashtable> -> [pscustomobject]
 #  Probes the SOURCE once with `ffprobe -v error -show_entries stream=...:format=duration
@@ -416,12 +443,28 @@ Get-UpscalePlan -InputFile <string> -SourceInfo <pscustomobject> -InterlaceType 
 #    Get-UpscalePreprocessArgumentList -Plan -OutputFile            (ffmpeg -> ffv1 intermediate)
 #    Get-UpscaleEngineArgumentList -Plan -InputFile -OutputFile     (Invoke-ArmTool -Name $Plan.EngineTool)
 #    Get-UpscaleEncodeArgumentList -Plan -UpscaledFile -OutputFile  (ffmpeg libx265 mux)
+#  Both ffmpeg builders start with `-hide_banner -loglevel warning -nostats` (no banner,
+#  input/chapter dump or stats line; only warnings/errors reach stderr, #32).
 #  tests/fixtures/golden-upscale-args.json pins the exact argument lists for 26
 #  scenarios (first captured before the plan refactor, re-recorded on purpose for the #29
-#  colour args); tests assert the plan-built args equal them. Changing an ffmpeg/runner argument means regenerating that file on purpose.
+#  colour args and #32 quiet/progress flags); tests assert the plan-built args equal them. Changing an ffmpeg/runner argument means regenerating that file on purpose.
+
+Write-ArmUpscaleProgress -State <hashtable> -Progress <pscustomobject> [-Config] [-Now <datetime>]
+#  -> @{ Stage; Frame; Fps; Percent; EtaSec; Ended }. State = @{ Stage; IntervalSec; TotalSec;
+#  TotalFrames; LastLog }. Percent/ETA from out_time vs TotalSec at Speed (ffmpeg), else
+#  frames vs TotalFrames at Fps (ncnn runner); $null when unknown. Logs INFO
+#  "Upscale <stage> progress: frame F/T, P%, N fps, Sx, ETA hh:mm:ss|done" for the first block,
+#  then at most once per IntervalSec, and once when the stage ends. Never throws.
 
 Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
-               [-ContentType <LiveAction|Animation>] [-SampleOnly] -> [pscustomobject]
+               [-ContentType <LiveAction|Animation>] [-SampleOnly] [-ProgressHandler <scriptblock>] -> [pscustomobject]
+#  Progress (#32): the preprocess and final encode run with `-progress pipe:1` prepended, and
+#  the openproteus (ncnn) upscale stage's runner prints frame/fps blocks; all three pass an
+#  Invoke-ArmTool -ProgressHandler that calls Write-ArmUpscaleProgress (IntervalSec 60;
+#  TotalSec = the sample window or source duration; TotalFrames = TotalSec x the
+#  intermediate rate: 24000/1001 for Telecined, else the forced/measured rate) and forwards
+#  each result (with Stage = preprocess|upscale|encode) to the optional -ProgressHandler.
+#  video2x stages (anime4k, realesrgan) report no progress.
 #  @{ Success; OutputFile; InterlaceType; Engine; SourceHeight; Error }   # SourceHeight = probed source frame height or $null
 #  Engine = openproteus|anime4k|realesrgan ($null if failed before engine selection)
 #  Probe, plan, execute. (a) Probe: Get-VideoSourceInfo (ffprobe, source file),
@@ -449,7 +492,9 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #      SOURCE's Get-VideoSourceInfo):
 #        openproteus -> ncnn tool: tools/ncnn_upscale.py (ffmpeg -> upscale-ncnn-py
 #                       OpenProteus 2x -> ffmpeg lanczos to WxH, setsar=1, x264 crf12 temp;
-#                       --ffmpeg $FfmpegPath --ffprobe Resolve-ArmFfprobePath)
+#                       --ffmpeg $FfmpegPath --ffprobe Resolve-ArmFfprobePath). Every 10 s and
+#                       at the end it prints (flushed) `frame=<n>`, `fps=<avg>`,
+#                       `progress=continue|end` on stdout.
 #        anime4k     -> video2x -p libplacebo --libplacebo-shader $UpscaleShader -w W -h H
 #        realesrgan  -> legacy video2x realesrgan (model/scale from config)
 #  (d) ffmpeg mux: libx265 -crf $UpscaleCrf -preset slow, copy original audio;

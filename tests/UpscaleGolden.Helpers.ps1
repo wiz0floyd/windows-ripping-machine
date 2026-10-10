@@ -20,6 +20,8 @@
     Re-recorded for #30: two mid-feature idet probes (600 s and 50% of the 8627.9 s
     fixture duration, 1000 frames each), the Interlaced idet,bwdif chain, and the
     frame-rate probe now also runs for Telecined sources.
+    Edited for #32 (additions only): the preprocess and final-encode ffmpeg calls start with
+    `-progress pipe:1 -hide_banner -loglevel warning -nostats`; every other argument is unchanged.
 #>
 
 function Get-UpscaleGoldenScenarios {

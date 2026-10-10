@@ -182,9 +182,15 @@ function Get-ArmConfig {
 
 .PARAMETER Config
     Configuration hashtable (for LogDir). If omitted, logs to console only.
+    $Config.LogContext, when set, is the default -Context.
+
+.PARAMETER Context
+    Optional tag (e.g. an upscale queue item name) written as "[<Context>]" after the
+    level, so interleaved lines from parallel jobs can be told apart.
 
 .EXAMPLE
     Write-ArmLog -Level INFO -Message "Rip started" -Config $config
+    Write-ArmLog -Level INFO -Message "Sample ready" -Config $config -Context 'Movie (2001)'
 #>
 function Write-ArmLog {
     [CmdletBinding()]
@@ -196,11 +202,17 @@ function Write-ArmLog {
         [Parameter(Mandatory = $true)]
         [string] $Message,
 
-        [hashtable] $Config
+        [hashtable] $Config,
+
+        [string] $Context
     )
 
+    if (-not $Context -and $Config -and $Config.ContainsKey('LogContext') -and $Config['LogContext']) {
+        $Context = [string]$Config['LogContext']
+    }
+
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    $logLine = "[$timestamp] [$Level] $Message"
+    $logLine = if ($Context) { "[$timestamp] [$Level] [$Context] $Message" } else { "[$timestamp] [$Level] $Message" }
 
     # Always write to console
     Write-Host -Object $logLine
@@ -213,13 +225,117 @@ function Write-ArmLog {
                 $null = New-Item -ItemType Directory -Force -Path $logDir
             }
 
-            $logFile = Join-Path $logDir "wrm-$(Get-Date -Format 'yyyyMMdd').log"
-            Add-Content -Path $logFile -Value $logLine -ErrorAction Stop
+            $stamp = Get-Date -Format 'yyyyMMdd'
+            $logFile = Join-Path $logDir "wrm-$stamp.log"
+            if (-not (Add-ArmLogLine -Path $logFile -Line $logLine)) {
+                # The shared daily file stayed locked by another wrm process for the whole
+                # retry budget: keep the line in a per-process side file instead of dropping it.
+                $fallback = Join-Path $logDir "wrm-$stamp-pid$PID.log"
+                $null = Add-ArmLogLine -Path $fallback -Line "$logLine (shared log $logFile was locked)" -MaxAttempts 1
+            }
         } catch {
             # Fail silently; logging failure must not fail the pipeline
         }
     }
 }
+
+<#
+.SYNOPSIS
+    Append one line to a log file, retrying while another process holds it. Never throws.
+
+.DESCRIPTION
+    The watcher, upscaler and web UI processes share one daily log. A writer that finds
+    the file locked (sharing/lock violation) sleeps 10-60 ms and retries, up to
+    -MaxAttempts times (~1.5 s by default). Any other failure, or running out of
+    attempts, returns $false.
+
+.OUTPUTS
+    [bool] $true when the line was written.
+#>
+function Add-ArmLogLine {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)] [string] $Path,
+        [Parameter(Mandatory = $true)] [AllowEmptyString()] [string] $Line,
+        [int] $MaxAttempts = 40
+    )
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            [System.IO.File]::AppendAllText($Path, $Line + [Environment]::NewLine)
+            return $true
+        } catch {
+            $ex = $_.Exception
+            while ($ex.InnerException -and -not ($ex -is [System.IO.IOException])) { $ex = $ex.InnerException }
+            # 32 = ERROR_SHARING_VIOLATION, 33 = ERROR_LOCK_VIOLATION: another writer has it.
+            $locked = ($ex -is [System.IO.IOException]) -and (($ex.HResult -band 0xFFFF) -in @(32, 33))
+            if (-not $locked) { return $false }
+            if ($attempt -lt $MaxAttempts) { Start-Sleep -Milliseconds (Get-Random -Minimum 10 -Maximum 60) }
+        }
+    }
+    return $false
+}
+
+# key=value lines: ffmpeg `-progress pipe:1` blocks and tools/ncnn_upscale.py's progress
+# lines. A block ends with `progress=continue|end`.
+$script:ArmProgressLinePattern = '^([A-Za-z0-9_]+)=(.*)$'
+
+<#
+.SYNOPSIS
+    Fold one key=value progress line into a parser state; return the parsed progress when
+    the line closes a block (`progress=continue|end`), else $null. Pure apart from -State.
+
+.OUTPUTS
+    [pscustomobject] @{ Tool; Frame; Fps; OutTimeSec; Speed; Ended; Values } or $null.
+    Frame/Fps/OutTimeSec/Speed are $null when the block lacks them or says N/A.
+#>
+function Update-ArmToolProgress {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Folds a line into an in-memory parser state; no system state changes.')]
+    param(
+        [Parameter(Mandatory = $true)] [hashtable] $State,
+        [Parameter(Mandatory = $true)] [string] $Key,
+        [AllowEmptyString()] [string] $Value = '',
+        [string] $Tool = ''
+    )
+
+    if (-not $State.ContainsKey('Values')) { $State['Values'] = @{} }
+    if ($Key -ne 'progress') {
+        $State['Values'][$Key] = $Value.Trim()
+        return $null
+    }
+
+    $v = $State['Values']
+    $State['Values'] = @{}
+    $num = {
+        param($k)
+        if (-not $v.ContainsKey($k)) { return $null }
+        $s = ($v[$k] -replace 'x$', '').Trim()
+        $d = 0.0
+        if ([double]::TryParse($s, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$d)) { return $d }
+        return $null
+    }
+    $frame = & $num 'frame'
+    # ffmpeg's out_time_ms is also in microseconds (a long-standing misnomer).
+    $outUs = & $num 'out_time_us'
+    if ($null -eq $outUs) { $outUs = & $num 'out_time_ms' }
+
+    return [pscustomobject]@{
+        Tool       = $Tool
+        Frame      = if ($null -ne $frame) { [long]$frame } else { $null }
+        Fps        = & $num 'fps'
+        OutTimeSec = if ($null -ne $outUs -and $outUs -ge 0) { $outUs / 1e6 } else { $null }
+        Speed      = & $num 'speed'
+        Ended      = ($Value.Trim() -eq 'end')
+        Values     = $v
+    }
+}
+
+# Error-looking stderr lines are logged at WARN whatever -StdErrLevel says.
+$script:ArmStdErrErrorPattern = '(?i)\b(error|fatal|failed|invalid|cannot|could not)\b'
 
 <#
 .SYNOPSIS
@@ -230,7 +346,13 @@ function Write-ArmLog {
     Returns a hashtable with ExitCode, StdOut (array of lines), and StdErr (array of lines).
 
     When $Config.Simulate is $true, runs tests/stubs/stub-<name>.ps1 instead.
-    Streams stdout lines to Write-ArmLog at INFO level with prefix "[<name>]".
+
+    Output is read line by line while the tool runs (not buffered to exit): the calling
+    thread waits on one pending ReadLineAsync per stream in short slices and handles each
+    line on the PowerShell thread, so -ProgressHandler never runs on a pool thread. Every
+    stdout line is logged at INFO as "[<name>] <line>" as it arrives; stderr lines per
+    -StdErrLevel. Lines split on CR, LF or CRLF (so ffmpeg's CR-separated stats arrive as
+    separate lines); empty lines are dropped.
 
 .PARAMETER Name
     Tool name: makemkvcon, freaccmd, ffmpeg, ffprobe, video2x, or ncnn.
@@ -242,7 +364,20 @@ function Write-ArmLog {
     Configuration hashtable.
 
 .PARAMETER TimeoutSec
-    Timeout in seconds (default: 3600 for long rips).
+    Timeout in seconds (default: 3600 for long rips). The tool's process tree is killed
+    when it is exceeded and ExitCode is -1.
+
+.PARAMETER StdErrLevel
+    How stderr lines are logged: WARN (default) as "[<name>] STDERR: <line>"; INFO for a
+    tool whose stderr is informational; None to keep them only in the result (probes whose
+    stderr is data). Error-looking lines (error/fatal/failed/invalid/cannot/could not) are
+    always logged at WARN.
+
+.PARAMETER ProgressHandler
+    Scriptblock called with one parsed progress object (see Update-ArmToolProgress) each
+    time a stdout key=value block closes with `progress=continue|end` (ffmpeg -progress
+    pipe:1, tools/ncnn_upscale.py). Those key=value lines are consumed: neither logged nor
+    kept in StdOut. A handler that throws is logged at WARN once and never fails the run.
 
 .OUTPUTS
     [pscustomobject] with ExitCode, StdOut, StdErr properties.
@@ -264,7 +399,12 @@ function Invoke-ArmTool {
         [Parameter(Mandatory = $true)]
         [hashtable] $Config,
 
-        [int] $TimeoutSec = 3600
+        [int] $TimeoutSec = 3600,
+
+        [ValidateSet('WARN', 'INFO', 'None')]
+        [string] $StdErrLevel = 'WARN',
+
+        [scriptblock] $ProgressHandler
     )
 
     $stdout = @()
@@ -325,42 +465,83 @@ function Invoke-ArmTool {
             $psi.ArgumentList.Add($arg)
         }
 
-        # Launch process and capture streams concurrently to avoid deadlock
         $proc = [System.Diagnostics.Process]::Start($psi)
+        $timeoutMs = [long]$TimeoutSec * 1000
+        $clock = [System.Diagnostics.Stopwatch]::StartNew()
 
-        # Start reading both streams asynchronously before WaitForExit to avoid deadlock
-        # (process buffer fills -> blocks on write -> we're blocked waiting -> deadlock)
-        $stdOutTask = $proc.StandardOutput.ReadToEndAsync()
-        $stdErrTask = $proc.StandardError.ReadToEndAsync()
+        # Both streams are drained concurrently (one pending ReadLineAsync each) so a full
+        # pipe buffer on either can never deadlock the child. Lines are handled here, on
+        # the PowerShell thread, between short waits.
+        $readers = @($proc.StandardOutput, $proc.StandardError)
+        $pending = @($readers[0].ReadLineAsync(), $readers[1].ReadLineAsync())
+        $outLines = [System.Collections.Generic.List[string]]::new()
+        $errLines = [System.Collections.Generic.List[string]]::new()
+        $progressState = @{}
+        $handlerFailed = $false
 
-        # Use .NET WaitForExit to avoid race condition with fast-exiting processes
-        if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+        while ($null -ne $pending[0] -or $null -ne $pending[1]) {
+            $remaining = $timeoutMs - $clock.ElapsedMilliseconds
+            if ($remaining -le 0) {
+                $proc.Kill($true)
+                throw "Tool $Name timed out after $TimeoutSec seconds"
+            }
+            if ($null -eq $pending[0]) {
+                $live = @(1); $tasks = [System.Threading.Tasks.Task[]]@($pending[1])
+            } elseif ($null -eq $pending[1]) {
+                $live = @(0); $tasks = [System.Threading.Tasks.Task[]]@($pending[0])
+            } else {
+                $live = @(0, 1); $tasks = [System.Threading.Tasks.Task[]]@($pending[0], $pending[1])
+            }
+            $hit = [System.Threading.Tasks.Task]::WaitAny($tasks, [int][math]::Min(250, $remaining))
+            if ($hit -lt 0) { continue }
+
+            $stream = $live[$hit]
+            $line = $pending[$stream].GetAwaiter().GetResult()
+            if ($null -eq $line) {
+                $pending[$stream] = $null   # EOF
+                continue
+            }
+            $pending[$stream] = $readers[$stream].ReadLineAsync()
+            if (-not $line) { continue }
+
+            if ($stream -eq 0) {
+                if ($ProgressHandler -and $line -match $script:ArmProgressLinePattern) {
+                    $progress = Update-ArmToolProgress -State $progressState -Key $Matches[1] -Value $Matches[2] -Tool $Name
+                    if ($progress) {
+                        try {
+                            & $ProgressHandler $progress
+                        } catch {
+                            if (-not $handlerFailed) {
+                                Write-ArmLog -Level WARN -Message "[$Name] progress handler failed (further failures not logged): $_" -Config $Config
+                                $handlerFailed = $true
+                            }
+                        }
+                    }
+                    continue
+                }
+                $outLines.Add($line)
+                Write-ArmLog -Level INFO -Message "[$Name] $line" -Config $Config
+            } else {
+                $errLines.Add($line)
+                if ($StdErrLevel -eq 'WARN' -or $line -match $script:ArmStdErrErrorPattern) {
+                    Write-ArmLog -Level WARN -Message "[$Name] STDERR: $line" -Config $Config
+                } elseif ($StdErrLevel -eq 'INFO') {
+                    Write-ArmLog -Level INFO -Message "[$Name] STDERR: $line" -Config $Config
+                }
+            }
+        }
+
+        # Both streams hit EOF; the process may still be exiting.
+        $remaining = [math]::Max(0, $timeoutMs - $clock.ElapsedMilliseconds)
+        if (-not $proc.WaitForExit([int][math]::Min([int]::MaxValue, $remaining))) {
             $proc.Kill($true)
             throw "Tool $Name timed out after $TimeoutSec seconds"
         }
-
-        # Ensure async stream reads complete and collect results
-        [System.Threading.Tasks.Task]::WaitAll($stdOutTask, $stdErrTask)
-        $stdOutText = $stdOutTask.Result
-        $stdErrText = $stdErrTask.Result
+        $proc.WaitForExit()
 
         $exitCode = $proc.ExitCode
-        $stdout = @($stdOutText -split "`r`n|`n" | ForEach-Object { $_.TrimEnd("`r") } | Where-Object { $_ })
-        $stderr = @($stdErrText -split "`r`n|`n" | ForEach-Object { $_.TrimEnd("`r") } | Where-Object { $_ })
-
-        # Log stdout lines
-        foreach ($line in $stdout) {
-            if ($line) {
-                Write-ArmLog -Level INFO -Message "[$Name] $line" -Config $Config
-            }
-        }
-
-        # Log stderr if present
-        foreach ($line in $stderr) {
-            if ($line) {
-                Write-ArmLog -Level WARN -Message "[$Name] STDERR: $line" -Config $Config
-            }
-        }
+        $stdout = @($outLines)
+        $stderr = @($errLines)
 
     } catch {
         Write-ArmLog -Level ERROR -Message "Invoke-ArmTool $Name failed: $_" -Config $Config
