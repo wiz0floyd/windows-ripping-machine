@@ -39,6 +39,18 @@ Describe 'Repair-ArmJellyfinNames' {
         $rows[0].NewName | Should -Be 'Grease (1978).mkv'
     }
 
+    It 'honours -Since/-Until on the folder creation time' {
+        $old = New-MovieDir 'Old (1990)' @{ 'A1_t00.mkv' = 'raw' }
+        $new = New-MovieDir 'New (2020)' @{ 'A1_t00.mkv' = 'raw' }
+        (Get-Item -LiteralPath $old).CreationTime = [datetime] '2026-01-01'
+        (Get-Item -LiteralPath $new).CreationTime = [datetime] '2026-10-01'
+        $rows = @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config -Since ([datetime] '2026-09-27'))
+        @($rows.Folder | Sort-Object -Unique) | Should -Be @('New (2020)')
+        Get-Names $old | Should -Be @('A1_t00.mkv')
+        $rows2 = @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config -Until ([datetime] '2026-09-27'))
+        @($rows2.Folder | Sort-Object -Unique) | Should -Be @('Old (1990)')
+    }
+
     It 'leaves a correctly named movie and its extras/ alone' {
         $dir = New-MovieDir 'Alien (1979)' @{ 'Alien (1979).mkv' = 'raw'; 'extras/B1_t01.mkv' = 'x' }
         @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config).Count | Should -Be 0

@@ -388,6 +388,32 @@ Describe 'Rename-ArmMainFeature' {
     }
 }
 
+Describe 'Rename-ArmMainFeature -Label' {
+    BeforeEach {
+        $script:Dir = Join-Path $TestDrive "stage-$(New-Guid)" 'Grease (1978)'
+        $null = New-Item -ItemType Directory -Path $script:Dir -Force
+    }
+
+    It 'names the main feature with a version label' {
+        Set-Content -LiteralPath (Join-Path $script:Dir 'B1_t00.mkv') -Value 'a'
+        $r = Rename-ArmMainFeature -Dir $script:Dir -Config (New-TestConfig) -Label '480p'
+        $r.Renamed | Should -BeTrue
+        $r.Path | Should -Be (Join-Path $script:Dir 'Grease (1978) - 480p.mkv')
+    }
+
+    It 'adds the tag to a file already named after the folder' {
+        Set-Content -LiteralPath (Join-Path $script:Dir 'Grease (1978).mkv') -Value 'a'
+        (Rename-ArmMainFeature -Dir $script:Dir -Config (New-TestConfig) -Label '480p').Renamed | Should -BeTrue
+        @(Get-ChildItem -LiteralPath $script:Dir -File).Name | Should -Be @('Grease (1978) - 480p.mkv')
+    }
+
+    It 'keeps a file that already carries a resolution tag' {
+        Set-Content -LiteralPath (Join-Path $script:Dir 'Grease (1978) - 576p.mkv') -Value 'a'
+        (Rename-ArmMainFeature -Dir $script:Dir -Config (New-TestConfig) -Label '480p').Renamed | Should -BeFalse
+        @(Get-ChildItem -LiteralPath $script:Dir -File).Name | Should -Be @('Grease (1978) - 576p.mkv')
+    }
+}
+
 Describe 'Rename-ArmUpscaleVersions' {
     BeforeEach {
         $script:Dir = Join-Path $TestDrive "nas-$(New-Guid)" 'Grease (1978)'

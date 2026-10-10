@@ -34,6 +34,12 @@
 .PARAMETER Simulate
     Use the test stubs instead of the real ffprobe.
 
+.PARAMETER Since
+    Only movie folders created on or after this date/time.
+
+.PARAMETER Until
+    Only movie folders created before this date/time.
+
 .EXAMPLE
     ./tools/Repair-ArmJellyfinNames.ps1 -Path \\nas\media\movies -WhatIf
     ./tools/Repair-ArmJellyfinNames.ps1 -Path \\nas\media\movies
@@ -42,7 +48,9 @@
 param(
     [string] $Path,
     [string] $ConfigPath,
-    [switch] $Simulate
+    [switch] $Simulate,
+    [Nullable[datetime]] $Since,
+    [Nullable[datetime]] $Until
 )
 
 Set-StrictMode -Version Latest
@@ -75,7 +83,11 @@ function Repair-ArmJellyfinNames {
         [string] $Path,
 
         [Parameter(Mandatory = $true)]
-        [hashtable] $Config
+        [hashtable] $Config,
+
+        [Nullable[datetime]] $Since,
+
+        [Nullable[datetime]] $Until
     )
 
     $rows = [System.Collections.Generic.List[object]]::new()
@@ -98,7 +110,12 @@ function Repair-ArmJellyfinNames {
     }
     $queuedReason = 'queued for upscale (worker renames it on completion)'
 
-    foreach ($dir in @(Get-ChildItem -LiteralPath $Path -Directory | Sort-Object -Property Name)) {
+    $dirs = @(Get-ChildItem -LiteralPath $Path -Directory | Sort-Object -Property Name)
+    # Folder creation time = when WRM first wrote the movie (the move to the NAS).
+    if ($Since) { $dirs = @($dirs | Where-Object { $_.CreationTime -ge $Since }) }
+    if ($Until) { $dirs = @($dirs | Where-Object { $_.CreationTime -lt $Until }) }
+
+    foreach ($dir in $dirs) {
         $folder = $dir.Name
         $top = @(Get-ChildItem -LiteralPath $dir.FullName -File -Filter '*.mkv')
         $upscales = @($top | Where-Object { $_.Name.EndsWith($script:UpscaleSuffix, [System.StringComparison]::OrdinalIgnoreCase) })
@@ -231,7 +248,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     $config = Get-ArmConfig -Path $ConfigPath
     if ($Simulate) { $config.Simulate = $true }
 
-    $rows = @(Repair-ArmJellyfinNames -Path $Path -Config $config -WhatIf:$WhatIfPreference)
+    $rows = @(Repair-ArmJellyfinNames -Path $Path -Config $config -Since $Since -Until $Until -WhatIf:$WhatIfPreference)
     if ($rows.Count -eq 0) {
         Write-Host 'Nothing to rename.'
     } else {

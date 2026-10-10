@@ -156,7 +156,7 @@ Describe 'Invoke-DiscDispatch' {
             $queueFile = Join-Path $script:QueueDir 'DVD Movie (1999).json'
             Test-Path $queueFile | Should -BeTrue
             $entry = Get-Content $queueFile -Raw | ConvertFrom-Json
-            $entry.Source | Should -Match 'DVD Movie \(1999\)\.mkv$'
+            $entry.Source | Should -Match 'DVD Movie \(1999\) - 480p\.mkv$'
             $entry.DestDir | Should -Match 'DVD Movie \(1999\)$'
         }
 
@@ -179,8 +179,9 @@ Describe 'Invoke-DiscDispatch' {
             @(Get-ChildItem $script:QueueDir -Filter '*.json').Count | Should -Be 0
         }
 
-        It 'renames the main feature to the folder name before Move-ToNas and queues only a top-level mkv (extras ignored)' {
+        It 'renames the main feature to folder-480p before Move-ToNas and queues only a top-level mkv (extras ignored)' {
             $script:Config.UpscaleDvds = $true
+            Mock Get-VideoSourceInfo { [pscustomobject]@{ Success = $true; Height = 480 } }
             $ripOutputDir = Join-Path $script:StagingDir 'RAW_LABEL'
             New-Item -ItemType Directory -Force -Path $ripOutputDir | Out-Null
             'x' * 500 | Set-Content (Join-Path $ripOutputDir 'B1_t00.mkv')
@@ -199,16 +200,16 @@ Describe 'Invoke-DiscDispatch' {
             Mock Move-ToNas {
                 $script:StagedAtMove = @(Get-ChildItem -LiteralPath $SourceDir -Recurse -File | ForEach-Object { $_.FullName.Substring($SourceDir.Length).TrimStart('\', '/') } | Sort-Object)
                 $null = New-Item -ItemType Directory -Force -Path (Join-Path $fakeDest 'extras')
-                'x' * 100 | Set-Content -LiteralPath (Join-Path $fakeDest 'Grease (1978).mkv')
+                'x' * 100 | Set-Content -LiteralPath (Join-Path $fakeDest 'Grease (1978) - 480p.mkv')
                 'x' * 900 | Set-Content -LiteralPath (Join-Path $fakeDest 'extras' 'huge-extra.mkv')
                 [pscustomobject]@{ Success = $true; DestDir = $fakeDest; Error = $null }
             }
 
             Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Video' -Config $script:Config
 
-            ($script:StagedAtMove -join '|') | Should -Be ((@('Grease (1978).mkv', (Join-Path 'extras' 'B1_t01.mkv')) | Sort-Object) -join '|')
+            ($script:StagedAtMove -join '|') | Should -Be ((@('Grease (1978) - 480p.mkv', (Join-Path 'extras' 'B1_t01.mkv')) | Sort-Object) -join '|')
             $entry = Get-Content -LiteralPath (Join-Path $script:QueueDir 'Grease (1978).json') -Raw | ConvertFrom-Json
-            $entry.Source | Should -Be (Join-Path $fakeDest 'Grease (1978).mkv')
+            $entry.Source | Should -Be (Join-Path $fakeDest 'Grease (1978) - 480p.mkv')
         }
 
         It 'queues the file this rip produced, not a bigger upscale already sitting in an existing NAS folder' {
@@ -216,6 +217,7 @@ Describe 'Invoke-DiscDispatch' {
             $ripOutputDir = Join-Path $script:StagingDir 'RAW_LABEL'
             New-Item -ItemType Directory -Force -Path $ripOutputDir | Out-Null
             'x' * 100 | Set-Content (Join-Path $ripOutputDir 'B1_t00.mkv')
+            Mock Get-VideoSourceInfo { [pscustomobject]@{ Success = $true; Height = 480 } }
             Mock Invoke-VideoRip {
                 [pscustomobject]@{
                     Success = $true; DiscLabel = 'RAW_LABEL'; DiscType = 'DVD'
@@ -226,7 +228,7 @@ Describe 'Invoke-DiscDispatch' {
             $fakeDest = Join-Path $script:NasVideoRoot 'Grease (1978)'
             Mock Move-ToNas {
                 $null = New-Item -ItemType Directory -Force -Path $fakeDest
-                'x' * 100 | Set-Content -LiteralPath (Join-Path $fakeDest 'Grease (1978).mkv')
+                'x' * 100 | Set-Content -LiteralPath (Join-Path $fakeDest 'Grease (1978) - 480p.mkv')
                 'x' * 900 | Set-Content -LiteralPath (Join-Path $fakeDest 'Grease (1978) - 1080p.mkv')
                 [pscustomobject]@{ Success = $true; DestDir = $fakeDest; Error = $null }
             }
@@ -234,7 +236,7 @@ Describe 'Invoke-DiscDispatch' {
             Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Video' -Config $script:Config
 
             $entry = Get-Content -LiteralPath (Join-Path $script:QueueDir 'Grease (1978).json') -Raw | ConvertFrom-Json
-            $entry.Source | Should -Be (Join-Path $fakeDest 'Grease (1978).mkv')
+            $entry.Source | Should -Be (Join-Path $fakeDest 'Grease (1978) - 480p.mkv')
         }
 
         It 'sends a dedicated MAKEMKV_KEY_EXPIRED notification and keeps staging on key expiry' {
