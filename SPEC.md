@@ -127,18 +127,41 @@ Resolve-ArmFfprobePath -Config <hashtable> -> [string]
 #  else 'ffprobe'. Used by Get-ArmConfig, Invoke-ArmTool (-Name ffprobe) and the
 #  openproteus plan (the runner's --ffprobe).
 
-Write-ArmLog -Level <INFO|WARN|ERROR> -Message <string> [-Config <hashtable>]
-#  Timestamped line to console AND $Config.LogDir\wrm-<yyyyMMdd>.log.
-#  Must never throw (log dir auto-created; falls back to console-only).
+Write-ArmLog -Level <INFO|WARN|ERROR> -Message <string> [-Config <hashtable>] [-Context <string>]
+#  Timestamped line "[<ts>] [<LEVEL>] [<Context>] <msg>" (no "[<Context>] " without one) to
+#  console AND $Config.LogDir\wrm-<yyyyMMdd>.log. -Context defaults to $Config.LogContext
+#  (a tag such as the upscale queue item name, for interleaved logs from parallel jobs, #27).
+#  The daily file is shared by the watcher/upscaler/web UI processes: Add-ArmLogLine
+#  -Path -Line [-MaxAttempts 40] retries a sharing/lock violation (10-60 ms sleeps, ~1.5 s)
+#  instead of dropping the line; if the file stays locked the line goes to
+#  wrm-<yyyyMMdd>-pid<PID>.log beside it. Must never throw (log dir auto-created; falls
+#  back to console-only).
 
 Invoke-ArmTool -Name <makemkvcon|freaccmd|ffmpeg|ffprobe|video2x|ncnn> -Arguments <string[]>
-               -Config <hashtable> [-TimeoutSec <int>] -> [pscustomobject]
-#  Returns @{ ExitCode=[int]; StdOut=[string[]]; StdErr=[string[]] }.
+               -Config <hashtable> [-TimeoutSec <int>] [-StdErrLevel <WARN|INFO|None>]
+               [-ProgressHandler <scriptblock>] -> [pscustomobject]
+#  Returns @{ ExitCode=[int]; StdOut=[string[]]; StdErr=[string[]] } (unchanged; ExitCode -1
+#  and empty arrays on a launch failure or timeout, which also logs ERROR; never throws for those).
 #  When $Config.Simulate: runs tests/stubs/stub-<name>.ps1 with same args instead.
 #  `ncnn` runs $Config.NcnnPath (the venv python.exe); its Arguments start with
 #  `-I <repo>\tools\ncnn_upscale.py`. Default -TimeoutSec is 3600; Invoke-Upscale passes 86400.
+#  On timeout the process tree is killed ("Tool <name> timed out after <n> seconds").
 #  `ffprobe` runs Resolve-ArmFfprobePath (i.e. $Config.FfprobePath).
-#  Streams stdout lines to Write-ArmLog at INFO level (prefix "[<name>]").
+#  Streaming (#32): output is read line by line WHILE the tool runs - the calling thread
+#  waits on one pending ReadLineAsync per stream in <=250 ms slices and handles each line
+#  on the PowerShell thread (no .NET event handlers, so handlers are safe scriptblocks).
+#  Lines split on CR, LF or CRLF (ffmpeg's CR-separated stats arrive as separate lines);
+#  empty lines are dropped. stdout lines are logged at INFO "[<name>] <line>" as they arrive.
+#  -StdErrLevel: WARN (default) logs stderr as "[<name>] STDERR: <line>" at WARN; INFO logs
+#  it at INFO; None keeps it only in StdErr (probe output that is data). In every mode an
+#  error-looking line (error|fatal|failed|invalid|cannot|could not) is logged at WARN.
+#  -ProgressHandler: stdout key=value lines (ffmpeg `-progress pipe:1`, tools/ncnn_upscale.py)
+#  are folded by Update-ArmToolProgress -State -Key -Value [-Tool]; each block closing with
+#  `progress=continue|end` calls the handler with
+#  @{ Tool; Frame; Fps; OutTimeSec; Speed; Ended; Values } (numbers $null when absent/N/A;
+#  OutTimeSec from out_time_us, else out_time_ms, both microseconds). Consumed key=value
+#  lines are neither logged nor kept in StdOut. A throwing handler is logged at WARN once
+#  and never fails the run. Without a handler key=value lines are ordinary stdout.
 
 Get-DiscType -DriveLetter <char> -> 'AudioCD'|'Video'|'Data'|'None'
 #  AudioCD: media loaded (Win32_CDROMDrive.MediaLoaded) but no mountable filesystem.
@@ -166,8 +189,11 @@ Invoke-VideoRip -DriveLetter <char> -Config <hashtable> [-JobId <string>] -> [ps
 #  3. `makemkvcon -r --minlength=$($c.MinTitleLengthSec) mkv disc:<i> all <staging>\<label>\`
 #     (or main title only when !RipAllTitles: pick longest TINFO duration).
 #  4. Parse robot output: MSG codes, PRGV progress (log every ~10%), TINFO/CINFO.
-#  5. Detect expired/absent key (MSG 5021/"registration key" text) → Success=$false,
-#     Error='MAKEMKV_KEY_EXPIRED' (watcher notifies specially).
+#  5. Detect expired/absent key (MSG 5021/"registration key" text) in the output of
+#     both the drive-scan `info` call and the `mkv` call (an expired beta's
+#     "version is too old" 5021 aborts `info` with exit -3) → Success=$false,
+#     Error='MAKEMKV_KEY_EXPIRED' (watcher notifies specially and opens
+#     https://www.makemkv.com/ via Open-ArmMakeMkvSite; skipped under -Simulate).
 #
 #  Set-ArmMetadataFile -OutputDir <string> -Title <string> -Year <string>
 #                      [-ContentType <string>] [-ContentTypeNote <string>]
@@ -288,7 +314,7 @@ Move-ArmExtrasToSubdir -Dir <string> -Config <hashtable> -> [pscustomobject] { S
 #  MainFeature = full path of the kept (largest) top-level .mkv, $null if none/failed.
 # Called by Invoke-VideoDispatch before Move-ToNas: keeps the largest top-level .mkv in place and moves
 # the other top-level .mkv files into <Dir>\extras\ (Jellyfin extras folder). No-op for <2 .mkv files.
-Rename-ArmMainFeature -Dir <string> -Config <hashtable> [-MainFeature <string>] -> [pscustomobject] { Success, Renamed, Path, Error }
+Rename-ArmMainFeature -Dir <string> -Config <hashtable> [-MainFeature <string>] [-Label <string>] -> [pscustomobject] { Success, Renamed, Path, Error }
 # Called right after Move-ArmExtrasToSubdir (video rips only): renames the largest top-level .mkv to
 # '<leaf of Dir>.mkv' (leaf = resolved folder name = NAS folder name, since Move-ToNas uses the source
 # leaf). Jellyfin groups files as versions of one movie only when each name is the folder name, or the folder
@@ -313,7 +339,7 @@ Rename-ArmUpscaleVersions -FolderName <string> -UpscaledFile <string> -SourceFil
 #  dir is preserved and the caller (DiscWatcher.ps1) logs/notifies for manual
 #  re-trigger.
 
-# tools/Repair-ArmJellyfinNames.ps1 -Path <movies root> [-ConfigPath] [-Simulate] [-WhatIf]
+# tools/Repair-ArmJellyfinNames.ps1 -Path <movies root> [-ConfigPath] [-Simulate] [-Since <date>] [-Until <date>] [-RemoveOrphans] [-WhatIf]
 #  One-off repair of existing libraries (SupportsShouldProcess; Repair-ArmJellyfinNames function returns
 #  rows Folder, File, Action Renamed|WouldRename|Moved|WouldMove|Skipped, NewName, Reason). Per movie
 #  folder, top-level .mkv only; the largest raw file is the main feature and every other raw file that
@@ -349,6 +375,8 @@ Get-InterlaceType -InputFile <string> -Config <hashtable> [-SourceDuration <doub
 #    else (counts parsed)                                             → Interlaced
 #    counts unparseable / all zero                                    → Unknown (planned as
 #       blanket bwdif, the pre-#30 behaviour) + a WARN naming the file with the first 300 chars of the raw output
+#  The probe runs at ffmpeg's default loglevel (the idet summary is info-level) with
+#  Invoke-ArmTool -StdErrLevel None: its banner/input/chapter dump is parsed, not logged (#32).
 #  The parsed counts and windows are logged at INFO for every classification. The 0.5 cut
 #  sits mid-gap of 18 surveyed DVD rips: film/progressive video read 80.9-100% progressive,
 #  interlaced/hard-telecined 0-1.5%.
@@ -357,6 +385,8 @@ Get-VideoFrameRate -InputFile <string> -Config <hashtable> [-Seek 600] [-Duratio
 #  Decodes a short window (`ffmpeg -ss -t -i -map 0:v:0 -f null -`; retries from 0),
 #  snaps frames/time to a standard rate ('24000/1001', '30000/1001', ...; within 2%).
 #  Needed because soft-telecined DVD rips decode at 23.976 but carry a 29.97 header.
+#  Parses the stats `frame=`/`time=` lines from stderr (last match), so it keeps ffmpeg's
+#  default output; run with -StdErrLevel None (not logged, #32).
 
 Get-VideoSourceInfo -InputFile <string> -Config <hashtable> -> [pscustomobject]
 #  Probes the SOURCE once with `ffprobe -v error -show_entries stream=...:format=duration
@@ -417,12 +447,28 @@ Get-UpscalePlan -InputFile <string> -SourceInfo <pscustomobject> -InterlaceType 
 #    Get-UpscalePreprocessArgumentList -Plan -OutputFile            (ffmpeg -> ffv1 intermediate)
 #    Get-UpscaleEngineArgumentList -Plan -InputFile -OutputFile     (Invoke-ArmTool -Name $Plan.EngineTool)
 #    Get-UpscaleEncodeArgumentList -Plan -UpscaledFile -OutputFile  (ffmpeg libx265 mux)
+#  Both ffmpeg builders start with `-hide_banner -loglevel warning -nostats` (no banner,
+#  input/chapter dump or stats line; only warnings/errors reach stderr, #32).
 #  tests/fixtures/golden-upscale-args.json pins the exact argument lists for 26
 #  scenarios (first captured before the plan refactor, re-recorded on purpose for the #29
-#  colour args); tests assert the plan-built args equal them. Changing an ffmpeg/runner argument means regenerating that file on purpose.
+#  colour args and #32 quiet/progress flags); tests assert the plan-built args equal them. Changing an ffmpeg/runner argument means regenerating that file on purpose.
+
+Write-ArmUpscaleProgress -State <hashtable> -Progress <pscustomobject> [-Config] [-Now <datetime>]
+#  -> @{ Stage; Frame; Fps; Percent; EtaSec; Ended }. State = @{ Stage; IntervalSec; TotalSec;
+#  TotalFrames; LastLog }. Percent/ETA from out_time vs TotalSec at Speed (ffmpeg), else
+#  frames vs TotalFrames at Fps (ncnn runner); $null when unknown. Logs INFO
+#  "Upscale <stage> progress: frame F/T, P%, N fps, Sx, ETA hh:mm:ss|done" for the first block,
+#  then at most once per IntervalSec, and once when the stage ends. Never throws.
 
 Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
-               [-ContentType <LiveAction|Animation>] [-SampleOnly] -> [pscustomobject]
+               [-ContentType <LiveAction|Animation>] [-SampleOnly] [-ProgressHandler <scriptblock>] -> [pscustomobject]
+#  Progress (#32): the preprocess and final encode run with `-progress pipe:1` prepended, and
+#  the openproteus (ncnn) upscale stage's runner prints frame/fps blocks; all three pass an
+#  Invoke-ArmTool -ProgressHandler that calls Write-ArmUpscaleProgress (IntervalSec 60;
+#  TotalSec = the sample window or source duration; TotalFrames = TotalSec x the
+#  intermediate rate: 24000/1001 for Telecined, else the forced/measured rate) and forwards
+#  each result (with Stage = preprocess|upscale|encode) to the optional -ProgressHandler.
+#  video2x stages (anime4k, realesrgan) report no progress.
 #  @{ Success; OutputFile; InterlaceType; Engine; SourceHeight; Error }   # SourceHeight = probed source frame height or $null
 #  Engine = openproteus|liveaction|anime4k|realesrgan ($null if failed before engine selection)
 #  Probe, plan, execute. (a) Probe: Get-VideoSourceInfo (ffprobe, source file),
@@ -450,7 +496,9 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #      SOURCE's Get-VideoSourceInfo):
 #        openproteus -> ncnn tool: tools/ncnn_upscale.py (ffmpeg -> upscale-ncnn-py
 #                       OpenProteus 2x -> ffmpeg lanczos to WxH, setsar=1, x264 crf12 temp;
-#                       --ffmpeg $FfmpegPath --ffprobe Resolve-ArmFfprobePath)
+#                       --ffmpeg $FfmpegPath --ffprobe Resolve-ArmFfprobePath). Every 10 s and
+#                       at the end it prints (flushed) `frame=<n>`, `fps=<avg>`,
+#                       `progress=continue|end` on stdout.
 #                       model NcnnModelDir\openproteus-x2.{param,bin}
 #        liveaction  -> identical runner call with NcnnModelDir\liveaction-x2.{param,bin}
 #                       (2xLiveActionV1_SPAN; engine->model map $script:ArmNcnnEngineModels)
@@ -536,6 +584,9 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #  (+Error, QueueFile=<.failed>). An unparseable queue file becomes a new Failed
 #  job. Job-state writes never throw and can never turn a good upscale into .failed.
 #  Each pass (inside or outside active hours) first calls Remove-ArmStaleJobs.
+#  Skip check: before sampling/upscaling, Get-ArmUpscaleSkipReason probes the source (Get-VideoSourceInfo);
+#  Height >= UpscaleHeight (default 1080) -> SkipReason is written into the queue file, which is renamed
+#  '.skipped'; the job ends State=Skipped with Reason. A failed probe never skips.
 
 # JobState.ps1 (job-state store; read by the web UI)
 New-ArmJob     -Kind <Rip|Upscale> [-Properties <hashtable>] -Config <hashtable> -> [string] JobId | $null
@@ -548,7 +599,8 @@ Remove-ArmStaleJobs -Config <hashtable> -> [int] removed
 #  pattern, so an Id can never address a path outside the jobs dir.
 #  Record: { Id; Kind; State; Title; DiscLabel; DiscType; Drive; StagingDir;
 #            DestDir; QueueFile; SamplePath; OutputFile; ContentType; Engine; InterlaceType;
-#            Error; Created; Updated; History[] }
+#            Error; Reason; Created; Updated; History[] }
+#  Upscale terminal states: Complete | Failed | Cancelled | Skipped (Reason = why no upscale was needed).
 #  ContentType/Engine/InterlaceType are set on Upscale jobs only; the web UI shows them
 #  next to the sample path so a reviewer sees which engine produced the sample.
 #  History = [{ State; At }], appended on every State change. Timestamps are
@@ -689,3 +741,18 @@ Invoke-ArmWebRequest -Method <string> -Path <string> [-Query <hashtable>] [-Body
   `fixtures/seed.ps1`, which writes through the real `src/JobState.ps1`. Every spec
   fails on any browser console error.
 ```
+
+
+## CLI: `wrm` (src/wrm.ps1, bin/wrm.cmd)
+
+```
+wrm repair  [-Path <movies root>] [-Since <date>] [-Until <date>] [-RemoveOrphans] [-WhatIf]   # wraps tools/Repair-ArmJellyfinNames.ps1; -Path defaults to NasVideoPath
+wrm upscale <movie folder | movies root>... [-ContentType LiveAction|Animation] [-Force] [-WhatIf]
+wrm install-cli                                                              # adds bin\ to the user PATH
+Add-ArmUpscaleQueueFromLibrary -MovieDir <string[]> -Config <hashtable> [-ContentType] [-Force]
+    -> rows { Folder, File, Action (Queued|WouldQueue|Skipped), Reason }
+```
+`Rename-ArmMainFeature -Label <L>` names the file `<folder> - <L>.mkv` (kept as-is when it already ends in `- <N>p`/`- DVD`).
+Invoke-VideoDispatch passes `Label` = probed height (`480p`; `DVD` if unknown) for DVDs, so the original is `<folder> - 480p.mkv` from the rip.
+`Add-ArmUpscaleQueueFromLibrary` queues the largest top-level .mkv (via `New-UpscaleQueueEntry`, ContentType from metadata.json unless overridden); skips folders with an upscale (`[AI upscale Np]` or `- Hp`, H>=720), a queue entry (.json/.awaiting-review/.failed), a probe failure, or height >= 720 (unless -Force).
+`-RemoveOrphans` (opt-in, deletes): after the renames, removes top-level Jellyfin sidecars (`<stem>.nfo` except movie.nfo, `<stem>-poster|backdrop|landscape|logo|banner|thumb|clearlogo|clearart|fanart|disc.<img>`, `<stem>.trickplay\`) whose `<stem>` is not the base name of a video in the folder, using post-rename names (so `-WhatIf` previews the end state). Skips a folder with any Skipped row or no video. Rows: Removed | WouldRemove.

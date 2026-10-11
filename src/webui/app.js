@@ -255,6 +255,7 @@
       const showSample = job.State === 'AwaitingReview' && job.SamplePath;
       let detail = job.DestDir;
       if (job.State === 'Failed') detail = job.Error;
+      else if (job.State === 'Skipped') detail = job.Reason;
       else if (showSample) detail = job.SamplePath;
       const detailCell = el('td', { class: 'path' }, [el('span', { class: 'path-text', text: detail || '' })]);
       if (showSample) {

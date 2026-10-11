@@ -42,7 +42,7 @@ Describe 'JobState' {
             $id = New-ArmJob -Kind Rip -Config $script:Config
             $names = (Get-ArmJob -JobId $id -Config $script:Config).PSObject.Properties.Name
             foreach ($field in @('Id', 'Kind', 'State', 'Title', 'DiscLabel', 'DiscType', 'Drive', 'StagingDir',
-                    'DestDir', 'QueueFile', 'SamplePath', 'OutputFile', 'ContentType', 'Engine', 'InterlaceType', 'Error', 'Created', 'Updated', 'History')) {
+                    'DestDir', 'QueueFile', 'SamplePath', 'OutputFile', 'ContentType', 'Engine', 'InterlaceType', 'Error', 'Reason', 'Created', 'Updated', 'History')) {
                 $names | Should -Contain $field
             }
         }

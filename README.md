@@ -226,9 +226,14 @@ Check `C:\rips\logs\wrm-<date>.log` for detailed progress and errors.
 Key failure cases:
 - **MakeMKV key expired:** watcher detects and notifies (refresh key or buy license at makemkv.com).
 - **NAS unreachable:** robocopy fails; disc stays in drive, staging kept for forensics.
+- **Queue file ended as `.skipped`:** the source was already at or above the upscale target height (`UpscaleHeight`, 1080 by default), so the worker left it alone; the reason is in the file (`SkipReason`) and in the job list. Nothing to do.
 - **Upscale queue file stuck:** rename from `.failed` back to `.json` after checking logs.
 - **Movie shows twice / titled `B1_t00` in Jellyfin:** Jellyfin only groups files as versions of one movie when each file name starts with the folder name. Rips made before this was fixed kept the MakeMKV name (`B1_t00.mkv`) and the upscale (`B1_t00 [AI upscale 1080p].mkv`) next to it. Repair the existing library with `tools\Repair-ArmJellyfinNames.ps1 -Path <movies root>`: run it with `-WhatIf` first (changes nothing, prints what it would rename), then without, then rescan the library in Jellyfin. The largest raw file is taken as the movie and everything else as extras: it renames the largest to `<Folder>.mkv` and moves the other raw files into `extras\`; an upscale becomes `<Folder> - 1080p.mkv` and its source `<Folder> - <H>p.mkv` (`DVD` if the height is unknown). It skips and lists a folder when a file there is waiting in the upscale queue (including `.failed` entries), when a target name already exists, or when there are several upscale files.
 
 ## Project structure
 
 See `SPEC.md` for full module contracts and `docs/PLAN.md` for architecture rationale.
+
+## `wrm` command line
+
+`wrm install-cli` (from the repo's `bin\`) puts `wrm` on your PATH. `wrm repair -Since 2026-09-27 -WhatIf` previews the Jellyfin file-name fixes (omit `-WhatIf` to apply); `wrm upscale "\nas\media\Movies\Grease (1978)"` (or a whole movies root) queues upscales of existing DVD rips for the worker's review flow. New DVD rips are named `<Folder> - 480p.mkv` at rip time.

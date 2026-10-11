@@ -4,13 +4,29 @@ Decodes INPUT to raw BGR frames, upscales each with an ncnn model (.param/.bin),
 scales the result to the exact output size (fixes anamorphic DAR), and encodes a
 video-only intermediate. Audio/subtitles are NOT handled; the caller muxes them.
 Exit code 0 only if every frame was written.
+
+Progress: every PROGRESS_INTERVAL_SEC (and once at the end) prints a key=value block on
+stdout, flushed so it streams through the pipe:
+    frame=<frames done>
+    fps=<average frames/s since start>
+    progress=continue|end
+Invoke-ArmTool -ProgressHandler parses these (same shape as ffmpeg -progress).
 """
 import argparse
 import json
 import subprocess
 import sys
 import threading
+import time
 import queue
+
+PROGRESS_INTERVAL_SEC = 10
+
+
+def report_progress(frames, started, state):
+    elapsed = time.monotonic() - started
+    fps = frames / elapsed if elapsed > 0 else 0.0
+    print(f'frame={frames}\nfps={fps:.2f}\nprogress={state}', flush=True)
 
 from upscale_ncnn_py import UPSCALE
 
@@ -79,6 +95,8 @@ def main():
     t = threading.Thread(target=writer)
     t.start()
     n = 0
+    started = time.monotonic()
+    last_report = started
     try:
         while True:
             buf = dec.stdout.read(frame_bytes)
@@ -87,6 +105,10 @@ def main():
             out = up.process_bytes(buf, w, h, 3)
             q.put(bytes(out))
             n += 1
+            now = time.monotonic()
+            if now - last_report >= PROGRESS_INTERVAL_SEC:
+                report_progress(n, started, 'continue')
+                last_report = now
     finally:
         q.put(None)
         t.join()
@@ -97,6 +119,7 @@ def main():
         else:
             rc = 0
         drc = dec.wait()
+    report_progress(n, started, 'end')
     if err or rc != 0 or drc != 0 or n == 0:
         print(f'ncnn_upscale: failed frames={n} enc={rc} dec={drc} err={err}', file=sys.stderr)
         return 1

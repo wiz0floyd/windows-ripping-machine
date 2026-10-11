@@ -260,6 +260,10 @@ function Move-ArmExtrasToSubdir {
     Optional full path of the main feature (Move-ArmExtrasToSubdir's MainFeature);
     without it the largest top-level .mkv is used.
 
+.PARAMETER Label
+    Optional version label (e.g. '480p'): the file becomes '<folder> - <Label>.mkv'
+    unless it already carries a '- <N>p' / '- DVD' label.
+
 .PARAMETER Config
     Configuration hashtable (for logging).
 
@@ -293,7 +297,9 @@ function Rename-ArmMainFeature {
         [Parameter(Mandatory = $true)]
         [hashtable] $Config,
 
-        [string] $MainFeature
+        [string] $MainFeature,
+
+        [string] $Label
     )
 
     try {
@@ -309,7 +315,14 @@ function Rename-ArmMainFeature {
         }
 
         $targetName = "$folderName.mkv"
-        if (Test-ArmJellyfinVersionName -BaseName $main.BaseName -Folder $folderName) {
+        if ($Label) {
+            # Version label wanted ('<folder> - 480p.mkv'): keep a name that already carries one.
+            $targetName = "$folderName - $Label.mkv"
+            $labelled = $main.BaseName -match ('^' + [regex]::Escape($folderName) + '\s*-\s*(\d+p|DVD)$')
+            if ($labelled -or $main.Name -ieq $targetName) {
+                return New-ArmResult -Success $true -Properties ([ordered]@{ Renamed = $false; Path = $main.FullName }) -Error $null
+            }
+        } elseif (Test-ArmJellyfinVersionName -BaseName $main.BaseName -Folder $folderName) {
             return New-ArmResult -Success $true -Properties ([ordered]@{ Renamed = $false; Path = $main.FullName }) -Error $null
         }
 

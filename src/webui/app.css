@@ -83,7 +83,7 @@ tr:last-child td { border-bottom: 0; }
 .state-AwaitingReview { color: var(--warn); }
 .state-Complete { color: var(--ok); }
 .state-Failed { color: var(--err); }
-.state-Cancelled { color: var(--idle); }
+.state-Cancelled, .state-Skipped { color: var(--idle); }
 .upscale-meta { display: block; font-size: 0.75rem; color: var(--muted); }
 .actions { white-space: nowrap; }
 button.action, button.copy {
