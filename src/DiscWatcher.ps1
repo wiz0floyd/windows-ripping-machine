@@ -477,8 +477,9 @@ function Invoke-VideoDispatch {
         if ($ripResult.Error -eq 'MAKEMKV_KEY_EXPIRED') {
             Write-ArmLog -Level ERROR -Message 'MakeMKV registration key expired or missing.' -Config $Config
             Send-ArmNotification -Title 'MakeMKV Key Expired' `
-                -Message 'MakeMKV registration key has expired or is invalid. Rip cannot continue; staging preserved.' `
+                -Message 'MakeMKV is out of date or its registration key has expired. Update MakeMKV / enter the current beta key from makemkv.com, then re-insert the disc.' `
                 -Level Error -Config $Config
+            $null = Open-ArmMakeMkvSite -Config $Config
         } else {
             Write-ArmLog -Level ERROR -Message "Video rip failed: $($ripResult.Error)" -Config $Config
             Send-ArmNotification -Title 'Video Rip Failed' `
@@ -658,6 +659,37 @@ function Open-ArmWebUi {
         return $true
     } catch {
         Write-ArmLog -Level WARN -Message "Could not open web UI at ${url}: $_" -Config $Config
+        return $false
+    }
+}
+
+<#
+.SYNOPSIS
+    Open makemkv.com in the default browser after a MAKEMKV_KEY_EXPIRED rip.
+
+.DESCRIPTION
+    The site links both the latest download and the current beta key, which
+    covers an expired beta ("version is too old") and an expired key. Skipped
+    when -Simulate. Never throws: failing to open a browser must not affect the
+    watcher loop.
+#>
+function Open-ArmMakeMkvSite {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable] $Config
+    )
+
+    if ($Config.ContainsKey('Simulate') -and $Config.Simulate) { return $false }
+
+    $url = 'https://www.makemkv.com/'
+    try {
+        Start-Process -FilePath $url -ErrorAction Stop
+        Write-ArmLog -Level INFO -Message "Opened $url to update MakeMKV" -Config $Config
+        return $true
+    } catch {
+        Write-ArmLog -Level WARN -Message "Could not open ${url}: $_" -Config $Config
         return $false
     }
 }

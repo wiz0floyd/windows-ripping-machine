@@ -244,16 +244,19 @@ Describe 'Invoke-DiscDispatch' {
                 [pscustomobject]@{ Success = $false; DiscLabel = $null; DiscType = $null; OutputDir = $null; TitleCount = 0; Error = 'MAKEMKV_KEY_EXPIRED'; Resolved = $null }
             }
             Mock Move-ToNas { throw 'should not be called' }
+            Mock Open-ArmMakeMkvSite { $true }
 
             Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Video' -Config $script:Config
 
             Should -Invoke Send-ArmNotification -Times 1 -ParameterFilter {
                 $Level -eq 'Error' -and $Title -match 'Key Expired'
             }
+            Should -Invoke Open-ArmMakeMkvSite -Times 1 -Exactly
             Should -Invoke Invoke-DiscEject -Times 0
         }
 
         It 'notifies Error and keeps staging on generic rip failure' {
+            Mock Open-ArmMakeMkvSite { $true }
             Mock Invoke-VideoRip {
                 [pscustomobject]@{ Success = $false; DiscLabel = $null; DiscType = $null; OutputDir = $null; TitleCount = 0; Error = 'disc read error'; Resolved = $null }
             }
@@ -261,6 +264,7 @@ Describe 'Invoke-DiscDispatch' {
             Invoke-DiscDispatch -DriveLetter 'D' -DiscType 'Video' -Config $script:Config
 
             Should -Invoke Send-ArmNotification -Times 1 -ParameterFilter { $Level -eq 'Error' }
+            Should -Invoke Open-ArmMakeMkvSite -Times 0 -Exactly
             Should -Invoke Invoke-DiscEject -Times 0
         }
 
@@ -938,6 +942,32 @@ Describe 'Open-ArmWebUi' {
         Mock Start-Process { throw 'no default browser' }
         { Open-ArmWebUi -Config $script:Cfg } | Should -Not -Throw
         Open-ArmWebUi -Config $script:Cfg | Should -BeFalse
+        Should -Invoke Write-ArmLog -ParameterFilter { $Level -eq 'WARN' }
+    }
+}
+
+Describe 'Open-ArmMakeMkvSite' {
+    BeforeEach {
+        Mock Start-Process { }
+        Mock Write-ArmLog { }
+        $script:Cfg = @{ Simulate = $false; LogDir = $TestDrive }
+    }
+
+    It 'opens makemkv.com in the default browser' {
+        Open-ArmMakeMkvSite -Config $script:Cfg | Should -BeTrue
+        Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter { $FilePath -eq 'https://www.makemkv.com/' }
+    }
+
+    It 'does nothing under Simulate' {
+        $script:Cfg.Simulate = $true
+        Open-ArmMakeMkvSite -Config $script:Cfg | Should -BeFalse
+        Should -Invoke Start-Process -Times 0 -Exactly
+    }
+
+    It 'never throws when the browser cannot be launched' {
+        Mock Start-Process { throw 'no default browser' }
+        { Open-ArmMakeMkvSite -Config $script:Cfg } | Should -Not -Throw
+        Open-ArmMakeMkvSite -Config $script:Cfg | Should -BeFalse
         Should -Invoke Write-ArmLog -ParameterFilter { $Level -eq 'WARN' }
     }
 }

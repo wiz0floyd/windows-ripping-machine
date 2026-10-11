@@ -396,6 +396,11 @@ function Invoke-VideoRip {
 
     try {
         $infoResult = Invoke-ArmTool -Name makemkvcon -Arguments @('-r', 'info', 'disc:9999') -Config $Config
+        # An expired beta ("This application version is too old", MSG 5021)
+        # refuses to run at all, so expiry can surface here before any rip.
+        if (Test-MakeMkvExpiredKey -Lines (@($infoResult.StdOut) + @($infoResult.StdErr))) {
+            return ConvertTo-RipResult $false 'MAKEMKV_KEY_EXPIRED'
+        }
         if ($infoResult.ExitCode -ne 0) {
             return ConvertTo-RipResult $false "makemkvcon info failed with exit code $($infoResult.ExitCode)"
         }
