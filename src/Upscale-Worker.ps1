@@ -219,8 +219,11 @@ function Invoke-ArmUpscaleQueueItem {
     $jobId = $null
     try {
         $item = Get-Content -LiteralPath $QueueFile -Raw | ConvertFrom-Json
-        $source = $item.Source
-        $destDir = $item.DestDir
+        # Entries queued by wrm before the ProviderPath fix carry a PowerShell provider
+        # prefix ('Microsoft.PowerShell.Core\FileSystem::\\nas\...') that ffmpeg cannot open.
+        $providerPrefix = '^Microsoft\.PowerShell\.Core\\FileSystem::'
+        $source = [string] $item.Source -replace $providerPrefix, ''
+        $destDir = [string] $item.DestDir -replace $providerPrefix, ''
 
         if ($item.PSObject.Properties.Name -contains 'JobId' -and $item.JobId -and (Get-ArmJob -JobId $item.JobId -Config $Config)) {
             $jobId = [string] $item.JobId

@@ -77,7 +77,9 @@ function Add-ArmUpscaleQueueFromLibrary {
     $row = { param($f, $file, $a, $why) [pscustomobject]@{ Folder = $f; File = $file; Action = $a; Reason = $why } }
     $queueDir = [string] $Config.UpscaleQueueDir
 
-    foreach ($dir in $MovieDir) {
+    foreach ($movieDir in $MovieDir) {
+        # The queue entry's DestDir is handed to ffmpeg, so it must be a plain filesystem path.
+        $dir = Convert-Path -LiteralPath $movieDir
         $name = Split-Path -Leaf ($dir.TrimEnd('\', '/'))
         $mkvs = @(Get-ChildItem -LiteralPath $dir -File -Filter '*.mkv' | Sort-Object Length -Descending)
         if ($mkvs.Count -eq 0) { continue }
@@ -145,7 +147,9 @@ if ($MyInvocation.InvocationName -ne '.') {
             } else {
                 $dirs = foreach ($f in @($Folder)) {
                     if (-not $f) { continue }
-                    $full = (Resolve-Path -LiteralPath $f).Path
+                    # .ProviderPath, not .Path: for a UNC path .Path is provider-qualified
+                    # ('Microsoft.PowerShell.Core\FileSystem::\\nas\...'), which ffmpeg cannot open.
+                    $full = (Resolve-Path -LiteralPath $f).ProviderPath
                     # A movies root holds movie folders; a movie folder holds .mkv files directly.
                     if (Get-ChildItem -LiteralPath $full -File -Filter '*.mkv' -ErrorAction SilentlyContinue) { $full }
                     else { (Get-ChildItem -LiteralPath $full -Directory).FullName }
