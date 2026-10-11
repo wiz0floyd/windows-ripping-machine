@@ -174,7 +174,7 @@ When a DVD rip completes and `UpscaleDvds=true`, the Upscale-Worker daemon proce
 - **Progressive** (no interlacing): passes through as-is
 - **Unknown** (idet output unparseable): falls back to bwdif on every frame
 
-Intermediate files are encoded lossless (ffv1) to avoid compounding generation loss before the AI upscale. Final encode uses libx265 at the quality level specified by `UpscaleCrf` (default: 16, high quality / near-transparent) and the preset in `UpscalePreset` (default `slow`; `medium` was ~2.5x faster at near-identical SSIM in the 2026-10 spike).
+Intermediate files are encoded lossless (ffv1) to avoid compounding generation loss before the AI upscale. Final encode uses libx265 at the quality level specified by `UpscaleCrf` (default: 16, high quality / near-transparent) and the preset in `UpscalePreset` (default `slow`; `medium` was ~2.5x faster at near-identical SSIM in the 2026-10 spike). Set `UpscaleEncoder = 'hevc_amf'` to encode on the GPU instead (constant QP from `UpscaleQp`, default 18, 10-bit). In the live-action bakeoff it was about 2.3x faster end to end than x265 slow and 1.6x faster than x265 medium (11 vs 4.7 / 6.8 wall fps on the RX 7800 XT, upscale-limited), at roughly 50% larger files than x265 medium crf18.
 
 **Queue file format:**
 ```json

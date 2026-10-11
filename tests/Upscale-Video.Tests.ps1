@@ -986,6 +986,26 @@ Describe 'Get-UpscalePlan' {
         (New-TestPlan -Override @{ UpscalePreset = '' }).Encode.Preset | Should -Be 'slow'
     }
 
+    It 'takes the final encoder from UpscaleEncoder, default libx265, with AMF defaults' {
+        $p = New-TestPlan
+        $p.Encode.Codec | Should -Be 'libx265'
+        $p.Error | Should -BeNullOrEmpty
+        $amf = New-TestPlan -Override @{ UpscaleEncoder = 'hevc_amf' }
+        $amf.Encode.Codec | Should -Be 'hevc_amf'
+        $amf.Encode.Qp | Should -Be 18
+        $amf.Encode.AmfQuality | Should -Be 'quality'
+        $amf.Encode.PixFmt | Should -Be 'p010le'
+        $amf.Error | Should -BeNullOrEmpty
+        $custom = New-TestPlan -Override @{ UpscaleEncoder = 'hevc_amf'; UpscaleQp = 20; UpscaleAmfQuality = 'balanced'; UpscalePixFmt = 'yuv420p' }
+        $custom.Encode.Qp | Should -Be 20
+        $custom.Encode.AmfQuality | Should -Be 'balanced'
+        $custom.Encode.PixFmt | Should -Be 'yuv420p'
+    }
+
+    It 'reports an unknown UpscaleEncoder in Error instead of throwing' {
+        (New-TestPlan -Override @{ UpscaleEncoder = 'h264_nvenc' }).Error | Should -Match "Unknown UpscaleEncoder 'h264_nvenc'"
+    }
+
     It 'reports an unknown engine in Error (and keeps the name) instead of throwing' {
         $p = New-TestPlan -Override @{ UpscaleLiveAction = 'bogus' }
         $p.Engine | Should -Be 'bogus'
@@ -1046,6 +1066,15 @@ Describe 'Upscale stage argument builders' {
         $la = (Get-UpscaleEngineArgumentList -Plan (New-TestPlan -Override @{ UpscaleLiveAction = 'liveaction' }) -InputFile 'T:\p.mkv' -OutputFile 'T:\u.mkv') -join ' '
         $la | Should -Match '--param C:\\models\\liveaction-x2\.param --bin C:\\models\\liveaction-x2\.bin --scale 2 --out-width 1920 --out-height 1080'
         $la.Replace('liveaction-x2', 'openproteus-x2') | Should -Be $op
+    }
+
+    It 'emits CQP hevc_amf arguments (no -crf/-preset) when UpscaleEncoder is hevc_amf' {
+        $a = (Get-UpscaleEncodeArgumentList -Plan (New-TestPlan -Override @{ UpscaleEncoder = 'hevc_amf' }) -UpscaledFile 'T:\u.mkv' -OutputFile 'O:\out.mkv') -join ' '
+        $a | Should -Match '-c:v hevc_amf -quality quality -rc cqp -qp_i 18 -qp_p 18 -pix_fmt p010le -c:a copy -shortest O:\\out\.mkv$'
+        $a | Should -Not -Match '-crf'
+        $a | Should -Not -Match '-preset'
+        $a | Should -Match '-vf setsar=1,colorspace='
+        $a | Should -Match '-colorspace bt709 -color_primaries bt709'
     }
 
     It 'passes UpscalePreset to libx265' {

@@ -93,6 +93,10 @@ wrm/
     UpscaleScale      = 4                  # legacy realesrgan engine only; plus/-anime ship x4 only
     UpscaleCrf        = 16
     UpscalePreset     = 'slow'         # libx265 -preset for the final encode (plan Encode.Preset)
+    UpscaleEncoder    = 'libx265'      # libx265 | hevc_amf (plan Encode.Codec); unknown value => invalid plan
+    UpscaleQp         = 18             # hevc_amf only: CQP qp_i/qp_p (plan Encode.Qp)
+    UpscaleAmfQuality = 'quality'      # hevc_amf only: speed|balanced|quality (plan Encode.AmfQuality)
+    UpscalePixFmt     = 'p010le'       # hevc_amf only: p010le|yuv420p (plan Encode.PixFmt)
     # --- Web UI (http://localhost:<WebUiPort>/, this machine only) ---
     WebUiEnabled      = $true          # $false => WebUi.ps1 exits immediately
     WebUiPort         = 8765
@@ -430,7 +434,7 @@ Get-UpscalePlan -InputFile <string> -SourceInfo <pscustomobject> -InterlaceType 
 #     Engine; EngineTool; EngineLabel   # EngineTool = 'ncnn' | 'video2x'
 #     Target            # @{ Width; Height; DisplayAspect }, Width = 2*round(Height*DAR/2); $null for realesrgan
 #     Upscale           # engine params: Model/Scale | Shader | Runner/ModelBase/Ffmpeg/Ffprobe/RequiredFiles
-#     Encode            # @{ Codec='libx265'; Crf; Preset=UpscalePreset (default 'slow'); AudioCodec='copy'; ResetSar }
+#     Encode            # @{ Codec=UpscaleEncoder (default 'libx265'); Crf; Preset=UpscalePreset (default 'slow'); Qp; AmfQuality; PixFmt; AudioCodec='copy'; ResetSar }
 #     Colour            # @{ Space; Primaries; Transfer; Range; Action } - source tags; Action = 'convert-to-bt709' | 'tag-only'
 #     ColorInput / ColorInputSpec / ColorConvert   # from the pure Get-UpscaleColorInput -SourceInfo -Engine (#29):
 #                       #   color_space smpte170m/bt470bg = BT.601, 525 vs 625 from color_primaries (else the space);
@@ -504,7 +508,8 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #                       (2xLiveActionV1_SPAN; engine->model map $script:ArmNcnnEngineModels)
 #        anime4k     -> video2x -p libplacebo --libplacebo-shader $UpscaleShader -w W -h H
 #        realesrgan  -> legacy video2x realesrgan (model/scale from config)
-#  (d) ffmpeg mux: libx265 -crf $UpscaleCrf -preset $UpscalePreset (default slow), copy original audio;
+#  (d) ffmpeg mux: $UpscaleEncoder - libx265 -crf $UpscaleCrf -preset $UpscalePreset (default slow),
+#      or hevc_amf -rc cqp -qp_i/-qp_p $UpscaleQp -quality $UpscaleAmfQuality -pix_fmt $UpscalePixFmt; copy original audio;
 #      `-vf` is ONE chain: `setsar=1` for the ncnn engines/anime4k (not legacy realesrgan), then, when
 #      the plan's ColorConvert is set, `colorspace=all=bt709:<ColorInputSpec>:irange=tv:range=tv:dither=fsb` (engine outputs
 #      carry the source's BT.601 matrix; the filter runs at the intermediates' 8-bit yuv420p, the
