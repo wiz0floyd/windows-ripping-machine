@@ -35,6 +35,14 @@ Describe 'Add-ArmUpscaleQueueFromLibrary' {
         $q.ContentType | Should -Be 'Animation'
     }
 
+    It 'writes a plain filesystem DestDir when given a provider-qualified folder path' {
+        $dir = New-Movie 'Up (2009)' @{ 'a.mkv' = 'x' }
+        $null = Add-ArmUpscaleQueueFromLibrary -MovieDir "Microsoft.PowerShell.Core\FileSystem::$dir" -Config $script:Config
+        $q = Get-Content -LiteralPath (Join-Path $script:Config.UpscaleQueueDir 'Up (2009).json') -Raw | ConvertFrom-Json
+        $q.DestDir | Should -Be $dir
+        $q.Source | Should -Be (Join-Path $dir 'a.mkv')
+    }
+
     It 'queues nothing with -WhatIf' {
         $dir = New-Movie 'Up (2009)' @{ 'a.mkv' = 'x' }
         @(Add-ArmUpscaleQueueFromLibrary -MovieDir $dir -Config $script:Config -WhatIf)[0].Action | Should -Be 'WouldQueue'

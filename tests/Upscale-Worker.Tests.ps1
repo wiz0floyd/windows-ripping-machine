@@ -125,6 +125,25 @@ Describe 'Start-UpscaleWorker -Once' {
         Should -Invoke Send-ArmNotification -Times 1 -ParameterFilter { $Level -eq 'Info' }
     }
 
+    It 'strips a PowerShell provider prefix from Source and DestDir before upscaling' {
+        $config = New-TestConfig -AutoUpscale $true
+        Mock Get-ArmConfig { $config }
+        $fakeOutput = Join-Path $script:QueueDir.FullName 'movie [AI upscale 1080p].mkv'
+        Set-Content -LiteralPath $fakeOutput -Value 'fake upscaled bytes'
+        Mock Invoke-Upscale {
+            [pscustomobject]@{ Success = $true; OutputFile = $fakeOutput; InterlaceType = 'Progressive'; Error = $null }
+        }
+
+        $prefix = 'Microsoft.PowerShell.Core\FileSystem::'
+        $queueFile = Join-Path $script:QueueDir.FullName 'movie.json'
+        (@{ Source = "$prefix$($script:SourceFile)"; DestDir = "$prefix$($script:DestDir.FullName)" } | ConvertTo-Json) | Set-Content -Path $queueFile
+
+        Start-UpscaleWorker -Once
+
+        $expectedDest = $script:DestDir.FullName
+        Should -Invoke Invoke-Upscale -Times 1 -ParameterFilter { $InputFile -eq $script:SourceFile -and $OutputDir -eq $expectedDest }
+    }
+
     It 'passes ContentType=Animation from the queue item to Invoke-Upscale' {
         $config = New-TestConfig -AutoUpscale $true
         Mock Get-ArmConfig { $config }
