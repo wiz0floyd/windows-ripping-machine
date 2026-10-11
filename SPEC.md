@@ -188,8 +188,11 @@ Invoke-VideoRip -DriveLetter <char> -Config <hashtable> [-JobId <string>] -> [ps
 #  3. `makemkvcon -r --minlength=$($c.MinTitleLengthSec) mkv disc:<i> all <staging>\<label>\`
 #     (or main title only when !RipAllTitles: pick longest TINFO duration).
 #  4. Parse robot output: MSG codes, PRGV progress (log every ~10%), TINFO/CINFO.
-#  5. Detect expired/absent key (MSG 5021/"registration key" text) → Success=$false,
-#     Error='MAKEMKV_KEY_EXPIRED' (watcher notifies specially).
+#  5. Detect expired/absent key (MSG 5021/"registration key" text) in the output of
+#     both the drive-scan `info` call and the `mkv` call (an expired beta's
+#     "version is too old" 5021 aborts `info` with exit -3) → Success=$false,
+#     Error='MAKEMKV_KEY_EXPIRED' (watcher notifies specially and opens
+#     https://www.makemkv.com/ via Open-ArmMakeMkvSite; skipped under -Simulate).
 #
 #  Set-ArmMetadataFile -OutputDir <string> -Title <string> -Year <string>
 #                      [-ContentType <string>] [-ContentTypeNote <string>]

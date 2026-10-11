@@ -1,0 +1,2 @@
+MSG:1005,0,1,"MakeMKV v1.18.4 win(x64-release) started","%1 started","MakeMKV v1.18.4 win(x64-release)"
+MSG:5021,131332,1,"This application version is too old.  Please download the latest version at http://www.makemkv.com/ or enter a registration key to continue using the current version.","This application version is too old.  Please download the latest version at %1 or enter a registration key to continue using the current version.","http://www.makemkv.com/"

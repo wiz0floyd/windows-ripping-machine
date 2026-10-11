@@ -316,6 +316,19 @@ Describe 'Invoke-VideoRip' {
         $result.DiscLabel | Should -Be 'STAR_WARS_ANH'
     }
 
+    It 'returns MAKEMKV_KEY_EXPIRED when the info scan reports the version is too old' {
+        $tooOldLines = @(Get-Content -Path (Join-Path $script:FixturesDir 'makemkvcon-info-version-too-old.txt'))
+        Mock Invoke-ArmTool {
+            return [pscustomobject]@{ ExitCode = -3; StdOut = $tooOldLines; StdErr = @() }
+        }
+
+        $result = Invoke-VideoRip -DriveLetter 'D' -Config $script:Config
+
+        $result.Success | Should -Be $false
+        $result.Error | Should -Be 'MAKEMKV_KEY_EXPIRED'
+        Should -Invoke Invoke-ArmTool -Times 1 -Exactly
+    }
+
     It 'fails gracefully when no disc is present in the requested drive' {
         Mock Invoke-ArmTool {
             return [pscustomobject]@{ ExitCode = 0; StdOut = $script:InfoLines; StdErr = @() }
