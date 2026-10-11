@@ -174,6 +174,14 @@ Describe 'Invoke-VideoRip' {
         $result.OutputDir | Should -Be (Join-Path $script:OutDir 'STAR_WARS_ANH')
     }
 
+    It 'gives the rip itself a timeout well beyond the 3600s default' {
+        Mock Invoke-ArmTool (New-VideoRipMock)
+
+        $null = Invoke-VideoRip -DriveLetter 'D' -Config $script:Config
+
+        Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter { $Arguments -contains 'mkv' -and $TimeoutSec -ge 43200 }
+    }
+
     It 'sanitizes a disc label with invalid filename characters using the canonical sanitizer (removes, not underscores; collapses whitespace)' {
         $rawLabelLines = @(
             'MSG:1005,0,1,"Using direct disc access mode","%1",""',

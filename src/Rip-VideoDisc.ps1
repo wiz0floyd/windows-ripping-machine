@@ -458,7 +458,8 @@ function Invoke-VideoRip {
         }
         $ripArgs += $outputDir
 
-        $ripResult = Invoke-ArmTool -Name makemkvcon -Arguments $ripArgs -Config $Config
+        # A slow or worn disc legitimately takes longer than Invoke-ArmTool's 3600s default; a timeout kills the rip near the end.
+        $ripResult = Invoke-ArmTool -Name makemkvcon -Arguments $ripArgs -Config $Config -TimeoutSec 86400
 
         if (Test-MakeMkvExpiredKey -Lines (@($ripResult.StdOut) + @($ripResult.StdErr))) {
             return ConvertTo-RipResult $false 'MAKEMKV_KEY_EXPIRED'
