@@ -44,6 +44,19 @@
     Also delete Jellyfin-generated sidecars (.nfo, -poster/-backdrop/... images, .trickplay
     folders) whose video no longer has that name. Evaluated against the post-rename names.
 
+.PARAMETER RenameFolders
+    First rename each movie folder to the Jellyfin NFO 'Title (Year)' (Get-ArmNfoMovieName of its
+    main feature) when it differs, renaming the files and sidecars that carry the old folder name
+    with it, then run the file repair above against the new names. Folders with no NFO are left
+    alone; an NFO without a year, a pending upscale queue entry inside the folder, an existing
+    target folder or a name clash skips the folder. Aborts the whole run (changes nothing) while the
+    upscale queue holds .json/.awaiting-review entries or an upscale job is running, unless -Force.
+    Jellyfin sees renamed folders as new items (watch state resets): rescan afterwards.
+
+.PARAMETER Force
+    With -RenameFolders, run despite pending upscale queue entries or a running upscale
+    (folders that a queue entry points into are still skipped).
+
 .EXAMPLE
     ./tools/Repair-ArmJellyfinNames.ps1 -Path \\nas\media\movies -WhatIf
     ./tools/Repair-ArmJellyfinNames.ps1 -Path \\nas\media\movies
@@ -55,13 +68,16 @@ param(
     [switch] $Simulate,
     [Nullable[datetime]] $Since,
     [Nullable[datetime]] $Until,
-    [switch] $RemoveOrphans
+    [switch] $RemoveOrphans,
+    [switch] $RenameFolders,
+    [switch] $Force
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..' 'src' 'Common.ps1')
+. (Join-Path $PSScriptRoot '..' 'src' 'JobState.ps1')
 . (Join-Path $PSScriptRoot '..' 'src' 'Upscale-Video.ps1')
 . (Join-Path $PSScriptRoot '..' 'src' 'Move-ToNas.ps1')
 
@@ -70,6 +86,154 @@ $script:UpscaleSuffix = ' [AI upscale 1080p].mkv'
 function New-RepairRow {
     param([string] $Folder, [string] $File, [string] $Action, [string] $NewName, [string] $Reason)
     [pscustomobject]@{ Folder = $Folder; File = $File; Action = $Action; NewName = $NewName; Reason = $Reason }
+}
+
+function Move-RepairItem {
+    # Rename an item in place; a case-only change goes through a temp name (case-insensitive FS).
+    param([string] $Path, [string] $NewName)
+    $parent = Split-Path -Parent $Path
+    $target = Join-Path $parent $NewName
+    if ((Split-Path -Leaf $Path) -ieq $NewName) {
+        $tmp = Join-Path $parent "$NewName.wrm-tmp-$([guid]::NewGuid().ToString('N'))"
+        Move-Item -LiteralPath $Path -Destination $tmp
+        Move-Item -LiteralPath $tmp -Destination $target
+    } else {
+        Move-Item -LiteralPath $Path -Destination $target
+    }
+    return $target
+}
+
+<#
+.SYNOPSIS
+    Rename movie folders (and the files inside that carry the old folder name) to the NFO 'Title (Year)'.
+
+.OUTPUTS
+    [pscustomobject[]] rows: Action FolderRenamed | WouldRenameFolder | Skipped. NewName = new folder name.
+    A Skipped row with no Folder means the whole run was aborted (queue entries / running upscale).
+#>
+function Invoke-RepairFolderRenames {
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory = $true)] [string] $Path,
+        [Parameter(Mandatory = $true)] [object[]] $Dirs,
+        [Parameter(Mandatory = $true)] [hashtable] $Config,
+        [switch] $Force
+    )
+
+    $rows = [System.Collections.Generic.List[object]]::new()
+
+    # Queue entries: json / awaiting-review block the run unless -Force; all of them (incl. .failed,
+    # which the web UI can retry) block the folder their Source/DestDir is in.
+    $entries = [System.Collections.Generic.List[object]]::new()
+    $queueDir = if ($Config.ContainsKey('UpscaleQueueDir')) { [string] $Config.UpscaleQueueDir } else { $null }
+    if ($queueDir -and (Test-Path -LiteralPath $queueDir -PathType Container)) {
+        foreach ($qf in @(Get-ChildItem -LiteralPath $queueDir -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Extension -in '.json', '.awaiting-review', '.failed' })) {
+            $paths = @()
+            try {
+                $q = Get-Content -LiteralPath $qf.FullName -Raw | ConvertFrom-Json
+                foreach ($k in 'Source', 'DestDir') {
+                    if ($q.PSObject.Properties.Name -contains $k -and $q.$k) { $paths += [string] $q.$k }
+                }
+            } catch {
+                Write-ArmLog -Level WARN -Message "Ignoring unreadable queue file '$($qf.FullName)': $_" -Config $Config
+            }
+            $entries.Add([pscustomobject]@{ Name = $qf.Name; Extension = $qf.Extension; Paths = $paths })
+        }
+    }
+
+    if (-not $Force) {
+        $blocking = @($entries | Where-Object { $_.Extension -in '.json', '.awaiting-review' })
+        $running = @()
+        try {
+            $running = @(Get-ArmJobList -Kind Upscale -Config $Config | Where-Object { $_.State -in 'Sampling', 'Upscaling' })
+        } catch {
+            Write-ArmLog -Level WARN -Message "Could not read upscale jobs: $_" -Config $Config
+        }
+        if ($blocking.Count -gt 0 -or $running.Count -gt 0) {
+            $why = @()
+            if ($blocking.Count -gt 0) { $why += "$($blocking.Count) upscale queue entry(ies) pending ($(($blocking.Name | Select-Object -First 5) -join ', '))" }
+            if ($running.Count -gt 0) { $why += "$($running.Count) upscale job(s) running" }
+            $rows.Add((New-RepairRow $null $null 'Skipped' $null "folder rename aborted, nothing changed: $($why -join '; '). Use -Force to override."))
+            return $rows.ToArray()
+        }
+    }
+
+    foreach ($dir in $Dirs) {
+        $old = $dir.Name
+        $mkvs = @(Get-ChildItem -LiteralPath $dir.FullName -File -Filter '*.mkv' |
+                Where-Object { -not $_.Name.EndsWith($script:UpscaleSuffix, [System.StringComparison]::OrdinalIgnoreCase) } |
+                Sort-Object -Property Length -Descending)
+        if ($mkvs.Count -eq 0) { continue }
+        $new = Get-ArmNfoMovieName -VideoFile $mkvs[0].FullName
+        if (-not $new) { continue }
+        if ($new -ceq $old) { continue }
+        if ($new -notmatch '\(\d{4}\)$') {
+            $rows.Add((New-RepairRow $old $null 'Skipped' $new 'NFO has no year'))
+            continue
+        }
+
+        $prefix = $dir.FullName.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+        $inside = @($entries | Where-Object {
+                @($_.Paths | Where-Object { $_.TrimEnd('\', '/') -ieq $dir.FullName.TrimEnd('\', '/') -or $_.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase) }).Count -gt 0
+            })
+        if ($inside.Count -gt 0) {
+            $rows.Add((New-RepairRow $old $null 'Skipped' $new "queued for upscale ($($inside[0].Name))"))
+            continue
+        }
+
+        $caseOnly = ($new -ieq $old)
+        if (-not $caseOnly -and (Test-Path -LiteralPath (Join-Path $Path $new))) {
+            $rows.Add((New-RepairRow $old $null 'Skipped' $new 'target folder already exists'))
+            continue
+        }
+
+        # Top-level items that carry the old folder name (versions and their sidecars).
+        $plan = @()
+        foreach ($item in @(Get-ChildItem -LiteralPath $dir.FullName -Force)) {
+            if (-not $item.Name.StartsWith($old, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+            $rest = $item.Name.Substring($old.Length)
+            if ($rest -notmatch '^(\s*[-_.\[]|$)') { continue }
+            $plan += [pscustomobject]@{ Item = $item; NewName = "$new$rest" }
+        }
+        $names = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        $clash = $null
+        foreach ($p in $plan) {
+            if (-not $names.Add($p.NewName)) { $clash = $p.NewName; break }
+            if (($p.Item.Name -ine $p.NewName) -and (Test-Path -LiteralPath (Join-Path $dir.FullName $p.NewName))) { $clash = $p.NewName; break }
+        }
+        if ($clash) {
+            $rows.Add((New-RepairRow $old $null 'Skipped' $new "target name already exists: $clash"))
+            continue
+        }
+
+        if (-not $PSCmdlet.ShouldProcess($dir.FullName, "Rename folder to '$new' (+ $($plan.Count) item(s))")) {
+            $rows.Add((New-RepairRow $old $null 'WouldRenameFolder' $new "$($plan.Count) item(s) carry the old name"))
+            continue
+        }
+
+        $done = [System.Collections.Generic.List[object]]::new()
+        try {
+            foreach ($p in $plan) {
+                $oldName = $p.Item.Name
+                $moved = Move-RepairItem -Path $p.Item.FullName -NewName $p.NewName
+                $done.Add(@{ Path = $moved; OldName = $oldName })
+            }
+            $null = Move-RepairItem -Path $dir.FullName -NewName $new
+            Write-ArmLog -Level INFO -Message "Renamed folder '$old' -> '$new' ($($plan.Count) item(s))" -Config $Config
+            $rows.Add((New-RepairRow $old $null 'FolderRenamed' $new "$($plan.Count) item(s) renamed"))
+        } catch {
+            $err = "$_"
+            for ($i = $done.Count - 1; $i -ge 0; $i--) {
+                try { $null = Move-RepairItem -Path $done[$i].Path -NewName $done[$i].OldName } catch {
+                    Write-ArmLog -Level ERROR -Message "Rollback failed for '$($done[$i].Path)': $_" -Config $Config
+                }
+            }
+            $rows.Add((New-RepairRow $old $null 'Skipped' $new "folder rename failed, rolled back: $err"))
+        }
+    }
+    return $rows.ToArray()
 }
 
 <#
@@ -94,7 +258,11 @@ function Repair-ArmJellyfinNames {
 
         [Nullable[datetime]] $Until,
 
-        [switch] $RemoveOrphans
+        [switch] $RemoveOrphans,
+
+        [switch] $RenameFolders,
+
+        [switch] $Force
     )
 
     $rows = [System.Collections.Generic.List[object]]::new()
@@ -117,10 +285,25 @@ function Repair-ArmJellyfinNames {
     }
     $queuedReason = 'queued for upscale (worker renames it on completion)'
 
-    $dirs = @(Get-ChildItem -LiteralPath $Path -Directory | Sort-Object -Property Name)
-    # Folder creation time = when WRM first wrote the movie (the move to the NAS).
-    if ($Since) { $dirs = @($dirs | Where-Object { $_.CreationTime -ge $Since }) }
-    if ($Until) { $dirs = @($dirs | Where-Object { $_.CreationTime -lt $Until }) }
+    $getDirs = {
+        $d = @(Get-ChildItem -LiteralPath $Path -Directory | Sort-Object -Property Name)
+        # Folder creation time = when WRM first wrote the movie (the move to the NAS).
+        if ($Since) { $d = @($d | Where-Object { $_.CreationTime -ge $Since }) }
+        if ($Until) { $d = @($d | Where-Object { $_.CreationTime -lt $Until }) }
+        $d
+    }
+    $dirs = @(& $getDirs)
+
+    if ($RenameFolders) {
+        $folderRows = @(Invoke-RepairFolderRenames -Path $Path -Dirs $dirs -Config $Config -Force:$Force -WhatIf:$WhatIfPreference)
+        foreach ($r in $folderRows) { $rows.Add($r) }
+        if (@($folderRows | Where-Object { -not $_.Folder -and $_.Action -eq 'Skipped' }).Count -gt 0) {
+            return $rows.ToArray()   # run-level abort: change nothing
+        }
+        # Re-read after the renames; a -WhatIf plan did not move anything, so leave those folders out.
+        $planned = @($folderRows | Where-Object { $_.Action -eq 'WouldRenameFolder' } | ForEach-Object { $_.Folder })
+        $dirs = @(& $getDirs | Where-Object { $planned -notcontains $_.Name })
+    }
 
     foreach ($dir in $dirs) {
         $folder = $dir.Name
@@ -302,13 +485,13 @@ if ($MyInvocation.InvocationName -ne '.') {
     $config = Get-ArmConfig -Path $ConfigPath
     if ($Simulate) { $config.Simulate = $true }
 
-    $rows = @(Repair-ArmJellyfinNames -Path $Path -Config $config -Since $Since -Until $Until -RemoveOrphans:$RemoveOrphans -WhatIf:$WhatIfPreference)
+    $rows = @(Repair-ArmJellyfinNames -Path $Path -Config $config -Since $Since -Until $Until -RemoveOrphans:$RemoveOrphans -RenameFolders:$RenameFolders -Force:$Force -WhatIf:$WhatIfPreference)
     if ($rows.Count -eq 0) {
         Write-Host 'Nothing to rename.'
     } else {
         # Table only (no objects on the pipeline), so nothing prints twice.
         $rows | Format-Table -AutoSize -Wrap | Out-String | Write-Host
-        $done = @($rows | Where-Object { $_.Action -in 'Renamed', 'WouldRename', 'Moved', 'WouldMove', 'Removed', 'WouldRemove' }).Count
+        $done = @($rows | Where-Object { $_.Action -in 'Renamed', 'WouldRename', 'Moved', 'WouldMove', 'Removed', 'WouldRemove', 'FolderRenamed', 'WouldRenameFolder' }).Count
         $skipped = @($rows | Where-Object { $_.Action -eq 'Skipped' }).Count
         Write-Host "Renamed/moved (or would): $done   Skipped: $skipped"
     }
