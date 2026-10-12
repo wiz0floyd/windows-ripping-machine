@@ -347,8 +347,11 @@ function Rename-ArmMainFeature {
     'Title (Year)' from a Jellyfin/Kodi movie NFO next to a video file, or $null.
 
 .DESCRIPTION
-    Looks for '<video basename>.nfo' then 'movie.nfo' in the video's directory and reads
-    <title> plus <year> (or the year of <premiered>) from the <movie> root. Returns the
+    Looks for 'movie.nfo' then '<video basename>.nfo' in the video's directory and reads
+    <title> plus <year> (or the year of <premiered>) from the <movie> root. movie.nfo is the
+    canonical title; a per-version NFO often has a filename-derived title such as
+    'Garden State (2004) - 480p', so it is only a fallback and a trailing version label
+    ('- 480p', '- DVD') is stripped from the title. Returns the
     filename-safe 'Title (Year)' ('Title' when no year), or $null when there is no usable
     NFO. Never throws.
 
@@ -365,7 +368,7 @@ function Get-ArmNfoMovieName {
     try {
         $dir = Split-Path -Parent $VideoFile
         $base = [System.IO.Path]::GetFileNameWithoutExtension($VideoFile)
-        foreach ($candidate in @("$base.nfo", 'movie.nfo')) {
+        foreach ($candidate in @('movie.nfo', "$base.nfo")) {
             $path = Join-Path $dir $candidate
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
             try {
@@ -379,7 +382,7 @@ function Get-ArmNfoMovieName {
                 $node = $xml.SelectSingleNode("/movie/$name")
                 if ($node) { $node.InnerText.Trim() } else { '' }
             }
-            $title = & $text 'title'
+            $title = (& $text 'title') -replace '\s*-\s*(\d+p|DVD)\s*$', ''
             if (-not $title) { continue }
             $year = & $text 'year'
             if ($year -notmatch '^\d{4}$') {
