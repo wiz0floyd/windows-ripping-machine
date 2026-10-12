@@ -73,7 +73,7 @@ wrm/
     FfprobePath       = 'ffprobe'      # omitted => ffprobe.exe next to FfmpegPath (bare 'ffprobe' if FfmpegPath is bare)
     Video2xPath       = 'C:\Program Files\Video2X\video2x.exe'
     NcnnPath          = 'C:\ProgramData\wrm\venv\Scripts\python.exe'   # venv python running tools/ncnn_upscale.py
-    NcnnModelDir      = 'C:\ProgramData\wrm\models'                      # openproteus-x2.param/.bin
+    NcnnModelDir      = 'C:\ProgramData\wrm\models'                      # openproteus-x2 / liveaction-x2 .param/.bin
     # --- Behavior ---
     MinTitleLengthSec = 600
     RipAllTitles      = $true          # else main title only
@@ -85,13 +85,18 @@ wrm/
     UpscaleDvds       = $false
     AutoUpscale       = $false         # $false => stop after -SampleOnly clip, notify for review
     UpscaleActiveHours= @('23:00','08:00')
-    UpscaleLiveAction = 'openproteus'  # openproteus | anime4k | realesrgan (legacy)
+    UpscaleLiveAction = 'openproteus'  # openproteus | liveaction | anime4k | realesrgan (legacy)
     UpscaleAnimation  = 'anime4k'      # engine when the queue item has ContentType='Animation' (set from the TMDb Animation genre; no config key)
     UpscaleHeight     = 1080           # output height; width = round(height * source DAR / 2) * 2
     UpscaleShader     = 'anime4k-v4-a+a'   # libplacebo shader for the anime4k engine
     UpscaleModel      = 'realesrgan-plus'  # legacy realesrgan engine only (video2x 6.4 models)
     UpscaleScale      = 4                  # legacy realesrgan engine only; plus/-anime ship x4 only
     UpscaleCrf        = 16
+    UpscalePreset     = 'slow'         # libx265 -preset for the final encode (plan Encode.Preset)
+    UpscaleEncoder    = 'libx265'      # libx265 | hevc_amf (plan Encode.Codec); unknown value => invalid plan
+    UpscaleQp         = 18             # hevc_amf only: CQP qp_i/qp_p (plan Encode.Qp)
+    UpscaleAmfQuality = 'quality'      # hevc_amf only: speed|balanced|quality (plan Encode.AmfQuality)
+    UpscalePixFmt     = 'p010le'       # hevc_amf only: p010le|yuv420p (plan Encode.PixFmt)
     # --- Web UI (http://localhost:<WebUiPort>/, this machine only) ---
     WebUiEnabled      = $true          # $false => WebUi.ps1 exits immediately
     WebUiPort         = 8765
@@ -429,7 +434,7 @@ Get-UpscalePlan -InputFile <string> -SourceInfo <pscustomobject> -InterlaceType 
 #     Engine; EngineTool; EngineLabel   # EngineTool = 'ncnn' | 'video2x'
 #     Target            # @{ Width; Height; DisplayAspect }, Width = 2*round(Height*DAR/2); $null for realesrgan
 #     Upscale           # engine params: Model/Scale | Shader | Runner/ModelBase/Ffmpeg/Ffprobe/RequiredFiles
-#     Encode            # @{ Codec='libx265'; Crf; Preset='slow'; AudioCodec='copy'; ResetSar }
+#     Encode            # @{ Codec=UpscaleEncoder (default 'libx265'); Crf; Preset=UpscalePreset (default 'slow'); Qp; AmfQuality; PixFmt; AudioCodec='copy'; ResetSar }
 #     Colour            # @{ Space; Primaries; Transfer; Range; Action } - source tags; Action = 'convert-to-bt709' | 'tag-only'
 #     ColorInput / ColorInputSpec / ColorConvert   # from the pure Get-UpscaleColorInput -SourceInfo -Engine (#29):
 #                       #   color_space smpte170m/bt470bg = BT.601, 525 vs 625 from color_primaries (else the space);
@@ -437,7 +442,7 @@ Get-UpscalePlan -InputFile <string> -SourceInfo <pscustomobject> -InterlaceType 
 #                       #   Other tags (bt470m, smpte240m, bt2020nc...) add a plan Warning, then the height rule.
 #                       #   ColorInput 'bt601-6-525'|'bt601-6-625'|'bt601-matrix-bt709-primaries'|$null;
 #                       #   ColorInputSpec = colorspace input options ('iall=bt601-6-525'), $null = tag only.
-#                       #   BT.709 sources are tag only, EXCEPT openproteus (ncnn_upscale.py's swscale default re-encodes
+#                       #   BT.709 sources are tag only, EXCEPT the ncnn engines openproteus/liveaction (ncnn_upscale.py's swscale default re-encodes
 #                       #   to a BT.601 matrix): ispace=bt470bg:iprimaries=bt709:itrc=bt709. ColorConvert = ColorInputSpec set.
 #     Source; OutputFileName; Warnings; Error }
 #  Error is non-$null for an unknown engine or the realesrgan-plus x4-only mismatch;
@@ -469,10 +474,10 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #  each result (with Stage = preprocess|upscale|encode) to the optional -ProgressHandler.
 #  video2x stages (anime4k, realesrgan) report no progress.
 #  @{ Success; OutputFile; InterlaceType; Engine; SourceHeight; Error }   # SourceHeight = probed source frame height or $null
-#  Engine = openproteus|anime4k|realesrgan ($null if failed before engine selection)
+#  Engine = openproteus|liveaction|anime4k|realesrgan ($null if failed before engine selection)
 #  Probe, plan, execute. (a) Probe: Get-VideoSourceInfo (ffprobe, source file),
 #  Get-InterlaceType (-SourceDuration from the probe) and Get-VideoFrameRate. Then Get-UpscalePlan;
-#  plan Warnings are logged, plan Error and (non-Simulate) missing openproteus
+#  plan Warnings are logged, plan Error and (non-Simulate) missing ncnn-engine
 #  runner/model files (error points at setup.ps1) fail the run before any encode.
 #  (b) preprocess with ffmpeg:
 #     Telecined  → -vf fieldmatch,yadif=deint=interlaced,decimate  (→23.976p)
@@ -498,10 +503,14 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #                       --ffmpeg $FfmpegPath --ffprobe Resolve-ArmFfprobePath). Every 10 s and
 #                       at the end it prints (flushed) `frame=<n>`, `fps=<avg>`,
 #                       `progress=continue|end` on stdout.
+#                       model NcnnModelDir\openproteus-x2.{param,bin}
+#        liveaction  -> identical runner call with NcnnModelDir\liveaction-x2.{param,bin}
+#                       (2xLiveActionV1_SPAN; engine->model map $script:ArmNcnnEngineModels)
 #        anime4k     -> video2x -p libplacebo --libplacebo-shader $UpscaleShader -w W -h H
 #        realesrgan  -> legacy video2x realesrgan (model/scale from config)
-#  (d) ffmpeg mux: libx265 -crf $UpscaleCrf -preset slow, copy original audio;
-#      `-vf` is ONE chain: `setsar=1` for openproteus/anime4k (not legacy realesrgan), then, when
+#  (d) ffmpeg mux: $UpscaleEncoder - libx265 -crf $UpscaleCrf -preset $UpscalePreset (default slow),
+#      or hevc_amf -rc cqp -qp_i/-qp_p $UpscaleQp -quality $UpscaleAmfQuality -pix_fmt $UpscalePixFmt; copy original audio;
+#      `-vf` is ONE chain: `setsar=1` for the ncnn engines/anime4k (not legacy realesrgan), then, when
 #      the plan's ColorConvert is set, `colorspace=all=bt709:<ColorInputSpec>:irange=tv:range=tv:dither=fsb` (engine outputs
 #      carry the source's BT.601 matrix; the filter runs at the intermediates' 8-bit yuv420p, the
 #      encode sets no -pix_fmt). Every engine's output is always tagged
@@ -680,8 +689,9 @@ Invoke-ArmWebRequest -Method <string> -Path <string> [-Query <hashtable>] [-Body
 #  Idempotent. winget install GuinpinSoft.MakeMKV, enzo1982.freac, Gyan.FFmpeg
 #  (skip present); print manual step for Video2X (GitHub release, needed for the
 #  anime4k/legacy engines). Install-NcnnUpscaler: venv at NcnnPath + pinned
-#  tools/requirements-ncnn.txt + SHA256-verified OpenProteus model into NcnnModelDir
-#  (warn-only on failure). Create dirs (StagingDir, UpscaleQueueDir, LogDir, StateDir).
+#  tools/requirements-ncnn.txt + SHA256-verified OpenProteus model into NcnnModelDir,
+#  plus Install-ArmBundledNcnnModel: the repo-bundled tools/models/liveaction-x2.{param,bin}
+#  copied into NcnnModelDir after a pinned-SHA256 check (warn-only on failure). Create dirs (StagingDir, UpscaleQueueDir, LogDir, StateDir).
 #  Prompt for NAS paths/TMDb key/HA URL → write config/config.psd1 (skip prompts
 #  with -NonInteractive; copies example). Register hidden Scheduled Tasks
 #  'wrm-watcher', 'wrm-upscaler' and 'wrm-webui' (at logon, current user,
@@ -744,6 +754,7 @@ Invoke-ArmWebRequest -Method <string> -Path <string> [-Query <hashtable>] [-Body
 wrm repair  [-Path <movies root>] [-Since <date>] [-Until <date>] [-RemoveOrphans] [-WhatIf]   # wraps tools/Repair-ArmJellyfinNames.ps1; -Path defaults to NasVideoPath
 wrm upscale <movie folder | movies root>... [-ContentType LiveAction|Animation] [-Force] [-WhatIf]
 wrm rip [<drive letter>] [-Drive <L>] [-DiscType Video|AudioCD]            # rip the disc now, bypassing detection
+wrm restart [-Force] [-WhatIf]                                               # Restart-WrmTask: stop+start wrm-watcher/-upscaler/-webui; throws if makemkvcon/freaccmd/robocopy/ffmpeg/video2x is running (Get-WrmBusyProcess) unless -Force; rows TaskName, Action (Restarted|WouldRestart|NotRegistered|Failed), Detail; exit 1 on Failed/NotRegistered
 wrm install-cli                                                              # adds bin\ to the user PATH
 Start-ArmManualRip -Config <hashtable> [-Drive <string>] [-DiscType Video|AudioCD] -> { DriveLetter, DiscType }
 Add-ArmUpscaleQueueFromLibrary -MovieDir <string[]> -Config <hashtable> [-ContentType] [-Force]

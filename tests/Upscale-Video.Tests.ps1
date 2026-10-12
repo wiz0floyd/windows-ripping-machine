@@ -919,11 +919,12 @@ Describe 'Get-UpscalePlan' {
             ) {
                 (Get-UpscaleColorInput -SourceInfo (New-ColourSource $null $null $null $H) -Engine anime4k).Input | Should -Be $Want
             }
-            It 'untagged HD is BT.709: tag only except openproteus' {
+            It 'untagged HD is BT.709: tag only except the ncnn engines (openproteus, liveaction)' {
                 $s = New-ColourSource $null $null $null 1080
                 (Get-UpscaleColorInput -SourceInfo $s -Engine anime4k).Convert | Should -Be $false
                 (Get-UpscaleColorInput -SourceInfo $s -Engine realesrgan).Convert | Should -Be $false
                 (Get-UpscaleColorInput -SourceInfo $s -Engine openproteus).InputSpec | Should -Be 'ispace=bt470bg:iprimaries=bt709:itrc=bt709'
+                (Get-UpscaleColorInput -SourceInfo $s -Engine liveaction).InputSpec | Should -Be 'ispace=bt470bg:iprimaries=bt709:itrc=bt709'
             }
             It 'warns for an unsupported tag naming it, and uses the height' {
                 $r = Get-UpscaleColorInput -SourceInfo (New-ColourSource 'bt470m' 'bt470m' $null 576) -Engine anime4k
@@ -960,6 +961,49 @@ Describe 'Get-UpscalePlan' {
     It 'uses the built-in default engines when the config has no engine keys' {
         (New-TestPlan -Override @{ _OmitEngines = $true }).Engine | Should -Be 'openproteus'
         (New-TestPlan -Override @{ _OmitEngines = $true } -ContentType Animation).Engine | Should -Be 'anime4k'
+    }
+
+    It 'plans the liveaction engine: same ncnn runner and target, liveaction-x2 model' {
+        $p = New-TestPlan -Override @{ UpscaleLiveAction = 'liveaction' }
+        $p.Error | Should -BeNullOrEmpty
+        $p.Engine | Should -Be 'liveaction'
+        $p.EngineTool | Should -Be 'ncnn'
+        $p.EngineLabel | Should -Be 'ncnn upscale'
+        $p.Target.Width | Should -Be 1920
+        $p.Target.Height | Should -Be 1080
+        $p.Encode.ResetSar | Should -Be $true
+        $p.Upscale.ModelBase | Should -BeLike '*liveaction-x2'
+        $p.Upscale.ModelBase | Should -BeLike 'C:\models*'
+        $p.Upscale.RequiredFiles | Should -Contain "$($p.Upscale.ModelBase).param"
+        $p.Upscale.RequiredFiles | Should -Contain "$($p.Upscale.ModelBase).bin"
+        $p.Upscale.RequiredFiles[0] | Should -BeLike '*ncnn_upscale.py'
+        $p.ColorConvert | Should -Be $true
+    }
+
+    It 'takes the final encode preset from UpscalePreset, default slow' {
+        (New-TestPlan).Encode.Preset | Should -Be 'slow'
+        (New-TestPlan -Override @{ UpscalePreset = 'medium' }).Encode.Preset | Should -Be 'medium'
+        (New-TestPlan -Override @{ UpscalePreset = '' }).Encode.Preset | Should -Be 'slow'
+    }
+
+    It 'takes the final encoder from UpscaleEncoder, default libx265, with AMF defaults' {
+        $p = New-TestPlan
+        $p.Encode.Codec | Should -Be 'libx265'
+        $p.Error | Should -BeNullOrEmpty
+        $amf = New-TestPlan -Override @{ UpscaleEncoder = 'hevc_amf' }
+        $amf.Encode.Codec | Should -Be 'hevc_amf'
+        $amf.Encode.Qp | Should -Be 18
+        $amf.Encode.AmfQuality | Should -Be 'quality'
+        $amf.Encode.PixFmt | Should -Be 'p010le'
+        $amf.Error | Should -BeNullOrEmpty
+        $custom = New-TestPlan -Override @{ UpscaleEncoder = 'hevc_amf'; UpscaleQp = 20; UpscaleAmfQuality = 'balanced'; UpscalePixFmt = 'yuv420p' }
+        $custom.Encode.Qp | Should -Be 20
+        $custom.Encode.AmfQuality | Should -Be 'balanced'
+        $custom.Encode.PixFmt | Should -Be 'yuv420p'
+    }
+
+    It 'reports an unknown UpscaleEncoder in Error instead of throwing' {
+        (New-TestPlan -Override @{ UpscaleEncoder = 'h264_nvenc' }).Error | Should -Match "Unknown UpscaleEncoder 'h264_nvenc'"
     }
 
     It 'reports an unknown engine in Error (and keeps the name) instead of throwing' {
@@ -1015,6 +1059,27 @@ Describe 'Upscale stage argument builders' {
             Should -Be '-i T:\p.mkv -p libplacebo --libplacebo-shader anime4k-v4-a+a -w 1920 -h 1080 -o T:\u.mkv'
         (Get-UpscaleEngineArgumentList -Plan (New-TestPlan -Override @{ UpscaleLiveAction = 'realesrgan' }) -InputFile 'T:\p.mkv' -OutputFile 'T:\u.mkv') -join ' ' |
             Should -Be '-i T:\p.mkv -p realesrgan --realesrgan-model realesr-animevideov3 -s 2 -o T:\u.mkv'
+    }
+
+    It 'builds the liveaction runner arguments: identical to openproteus except the model files' {
+        $op = (Get-UpscaleEngineArgumentList -Plan (New-TestPlan) -InputFile 'T:\p.mkv' -OutputFile 'T:\u.mkv') -join ' '
+        $la = (Get-UpscaleEngineArgumentList -Plan (New-TestPlan -Override @{ UpscaleLiveAction = 'liveaction' }) -InputFile 'T:\p.mkv' -OutputFile 'T:\u.mkv') -join ' '
+        $la | Should -Match '--param C:\\models\\liveaction-x2\.param --bin C:\\models\\liveaction-x2\.bin --scale 2 --out-width 1920 --out-height 1080'
+        $la.Replace('liveaction-x2', 'openproteus-x2') | Should -Be $op
+    }
+
+    It 'emits CQP hevc_amf arguments (no -crf/-preset) when UpscaleEncoder is hevc_amf' {
+        $a = (Get-UpscaleEncodeArgumentList -Plan (New-TestPlan -Override @{ UpscaleEncoder = 'hevc_amf' }) -UpscaledFile 'T:\u.mkv' -OutputFile 'O:\out.mkv') -join ' '
+        $a | Should -Match '-c:v hevc_amf -quality quality -rc cqp -qp_i 18 -qp_p 18 -pix_fmt p010le -c:a copy -shortest O:\\out\.mkv$'
+        $a | Should -Not -Match '-crf'
+        $a | Should -Not -Match '-preset'
+        $a | Should -Match '-vf setsar=1,colorspace='
+        $a | Should -Match '-colorspace bt709 -color_primaries bt709'
+    }
+
+    It 'passes UpscalePreset to libx265' {
+        (Get-UpscaleEncodeArgumentList -Plan (New-TestPlan -Override @{ UpscalePreset = 'medium' }) -UpscaledFile 'T:\u.mkv' -OutputFile 'O:\out.mkv') -join ' ' |
+            Should -Match '-c:v libx265 -crf 16 -preset medium -c:a copy'
     }
 
     It 'builds the mux arguments, trimming the audio input for a sample and resetting SAR' {
@@ -1143,6 +1208,33 @@ Describe 'Invoke-Upscale engine routing' {
             ($Arguments -join ' ') -match 'openproteus-x2\.param' -and ($Arguments -join ' ') -match '--scale 2'
         }
         Should -Invoke Invoke-ArmTool -Times 0 -ParameterFilter { $Name -eq 'video2x' }
+    }
+
+    It 'runs the same ncnn runner with the liveaction-x2 model when UpscaleLiveAction = liveaction' {
+        $script:Config.UpscaleLiveAction = 'liveaction'
+
+        $r = Invoke-Upscale -InputFile $script:InputFile -OutputDir $script:OutputDir -Config $script:Config
+        $r.Success | Should -Be $true
+        $r.Engine | Should -Be 'liveaction'
+
+        Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter {
+            $Name -eq 'ncnn' -and ($Arguments -join ' ') -match 'liveaction-x2\.param' -and ($Arguments -join ' ') -match '--out-width 1920 --out-height 1080'
+        }
+        Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter {
+            $Name -eq 'ffmpeg' -and ($Arguments -join ' ') -match 'libx265' -and ($Arguments -join ' ') -match '-vf setsar=1'
+        }
+    }
+
+    It 'fails before any encode, naming the engine and setup.ps1, when the liveaction model is not installed' {
+        $script:Config.UpscaleLiveAction = 'liveaction'
+        $script:Config.Simulate = $false
+        $script:Config.NcnnModelDir = Join-Path $script:TestDir "no-models-$(New-Guid)"
+
+        $r = Invoke-Upscale -InputFile $script:InputFile -OutputDir $script:OutputDir -Config $script:Config
+        $r.Success | Should -Be $false
+        $r.Engine | Should -Be 'liveaction'
+        $r.Error | Should -Match "liveaction engine needs '.*liveaction-x2\.param' - run setup\.ps1"
+        Should -Invoke Invoke-ArmTool -Times 0 -ParameterFilter { $Name -eq 'ncnn' -or ($Name -eq 'ffmpeg' -and ($Arguments -join ' ') -match 'ffv1|libx265') }
     }
 
     It 'derives a 1440 width for a 4:3 source' {

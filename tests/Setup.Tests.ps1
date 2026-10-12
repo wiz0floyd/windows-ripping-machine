@@ -376,6 +376,7 @@ Describe 'Install-NcnnUpscaler' {
             0
         }
         Mock Write-Warning {}
+        Mock Install-ArmBundledNcnnModel { $true }
     }
 
     AfterEach {
@@ -398,6 +399,18 @@ Describe 'Install-NcnnUpscaler' {
         Should -Invoke Invoke-ArmPython -ParameterFilter { $Arguments -contains 'pip' -and $Arguments -contains $script:Req } -Times 1
         Test-Path (Join-Path $script:Models 'openproteus-x2.param') | Should -Be $true
         Test-Path (Join-Path $script:Models 'openproteus-x2.bin') | Should -Be $true
+        Should -Invoke Install-ArmBundledNcnnModel -Times 1 -ParameterFilter { $ModelDir -eq $script:Models }
+    }
+
+    It 'still installs the bundled model when OpenProteus is already present' {
+        $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $script:Py), $script:Models
+        Set-Content -LiteralPath $script:Py -Value 'py'
+        Set-Content -LiteralPath (Join-Path $script:Models 'openproteus-x2.param') -Value 'p'
+        Set-Content -LiteralPath (Join-Path $script:Models 'openproteus-x2.bin') -Value 'b'
+
+        Install-NcnnUpscaler -RequirementsPath $script:Req -PythonPath $script:Py -ModelDir $script:Models -BundledModelDir 'X:\bundled'
+
+        Should -Invoke Install-ArmBundledNcnnModel -Times 1 -ParameterFilter { $SourceDir -eq 'X:\bundled' -and $ModelDir -eq $script:Models }
     }
 
     It 'skips venv creation and the download when everything is already installed' {
@@ -430,5 +443,55 @@ Describe 'Install-NcnnUpscaler' {
 
         Should -Invoke Write-Warning -ParameterFilter { $Message -match 'Could not create the Python venv' }
         Should -Invoke Invoke-WebRequest -Times 0
+    }
+}
+
+Describe 'Install-ArmBundledNcnnModel' {
+    BeforeAll {
+        $script:RepoModels = Join-Path $PSScriptRoot '..' 'tools' 'models'
+    }
+
+    BeforeEach {
+        $script:Root = Join-Path $env:TEMP "wrm-bundled-model-test-$(New-Guid)"
+        $script:Models = Join-Path $script:Root 'models'
+        Mock Write-Warning {}
+    }
+
+    AfterEach {
+        Remove-Item -Path $script:Root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'installs the committed liveaction-x2 files: the pinned SHA256 values match the repo copies' {
+        Install-ArmBundledNcnnModel -SourceDir $script:RepoModels -ModelDir $script:Models | Should -Be $true
+
+        Should -Invoke Write-Warning -Times 0
+        foreach ($ext in 'param', 'bin') {
+            $installed = Join-Path $script:Models "liveaction-x2.$ext"
+            Test-Path -LiteralPath $installed | Should -Be $true
+            (Get-FileHash -LiteralPath $installed).Hash | Should -Be (Get-FileHash -LiteralPath (Join-Path $script:RepoModels "liveaction-x2.$ext")).Hash
+        }
+    }
+
+    It 'leaves an installed pair alone' {
+        $null = New-Item -ItemType Directory -Force -Path $script:Models
+        Set-Content -LiteralPath (Join-Path $script:Models 'liveaction-x2.param') -Value 'p'
+        Set-Content -LiteralPath (Join-Path $script:Models 'liveaction-x2.bin') -Value 'b'
+
+        Install-ArmBundledNcnnModel -SourceDir $script:RepoModels -ModelDir $script:Models | Should -Be $true
+
+        Get-Content -LiteralPath (Join-Path $script:Models 'liveaction-x2.param') | Should -Be 'p'
+    }
+
+    It 'refuses (warns, copies nothing) when a file does not match its pinned SHA256' {
+        Install-ArmBundledNcnnModel -SourceDir $script:RepoModels -ModelDir $script:Models -BinSha256 ('0' * 64) | Should -Be $false
+
+        Should -Invoke Write-Warning -ParameterFilter { $Message -match 'SHA256 mismatch' }
+        Test-Path -LiteralPath (Join-Path $script:Models 'liveaction-x2.param') | Should -Be $false
+    }
+
+    It 'warns and returns false (no throw) when the source files are missing' {
+        Install-ArmBundledNcnnModel -SourceDir (Join-Path $script:Root 'nowhere') -ModelDir $script:Models | Should -Be $false
+
+        Should -Invoke Write-Warning -ParameterFilter { $Message -match 'is missing' }
     }
 }

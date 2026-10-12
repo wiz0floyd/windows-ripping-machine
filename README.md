@@ -32,7 +32,7 @@ A native Windows replacement for the Linux Automatic Ripping Machine: insert a d
      to prompt on), `setup.ps1` fails fast with guidance instead of hanging — re-run it from an
      elevated local/RDP pwsh session instead.
 
-2. **Upscale stage only:** `setup.ps1` creates a Python venv (needs Python 3.10+ on PATH) at `C:\ProgramData\wrm\venv` and downloads the OpenProteus 2x model (SHA256-verified) to `C:\ProgramData\wrm\models`. For the animation engine (Anime4K) also download and install [Video2X 6.x](https://github.com/k4yt3x/video2x/releases) from GitHub (CLI installer; adds `video2x.exe` to PATH). Targets Video2X 6.4+ (verify flags match your release). Engines are chosen per content type with `UpscaleLiveAction` / `UpscaleAnimation` in `config.psd1`; the queue item's `ContentType` (`Animation` / `LiveAction`) picks which one runs. DiscWatcher fills it from the TMDb genre (see "Animation vs live action" below); you can also set `"ContentType": "Animation"` in a queue file by hand.
+2. **Upscale stage only:** `setup.ps1` creates a Python venv (needs Python 3.10+ on PATH) at `C:\ProgramData\wrm\venv`, downloads the OpenProteus 2x model and copies the bundled LiveAction SPAN model from `tools/models` (both SHA256-verified) to `C:\ProgramData\wrm\models`. For live action, `UpscaleLiveAction = 'openproteus'` (default) or `'liveaction'` ([2xLiveActionV1_SPAN](tools/models/README.md): targets compression artifacts, halos and deinterlacing jaggies; same speed class) picks the model; compare them on your own discs with the bench harness (`model-openproteus` / `model-liveaction` variants, [`docs/bench/README.md`](docs/bench/README.md)). For the animation engine (Anime4K) also download and install [Video2X 6.x](https://github.com/k4yt3x/video2x/releases) from GitHub (CLI installer; adds `video2x.exe` to PATH). Targets Video2X 6.4+ (verify flags match your release). Engines are chosen per content type with `UpscaleLiveAction` / `UpscaleAnimation` in `config.psd1`; the queue item's `ContentType` (`Animation` / `LiveAction`) picks which one runs. DiscWatcher fills it from the TMDb genre (see "Animation vs live action" below); you can also set `"ContentType": "Animation"` in a queue file by hand.
 
 3. **Verify installation** (simulate mode — no disc or NAS required):
    ```powershell
@@ -174,7 +174,7 @@ When a DVD rip completes and `UpscaleDvds=true`, the Upscale-Worker daemon proce
 - **Progressive** (no interlacing): passes through as-is
 - **Unknown** (idet output unparseable): falls back to bwdif on every frame
 
-Intermediate files are encoded lossless (ffv1) to avoid compounding generation loss before the AI upscale. Final encode uses libx265 at the quality level specified by `UpscaleCrf` (default: 16, high quality / near-transparent).
+Intermediate files are encoded lossless (ffv1) to avoid compounding generation loss before the AI upscale. Final encode uses libx265 at the quality level specified by `UpscaleCrf` (default: 16, high quality / near-transparent) and the preset in `UpscalePreset` (default `slow`; `medium` was ~2.5x faster at near-identical SSIM in the 2026-10 spike). Set `UpscaleEncoder = 'hevc_amf'` to encode on the GPU instead (constant QP from `UpscaleQp`, default 18, 10-bit). In the live-action bakeoff it was about 2.3x faster end to end than x265 slow and 1.6x faster than x265 medium (11 vs 4.7 / 6.8 wall fps on the RX 7800 XT, upscale-limited), at roughly 50% larger files than x265 medium crf18.
 
 **Queue file format:**
 ```json
@@ -236,4 +236,4 @@ See `SPEC.md` for full module contracts and `docs/PLAN.md` for architecture rati
 
 ## `wrm` command line
 
-`wrm install-cli` (from the repo's `bin\`) puts `wrm` on your PATH. `wrm repair -Since 2026-09-27 -WhatIf` previews the Jellyfin file-name fixes (omit `-WhatIf` to apply); `wrm upscale "\nas\media\Movies\Grease (1978)"` (or a whole movies root) queues upscales of existing DVD rips for the worker's review flow. New DVD rips are named `<Folder> - 480p.mkv` at rip time.
+`wrm install-cli` (from the repo's `bin\`) puts `wrm` on your PATH. `wrm repair -Since 2026-09-27 -WhatIf` previews the Jellyfin file-name fixes (omit `-WhatIf` to apply); `wrm upscale "\nas\media\Movies\Grease (1978)"` (or a whole movies root) queues upscales of existing DVD rips for the worker's review flow. After pulling new code, `wrm restart` restarts the three scheduled tasks so they pick it up (it refuses while a rip or upscale is running; `-Force` overrides). New DVD rips are named `<Folder> - 480p.mkv` at rip time.
