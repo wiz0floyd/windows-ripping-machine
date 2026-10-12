@@ -98,6 +98,23 @@ Add a hashtable to `Variants` in `tools/bench/variants.psd1`:
 
 `Test-BenchVariant` checks every variant before any tool runs.
 
+## Comparing live-action models
+
+`model-openproteus` and `model-liveaction` run the same samples through the two ncnn engines with
+the shipping encode (x265 slow, CRF 16). Run `setup.ps1` first so `NcnnModelDir` has both models;
+a missing model shows up as a `Status=error` row naming the file.
+
+```powershell
+./tools/bench/Invoke-Bench.ps1 -Mode Run -Variant model-openproteus,model-liveaction
+./tools/bench/Invoke-Bench.ps1 -Mode Frames -FrameTimes 12.5,60,95
+```
+
+- Speed: compare `UpscaleFps`.
+- Quality: compare the PNGs under `out/frames/<sample>/` by eye. `Ssim` and `Psnr` score each encode
+  against its own model's intermediate, so they measure the encoder and cannot rank models.
+- Pick samples that stress the difference: a grainy film, a dark scene (banding), and a
+  sample with visible MPEG-2 blocking or deinterlacing jaggies.
+
 ## Not yet implemented
 
 - Concurrency (#27): aggregate throughput for N parallel jobs.
