@@ -236,4 +236,4 @@ See `SPEC.md` for full module contracts and `docs/PLAN.md` for architecture rati
 
 ## `wrm` command line
 
-`wrm install-cli` (from the repo's `bin\`) puts `wrm` on your PATH. `wrm repair -Since 2026-09-27 -WhatIf` previews the Jellyfin file-name fixes (omit `-WhatIf` to apply); `wrm upscale "\nas\media\Movies\Grease (1978)"` (or a whole movies root) queues upscales of existing DVD rips for the worker's review flow. New DVD rips are named `<Folder> - 480p.mkv` at rip time.
+`wrm install-cli` (from the repo's `bin\`) puts `wrm` on your PATH. `wrm repair -Since 2026-09-27 -WhatIf` previews the Jellyfin file-name fixes (omit `-WhatIf` to apply); `wrm upscale "\nas\media\Movies\Grease (1978)"` (or a whole movies root) queues upscales of existing DVD rips for the worker's review flow. After pulling new code, `wrm restart` restarts the three scheduled tasks so they pick it up (it refuses while a rip or upscale is running; `-Force` overrides). New DVD rips are named `<Folder> - 480p.mkv` at rip time.
