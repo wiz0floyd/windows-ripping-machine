@@ -314,7 +314,10 @@ function Invoke-ArmUpscaleQueueItem {
             $finalOutput = [string] $result.OutputFile
             try {
                 $sourceHeight = Get-ArmUpscaleSourceHeight -Result $result -SourceFile $source -Config $Config
-                $named = Rename-ArmUpscaleVersions -FolderName (Split-Path -Leaf ([string] $destDir).TrimEnd('\', '/')) `
+                # Prefer the library's own metadata (movie.nfo) over the folder name.
+                $versionName = Get-ArmNfoMovieName -VideoFile $source
+                if (-not $versionName) { $versionName = Split-Path -Leaf ([string] $destDir).TrimEnd('\', '/') }
+                $named = Rename-ArmUpscaleVersions -FolderName $versionName `
                     -UpscaledFile $finalOutput -SourceFile $source -SourceHeight $sourceHeight -Config $Config
                 $finalOutput = [string] $named.OutputFile
             } catch {

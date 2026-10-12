@@ -475,6 +475,17 @@ Describe 'Invoke-ArmUpscaleQueueItem Jellyfin version names' {
         Test-Path -LiteralPath $script:QueueFile | Should -BeFalse
     }
 
+    It 'names both files from the source movie.nfo Title (Year) instead of the folder name' {
+        Mock Get-VideoSourceInfo { [pscustomobject]@{ Success = $true; Height = 480; Width = 720 } }
+        Set-Content -LiteralPath (Join-Path $script:DestDir 'movie.nfo') -Value '<movie><title>Grease Live</title><year>2016</year></movie>'
+
+        Invoke-ArmUpscaleQueueItem -QueueFile $script:QueueFile -Config $script:Config
+
+        @(Get-ChildItem -LiteralPath $script:DestDir -File -Filter '*.mkv').Name | Sort-Object |
+            Should -Be @(@('Grease Live (2016) - 1080p.mkv', 'Grease Live (2016) - 480p.mkv') | Sort-Object)
+        (Get-ArmJob -JobId $script:JobId -Config $script:Config).OutputFile | Should -Be (Join-Path $script:DestDir 'Grease Live (2016) - 1080p.mkv')
+    }
+
     It 'labels the source "DVD" when the height is unknown' {
         Mock Get-VideoSourceInfo { [pscustomobject]@{ Success = $false; Height = $null } }
 

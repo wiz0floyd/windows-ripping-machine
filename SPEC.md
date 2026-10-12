@@ -327,6 +327,9 @@ Rename-ArmMainFeature -Dir <string> -Config <hashtable> [-MainFeature <string>] 
 # The queue entry (DVD+UpscaleDvds) points at the renamed file, not at the largest file in DestDir.
 # No-op when the name already matches; if another file already has the target name,
 # WARN and keep the original name. extras/ untouched. Never throws.
+Get-ArmNfoMovieName -VideoFile <string> -> [string] or $null
+#  'Title (Year)' (filename-safe) from '<video basename>.nfo' else 'movie.nfo' beside the video
+#  (Jellyfin/Kodi <movie><title>, <year> or <premiered>); $null when no usable NFO. Never throws.
 Rename-ArmUpscaleVersions -FolderName <string> -UpscaledFile <string> -SourceFile <string>
                           [-SourceHeight <int>] -Config <hashtable> -> [pscustomobject]
 #  { Success, OutputFile, SourceFile, OutputRenamed, SourceRenamed, Error } (final paths).
@@ -575,7 +578,7 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #  sample path, rename queue file → .awaiting-review (user renames back to .json
 #  after approving; document in README). Else full run → move result to DestDir,
 #  notify, delete queue file. Failures → .failed + Error notification.
-#  After a successful full run the worker calls Rename-ArmUpscaleVersions with the leaf of DestDir
+#  After a successful full run the worker calls Rename-ArmUpscaleVersions with the NFO 'Title (Year)' (Get-ArmNfoMovieName) when the source has one, else the leaf of DestDir
 #  (Jellyfin version names; source height from the Invoke-Upscale result's SourceHeight, else
 #  Get-VideoSourceInfo, else 'DVD'). The queue file is deleted BEFORE the renames. The notification text and the Complete job record (OutputFile)
 #  carry the final output path. Sample-only runs write to UpscaleQueueDir (never DestDir), so a sample
