@@ -753,11 +753,14 @@ Invoke-ArmWebRequest -Method <string> -Path <string> [-Query <hashtable>] [-Body
 ```
 wrm repair  [-Path <movies root>] [-Since <date>] [-Until <date>] [-RemoveOrphans] [-WhatIf]   # wraps tools/Repair-ArmJellyfinNames.ps1; -Path defaults to NasVideoPath
 wrm upscale <movie folder | movies root>... [-ContentType LiveAction|Animation] [-Force] [-WhatIf]
+wrm rip [<drive letter>] [-Drive <L>] [-DiscType Video|AudioCD]            # rip the disc now, bypassing detection
 wrm restart [-Force] [-WhatIf]                                               # Restart-WrmTask: stop+start wrm-watcher/-upscaler/-webui; throws if makemkvcon/freaccmd/robocopy/ffmpeg/video2x is running (Get-WrmBusyProcess) unless -Force; rows TaskName, Action (Restarted|WouldRestart|NotRegistered|Failed), Detail; exit 1 on Failed/NotRegistered
 wrm install-cli                                                              # adds bin\ to the user PATH
+Start-ArmManualRip -Config <hashtable> [-Drive <string>] [-DiscType Video|AudioCD] -> { DriveLetter, DiscType }
 Add-ArmUpscaleQueueFromLibrary -MovieDir <string[]> -Config <hashtable> [-ContentType] [-Force]
     -> rows { Folder, File, Action (Queued|WouldQueue|Skipped), Reason }
 ```
+`Start-ArmManualRip` (`wrm rip`): drive defaults to the first optical drive with media (Get-ArmDriveMediaLoaded); type defaults to Get-DiscType, but Data or None-with-media is ripped as Video (WARN) since the disc was not recognised; `-DiscType` forces. Dispatches through `Invoke-DiscMutexDispatch` (same single-flight mutex as the watcher; throws if a rip is in progress) and ignores the already-processed marker. Throws for a non-optical drive or no media.
 `Rename-ArmMainFeature -Label <L>` names the file `<folder> - <L>.mkv` (kept as-is when it already ends in `- <N>p`/`- DVD`).
 Invoke-VideoDispatch passes `Label` = probed height (`480p`; `DVD` if unknown) for DVDs, so the original is `<folder> - 480p.mkv` from the rip.
 `Add-ArmUpscaleQueueFromLibrary` queues the largest top-level .mkv (via `New-UpscaleQueueEntry`, ContentType from metadata.json unless overridden); skips folders with an upscale (`[AI upscale Np]` or `- Hp`, H>=720), a queue entry (.json/.awaiting-review/.failed), a probe failure, or height >= 720 (unless -Force).

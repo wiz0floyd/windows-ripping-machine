@@ -11,6 +11,10 @@
       wrm upscale <movie folder or movies root>... [-ContentType LiveAction|Animation] [-Force] [-WhatIf]
           Queue upscales of existing DVD rips (main feature under 720 lines high). Skips
           folders that already have an upscale or a queue entry.
+      wrm rip [<drive letter>] [-DiscType Video|AudioCD]
+          Rip the disc in a drive now, even if the watcher did not detect it (Data/unrecognised
+          discs are ripped as Video). Defaults to the first drive with a disc. Refuses if a rip
+          is already in progress.
       wrm restart [-Force] [-WhatIf]
           Restart the wrm-watcher, wrm-upscaler and wrm-webui scheduled tasks so they load
           the current code. Refuses while a rip or upscale is running unless -Force.
@@ -22,13 +26,16 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('repair', 'upscale', 'restart', 'install-cli', 'help')]
+    [ValidateSet('repair', 'upscale', 'rip', 'restart', 'install-cli', 'help')]
     [string] $Command = 'help',
 
     [Parameter(Position = 1, ValueFromRemainingArguments = $true)]
     [string[]] $Folder,
 
     [string] $Path,
+    [string] $Drive,
+    [ValidateSet('Video', 'AudioCD')]
+    [string] $DiscType,
     [string] $ConfigPath,
     [Nullable[datetime]] $Since,
     [Nullable[datetime]] $Until,
@@ -119,6 +126,66 @@ function Add-ArmUpscaleQueueFromLibrary {
     }
 }
 
+<#
+.SYNOPSIS
+    Rip the disc in a drive now, bypassing the watcher's disc-type detection.
+
+.DESCRIPTION
+    Uses the same single-flight dispatch as the watcher (Invoke-DiscMutexDispatch), so it
+    cannot overlap a rip in progress. When detection reports Data (e.g. VIDEO_TS not
+    visible) or None with media still loaded, the disc is treated as Video unless
+    -DiscType says otherwise. The already-processed marker is not consulted.
+
+.PARAMETER Drive
+    Drive letter ('F' or 'F:'). Default: the first optical drive with media.
+
+.PARAMETER DiscType
+    Force 'Video' or 'AudioCD'. Default: detected type, with Data/None-with-media -> Video.
+
+.OUTPUTS
+    [pscustomobject] DriveLetter, DiscType (what was dispatched).
+#>
+function Start-ArmManualRip {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory = $true)] [hashtable] $Config,
+        [string] $Drive,
+        [ValidateSet('Video', 'AudioCD')] [string] $DiscType
+    )
+
+    if ($Config.Simulate) {
+        $sim = Resolve-CurrentDisc -Config $Config
+        $letter = $sim.DriveLetter; $detected = $sim.DiscType; $mediaLoaded = $detected -ne 'None'
+    } elseif ($Drive) {
+        if ($Drive -notmatch '^([A-Za-z]):?\\?$') { throw "Invalid -Drive '$Drive'; use a drive letter such as F." }
+        $letter = [char]::ToUpper([char] $Matches[1])
+        if ($letter -notin (Get-OpticalDriveLetters)) { throw "$letter`: is not an optical drive." }
+        $detected = Get-DiscType -DriveLetter $letter
+        $mediaLoaded = (Get-ArmDriveMediaLoaded -DriveLetter $letter) -ne $false
+    } else {
+        $letter = Get-OpticalDriveLetters | Where-Object { (Get-ArmDriveMediaLoaded -DriveLetter $_) -eq $true } | Select-Object -First 1
+        if (-not $letter) { throw 'No optical drive with a disc loaded; pass -Drive <letter> to force one.' }
+        $detected = Get-DiscType -DriveLetter $letter
+        $mediaLoaded = $true
+    }
+    if (-not $mediaLoaded) { throw "No disc loaded in $letter`:." }
+
+    $type = $DiscType
+    if (-not $type) {
+        $type = if ($detected -in @('Video', 'AudioCD')) { $detected } else { 'Video' }
+        if ($type -ne $detected) {
+            Write-ArmLog -Level WARN -Message "Manual rip: $letter`: detected as $detected; ripping as Video." -Config $Config
+        }
+    }
+
+    Write-ArmLog -Level INFO -Message "Manual rip requested for $letter`: as $type." -Config $Config
+    if (-not (Invoke-DiscMutexDispatch -DriveLetter $letter -DiscType $type -Config $Config)) {
+        throw 'Another rip is already in progress.'
+    }
+    [pscustomobject]@{ DriveLetter = $letter; DiscType = $type }
+}
+
 # Tool processes that mean a rip or upscale is in flight (makemkvcon64 included by the regex).
 function Get-WrmBusyProcess {
     [CmdletBinding()]
@@ -186,10 +253,16 @@ if ($MyInvocation.InvocationName -ne '.') {
             if (@($rows | Where-Object Action -in 'Failed', 'NotRegistered').Count -gt 0) { exit 1 }
         }
         default {
-            $config = Get-ArmConfig -Path $ConfigPath
+            $config = Get-ArmConfig -Path $ConfigPath -Simulate:$Simulate
             if ($Simulate) { $config.Simulate = $true }
             $root = if ($Path) { $Path } else { [string] $config.NasVideoPath }
-            if ($Command -eq 'repair') {
+            if ($Command -eq 'rip') {
+                $d = if ($Drive) { $Drive } elseif (@($Folder).Count -gt 0) { @($Folder)[0] } else { $null }
+                $a = @{ Config = $config; Drive = $d }
+                if ($DiscType) { $a.DiscType = $DiscType }
+                $r = Start-ArmManualRip @a
+                Write-Host "Rip of $($r.DriveLetter): ($($r.DiscType)) finished; see the log or web UI for the result."
+            } elseif ($Command -eq 'repair') {
                 $a = @{ Path = $root; WhatIf = $WhatIfPreference }
                 if ($ConfigPath) { $a.ConfigPath = $ConfigPath }
                 if ($Simulate) { $a.Simulate = $true }

@@ -64,6 +64,51 @@ Describe 'Add-ArmUpscaleQueueFromLibrary' {
     }
 }
 
+Describe 'Start-ArmManualRip' {
+    BeforeEach {
+        $script:Config = @{ Simulate = $false; LogDir = Join-Path $TestDrive "logs-$(New-Guid)" }
+        $script:Detected = 'Data'
+        $script:Dispatch = $true
+        Mock Get-OpticalDriveLetters { [char[]]@('E', 'F') }
+        Mock Get-DiscType { $script:Detected }
+        Mock Get-ArmDriveMediaLoaded { [bool] ($DriveLetter -eq 'F') }
+        Mock Invoke-DiscMutexDispatch { $script:Dispatch }
+    }
+
+    It 'rips the first drive with media, treating an unrecognised (Data) disc as Video' {
+        $r = Start-ArmManualRip -Config $script:Config
+        $r.DriveLetter | Should -Be 'F'
+        $r.DiscType | Should -Be 'Video'
+        Should -Invoke Invoke-DiscMutexDispatch -Times 1 -ParameterFilter { $DriveLetter -eq 'F' -and $DiscType -eq 'Video' }
+    }
+
+    It 'keeps a detected AudioCD type and accepts "F:" for -Drive' {
+        $script:Detected = 'AudioCD'
+        (Start-ArmManualRip -Config $script:Config -Drive 'f:').DiscType | Should -Be 'AudioCD'
+    }
+
+    It 'honours -DiscType over detection' {
+        $script:Detected = 'Video'
+        (Start-ArmManualRip -Config $script:Config -Drive F -DiscType AudioCD).DiscType | Should -Be 'AudioCD'
+    }
+
+    It 'throws when no drive has a disc, the drive is not optical, or a rip is in progress' {
+        Mock Get-ArmDriveMediaLoaded { $false }
+        { Start-ArmManualRip -Config $script:Config } | Should -Throw '*No optical drive with a disc*'
+        { Start-ArmManualRip -Config $script:Config -Drive C } | Should -Throw '*not an optical drive*'
+        { Start-ArmManualRip -Config $script:Config -Drive E } | Should -Throw '*No disc loaded*'
+        Mock Get-ArmDriveMediaLoaded { $true }
+        $script:Dispatch = $false
+        { Start-ArmManualRip -Config $script:Config -Drive F } | Should -Throw '*already in progress*'
+    }
+
+    It 'uses the simulated disc under Simulate' {
+        $script:Config.Simulate = $true
+        Mock Resolve-CurrentDisc { [pscustomobject]@{ DriveLetter = [char] 'D'; DiscType = 'Video' } }
+        (Start-ArmManualRip -Config $script:Config).DriveLetter | Should -Be 'D'
+    }
+}
+
 Describe 'Restart-WrmTask' {
     BeforeEach {
         $script:Calls = [System.Collections.Generic.List[string]]::new()
