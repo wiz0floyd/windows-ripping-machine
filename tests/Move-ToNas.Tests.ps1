@@ -427,10 +427,20 @@ Describe 'Get-ArmNfoMovieName' {
         Get-ArmNfoMovieName -VideoFile $script:Vid | Should -Be 'Grease (1978)'
     }
 
-    It 'prefers the per-video .nfo over movie.nfo' {
-        Set-Content -LiteralPath (Join-Path $script:Dir 'movie.nfo') -Value '<movie><title>Other</title><year>2000</year></movie>'
-        Set-Content -LiteralPath (Join-Path $script:Dir 'b1_t00.nfo') -Value '<movie><title>Grease</title><year>1978</year></movie>'
+    It 'prefers movie.nfo over a per-video .nfo' {
+        Set-Content -LiteralPath (Join-Path $script:Dir 'movie.nfo') -Value '<movie><title>Grease</title><year>1978</year></movie>'
+        Set-Content -LiteralPath (Join-Path $script:Dir 'b1_t00.nfo') -Value '<movie><title>Grease - 480p</title><year>1978</year></movie>'
         Get-ArmNfoMovieName -VideoFile $script:Vid | Should -Be 'Grease (1978)'
+    }
+
+    It 'falls back to the per-video .nfo and strips a trailing version label' {
+        $nfo = Join-Path $script:Dir 'b1_t00.nfo'
+        Set-Content -LiteralPath $nfo -Value '<movie><title>Garden State (2004) - 480p</title><year>2004</year></movie>'
+        Get-ArmNfoMovieName -VideoFile $script:Vid | Should -Be 'Garden State (2004)'
+        Set-Content -LiteralPath $nfo -Value '<movie><title>Garden State - 480p</title><year>2004</year></movie>'
+        Get-ArmNfoMovieName -VideoFile $script:Vid | Should -Be 'Garden State (2004)'
+        Set-Content -LiteralPath $nfo -Value '<movie><title>Garden State - DVD</title><year>2004</year></movie>'
+        Get-ArmNfoMovieName -VideoFile $script:Vid | Should -Be 'Garden State (2004)'
     }
 
     It 'falls back to the premiered year, strips illegal characters, and does not double the year' {
