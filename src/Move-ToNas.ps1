@@ -344,6 +344,59 @@ function Rename-ArmMainFeature {
 
 <#
 .SYNOPSIS
+    'Title (Year)' from a Jellyfin/Kodi movie NFO next to a video file, or $null.
+
+.DESCRIPTION
+    Looks for '<video basename>.nfo' then 'movie.nfo' in the video's directory and reads
+    <title> plus <year> (or the year of <premiered>) from the <movie> root. Returns the
+    filename-safe 'Title (Year)' ('Title' when no year), or $null when there is no usable
+    NFO. Never throws.
+
+.PARAMETER VideoFile
+    Full path of the video the NFO describes.
+#>
+function Get-ArmNfoMovieName {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)] [string] $VideoFile
+    )
+
+    try {
+        $dir = Split-Path -Parent $VideoFile
+        $base = [System.IO.Path]::GetFileNameWithoutExtension($VideoFile)
+        foreach ($candidate in @("$base.nfo", 'movie.nfo')) {
+            $path = Join-Path $dir $candidate
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+            try {
+                $xml = [xml] (Get-Content -LiteralPath $path -Raw)
+            } catch {
+                continue
+            }
+            # SelectSingleNode returns $null for a missing child; property access on it throws under strict mode.
+            $text = {
+                param($name)
+                $node = $xml.SelectSingleNode("/movie/$name")
+                if ($node) { $node.InnerText.Trim() } else { '' }
+            }
+            $title = & $text 'title'
+            if (-not $title) { continue }
+            $year = & $text 'year'
+            if ($year -notmatch '^\d{4}$') {
+                $year = if ((& $text 'premiered') -match '^(\d{4})') { $Matches[1] } else { '' }
+            }
+            $name = if ($year -and $title -notmatch "\($year\)\s*$") { "$title ($year)" } else { $title }
+            $safe = ConvertTo-ArmSafeFileName -Name $name
+            if ($safe) { return $safe }
+        }
+    } catch {
+        $null = $_
+    }
+    return $null
+}
+
+<#
+.SYNOPSIS
     Rename a finished upscale and its source so Jellyfin groups them as two
     versions of one movie and plays the upscale by default.
 

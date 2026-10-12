@@ -414,6 +414,41 @@ Describe 'Rename-ArmMainFeature -Label' {
     }
 }
 
+Describe 'Get-ArmNfoMovieName' {
+    BeforeEach {
+        $script:Dir = Join-Path $TestDrive "nfo-$(New-Guid)"
+        $null = New-Item -ItemType Directory -Path $script:Dir -Force
+        $script:Vid = Join-Path $script:Dir 'b1_t00.mkv'
+        Set-Content -LiteralPath $script:Vid -Value 'v'
+    }
+
+    It 'reads title and year from movie.nfo' {
+        Set-Content -LiteralPath (Join-Path $script:Dir 'movie.nfo') -Value '<movie><title>Grease</title><year>1978</year></movie>'
+        Get-ArmNfoMovieName -VideoFile $script:Vid | Should -Be 'Grease (1978)'
+    }
+
+    It 'prefers the per-video .nfo over movie.nfo' {
+        Set-Content -LiteralPath (Join-Path $script:Dir 'movie.nfo') -Value '<movie><title>Other</title><year>2000</year></movie>'
+        Set-Content -LiteralPath (Join-Path $script:Dir 'b1_t00.nfo') -Value '<movie><title>Grease</title><year>1978</year></movie>'
+        Get-ArmNfoMovieName -VideoFile $script:Vid | Should -Be 'Grease (1978)'
+    }
+
+    It 'falls back to the premiered year, strips illegal characters, and does not double the year' {
+        Set-Content -LiteralPath (Join-Path $script:Dir 'movie.nfo') -Value '<movie><title>Who: Framed?</title><premiered>1988-06-22</premiered></movie>'
+        Get-ArmNfoMovieName -VideoFile $script:Vid | Should -Be 'Who Framed (1988)'
+        Set-Content -LiteralPath (Join-Path $script:Dir 'movie.nfo') -Value '<movie><title>Grease (1978)</title><year>1978</year></movie>'
+        Get-ArmNfoMovieName -VideoFile $script:Vid | Should -Be 'Grease (1978)'
+    }
+
+    It 'returns $null without an NFO, with malformed XML, or without a title' {
+        Get-ArmNfoMovieName -VideoFile $script:Vid | Should -BeNullOrEmpty
+        Set-Content -LiteralPath (Join-Path $script:Dir 'movie.nfo') -Value '<movie><title>oops'
+        Get-ArmNfoMovieName -VideoFile $script:Vid | Should -BeNullOrEmpty
+        Set-Content -LiteralPath (Join-Path $script:Dir 'movie.nfo') -Value '<movie><year>1978</year></movie>'
+        Get-ArmNfoMovieName -VideoFile $script:Vid | Should -BeNullOrEmpty
+    }
+}
+
 Describe 'Rename-ArmUpscaleVersions' {
     BeforeEach {
         $script:Dir = Join-Path $TestDrive "nas-$(New-Guid)" 'Grease (1978)'

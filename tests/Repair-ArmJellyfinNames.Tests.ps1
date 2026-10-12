@@ -199,3 +199,126 @@ Describe 'Repair-ArmJellyfinNames' {
         @($rows | Where-Object Action -eq 'Renamed').Count | Should -Be 0
     }
 }
+
+Describe 'Repair-ArmJellyfinNames -RenameFolders' {
+    BeforeEach {
+        $script:Root = Join-Path $TestDrive (New-Guid)
+        $null = New-Item -ItemType Directory -Path $script:Root
+        $script:Queue = Join-Path $TestDrive "queue-$(New-Guid)"
+        $null = New-Item -ItemType Directory -Path $script:Queue
+        $script:Config = @{
+            Simulate        = $true
+            LogDir          = Join-Path $TestDrive "logs-$(New-Guid)"
+            StateDir        = Join-Path $TestDrive "state-$(New-Guid)"
+            UpscaleQueueDir = $script:Queue
+        }
+        Mock Get-VideoSourceInfo { [pscustomobject]@{ Success = $true; Height = 480 } }
+        $script:Nfo = '<movie><title>Grease</title><year>1978</year></movie>'
+    }
+
+    It 'renames the folder, the files and sidecars carrying the old name, and keeps movie.nfo' {
+        $dir = New-MovieDir 'b1' @{
+            'b1.mkv' = 'raw'; 'b1.nfo' = $script:Nfo; 'b1-poster.jpg' = 'p'; 'b1.trickplay/320/0.jpg' = 't'
+            'movie.nfo' = 'keep'; 'extras/e.mkv' = 'x'
+        }
+        $rows = @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config -RenameFolders)
+        $rows[0].Action | Should -Be 'FolderRenamed'
+        $rows[0].Folder | Should -Be 'b1'
+        $rows[0].NewName | Should -Be 'Grease (1978)'
+        Test-Path -LiteralPath $dir | Should -BeFalse
+        $new = Join-Path $script:Root 'Grease (1978)'
+        Get-Names $new | Should -Be @('Grease (1978)-poster.jpg', 'Grease (1978).mkv', 'Grease (1978).nfo', 'movie.nfo')
+        Test-Path -LiteralPath (Join-Path $new 'Grease (1978).trickplay/320/0.jpg') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $new 'extras/e.mkv') | Should -BeTrue
+    }
+
+    It 'changes nothing with -WhatIf and reports WouldRenameFolder' {
+        $dir = New-MovieDir 'b1' @{ 'b1.mkv' = 'raw'; 'b1.nfo' = $script:Nfo }
+        $rows = @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config -RenameFolders -WhatIf)
+        @($rows | Where-Object Action -eq 'WouldRenameFolder').Count | Should -Be 1
+        Get-Names $dir | Should -Be @('b1.mkv', 'b1.nfo')
+    }
+
+    It 'is idempotent' {
+        $null = New-MovieDir 'b1' @{ 'b1.mkv' = 'raw'; 'b1.nfo' = $script:Nfo }
+        $null = Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config -RenameFolders
+        @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config -RenameFolders).Count | Should -Be 0
+    }
+
+    It 'leaves folders without an NFO alone' {
+        $dir = New-MovieDir 'b1' @{ 'b1.mkv' = 'raw' }
+        @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config -RenameFolders -WhatIf).Count | Should -Be 0
+        Test-Path -LiteralPath $dir | Should -BeTrue
+    }
+
+    It 'skips an NFO without a year' {
+        $dir = New-MovieDir 'b1' @{ 'b1.mkv' = 'raw'; 'b1.nfo' = '<movie><title>Grease</title></movie>' }
+        $rows = @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config -RenameFolders)
+        $rows[0].Action | Should -Be 'Skipped'
+        $rows[0].Reason | Should -Be 'NFO has no year'
+        Test-Path -LiteralPath $dir | Should -BeTrue
+    }
+
+    It 'skips when the target folder already exists' {
+        $null = New-MovieDir 'b1' @{ 'b1.mkv' = 'raw'; 'b1.nfo' = $script:Nfo }
+        $null = New-MovieDir 'Grease (1978)' @{ 'Grease (1978).mkv' = 'other' }
+        $rows = @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config -RenameFolders)
+        ($rows | Where-Object Folder -eq 'b1').Reason | Should -Be 'target folder already exists'
+        Test-Path -LiteralPath (Join-Path $script:Root 'b1') | Should -BeTrue
+    }
+
+    It 'skips when a planned file name already exists' {
+        $dir = New-MovieDir 'b1' @{ 'b1.mkv' = 'raw-raw-raw-raw'; 'b1.nfo' = $script:Nfo; 'b1 - 480p.mkv' = 'v'; 'Grease (1978) - 480p.mkv' = 'sq' }
+        $rows = @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config -RenameFolders)
+        ($rows | Where-Object Folder -eq 'b1' | Select-Object -First 1).Reason | Should -BeLike 'target name already exists*'
+        Test-Path -LiteralPath $dir | Should -BeTrue
+    }
+
+    It 'aborts the whole run while a queue entry is pending, and -Force skips only the folder it points into' {
+        $a = New-MovieDir 'b1' @{ 'b1.mkv' = 'raw'; 'b1.nfo' = $script:Nfo }
+        $b = New-MovieDir 'b2' @{ 'b2.mkv' = 'raw'; 'b2.nfo' = '<movie><title>Alien</title><year>1979</year></movie>' }
+        ([ordered]@{ Source = (Join-Path $a 'b1.mkv'); DestDir = $a } | ConvertTo-Json) | Set-Content -LiteralPath (Join-Path $script:Queue 'q.json')
+
+        $rows = @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config -RenameFolders)
+        $rows.Count | Should -Be 1
+        $rows[0].Action | Should -Be 'Skipped'
+        $rows[0].Reason | Should -BeLike 'folder rename aborted*'
+        Test-Path -LiteralPath $a | Should -BeTrue
+        Test-Path -LiteralPath $b | Should -BeTrue
+
+        $rows = @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config -RenameFolders -Force)
+        ($rows | Where-Object Folder -eq 'b1').Reason | Should -BeLike 'queued for upscale*'
+        Test-Path -LiteralPath $a | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $script:Root 'Alien (1979)') | Should -BeTrue
+    }
+
+    It 'aborts while an upscale job is running' {
+        $dir = New-MovieDir 'b1' @{ 'b1.mkv' = 'raw'; 'b1.nfo' = $script:Nfo }
+        $null = New-ArmJob -Kind Upscale -Properties @{ State = 'Upscaling'; Title = 'x' } -Config $script:Config
+        $rows = @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config -RenameFolders)
+        $rows[0].Reason | Should -BeLike '*1 upscale job(s) running*'
+        Test-Path -LiteralPath $dir | Should -BeTrue
+    }
+
+    It 'rolls back renamed files when a later rename fails' {
+        # 'b1.zz' sorts after the other items, so the earlier renames succeed before this one fails.
+        $dir = New-MovieDir 'b1' @{ 'b1.mkv' = 'raw'; 'b1.nfo' = $script:Nfo; 'b1.zz' = 'locked' }
+        $lock = [System.IO.File]::Open((Join-Path $dir 'b1.zz'), 'Open', 'Read', 'None')
+        try {
+            $rows = @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config -RenameFolders)
+        } finally {
+            $lock.Dispose()
+        }
+        $rows[0].Action | Should -Be 'Skipped'
+        $rows[0].Reason | Should -BeLike 'folder rename failed, rolled back*'
+        Get-Names $dir | Should -Be @('b1.mkv', 'b1.nfo', 'b1.zz')
+    }
+
+    It 'fixes a case-only difference' {
+        $null = New-MovieDir 'grease (1978)' @{ 'grease (1978).mkv' = 'raw'; 'grease (1978).nfo' = $script:Nfo }
+        $rows = @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config -RenameFolders)
+        $rows[0].Action | Should -Be 'FolderRenamed'
+        @(Get-ChildItem -LiteralPath $script:Root -Directory).Name | Should -BeExactly @('Grease (1978)')
+        Get-Names (Join-Path $script:Root 'Grease (1978)') | Should -BeExactly @('Grease (1978).mkv', 'Grease (1978).nfo')
+    }
+}

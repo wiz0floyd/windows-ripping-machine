@@ -327,6 +327,9 @@ Rename-ArmMainFeature -Dir <string> -Config <hashtable> [-MainFeature <string>] 
 # The queue entry (DVD+UpscaleDvds) points at the renamed file, not at the largest file in DestDir.
 # No-op when the name already matches; if another file already has the target name,
 # WARN and keep the original name. extras/ untouched. Never throws.
+Get-ArmNfoMovieName -VideoFile <string> -> [string] or $null
+#  'Title (Year)' (filename-safe) from '<video basename>.nfo' else 'movie.nfo' beside the video
+#  (Jellyfin/Kodi <movie><title>, <year> or <premiered>); $null when no usable NFO. Never throws.
 Rename-ArmUpscaleVersions -FolderName <string> -UpscaledFile <string> -SourceFile <string>
                           [-SourceHeight <int>] -Config <hashtable> -> [pscustomobject]
 #  { Success, OutputFile, SourceFile, OutputRenamed, SourceRenamed, Error } (final paths).
@@ -343,7 +346,7 @@ Rename-ArmUpscaleVersions -FolderName <string> -UpscaledFile <string> -SourceFil
 #  dir is preserved and the caller (DiscWatcher.ps1) logs/notifies for manual
 #  re-trigger.
 
-# tools/Repair-ArmJellyfinNames.ps1 -Path <movies root> [-ConfigPath] [-Simulate] [-Since <date>] [-Until <date>] [-RemoveOrphans] [-WhatIf]
+# tools/Repair-ArmJellyfinNames.ps1 -Path <movies root> [-ConfigPath] [-Simulate] [-Since <date>] [-Until <date>] [-RemoveOrphans] [-RenameFolders [-Force]] [-WhatIf]
 #  One-off repair of existing libraries (SupportsShouldProcess; Repair-ArmJellyfinNames function returns
 #  rows Folder, File, Action Renamed|WouldRename|Moved|WouldMove|Skipped, NewName, Reason). Per movie
 #  folder, top-level .mkv only; the largest raw file is the main feature and every other raw file that
@@ -575,7 +578,7 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #  sample path, rename queue file → .awaiting-review (user renames back to .json
 #  after approving; document in README). Else full run → move result to DestDir,
 #  notify, delete queue file. Failures → .failed + Error notification.
-#  After a successful full run the worker calls Rename-ArmUpscaleVersions with the leaf of DestDir
+#  After a successful full run the worker calls Rename-ArmUpscaleVersions with the NFO 'Title (Year)' (Get-ArmNfoMovieName) when the source has one, else the leaf of DestDir
 #  (Jellyfin version names; source height from the Invoke-Upscale result's SourceHeight, else
 #  Get-VideoSourceInfo, else 'DVD'). The queue file is deleted BEFORE the renames. The notification text and the Complete job record (OutputFile)
 #  carry the final output path. Sample-only runs write to UpscaleQueueDir (never DestDir), so a sample
@@ -751,7 +754,7 @@ Invoke-ArmWebRequest -Method <string> -Path <string> [-Query <hashtable>] [-Body
 ## CLI: `wrm` (src/wrm.ps1, bin/wrm.cmd)
 
 ```
-wrm repair  [-Path <movies root>] [-Since <date>] [-Until <date>] [-RemoveOrphans] [-WhatIf]   # wraps tools/Repair-ArmJellyfinNames.ps1; -Path defaults to NasVideoPath
+wrm repair  [-Path <movies root>] [-Since <date>] [-Until <date>] [-RemoveOrphans] [-RenameFolders [-Force]] [-WhatIf]   # wraps tools/Repair-ArmJellyfinNames.ps1; -Path defaults to NasVideoPath
 wrm upscale <movie folder | movies root>... [-ContentType LiveAction|Animation] [-Force] [-WhatIf]
 wrm rip [<drive letter>] [-Drive <L>] [-DiscType Video|AudioCD]            # rip the disc now, bypassing detection
 wrm restart [-Force] [-WhatIf]                                               # Restart-WrmTask: stop+start wrm-watcher/-upscaler/-webui; throws if makemkvcon/freaccmd/robocopy/ffmpeg/video2x is running (Get-WrmBusyProcess) unless -Force; rows TaskName, Action (Restarted|WouldRestart|NotRegistered|Failed), Detail; exit 1 on Failed/NotRegistered
@@ -765,3 +768,4 @@ Add-ArmUpscaleQueueFromLibrary -MovieDir <string[]> -Config <hashtable> [-Conten
 Invoke-VideoDispatch passes `Label` = probed height (`480p`; `DVD` if unknown) for DVDs, so the original is `<folder> - 480p.mkv` from the rip.
 `Add-ArmUpscaleQueueFromLibrary` queues the largest top-level .mkv (via `New-UpscaleQueueEntry`, ContentType from metadata.json unless overridden); skips folders with an upscale (`[AI upscale Np]` or `- Hp`, H>=720), a queue entry (.json/.awaiting-review/.failed), a probe failure, or height >= 720 (unless -Force).
 `-RemoveOrphans` (opt-in, deletes): after the renames, removes top-level Jellyfin sidecars (`<stem>.nfo` except movie.nfo, `<stem>-poster|backdrop|landscape|logo|banner|thumb|clearlogo|clearart|fanart|disc.<img>`, `<stem>.trickplay\`) whose `<stem>` is not the base name of a video in the folder, using post-rename names (so `-WhatIf` previews the end state). Skips a folder with any Skipped row or no video. Rows: Removed | WouldRemove.
+`-RenameFolders` (opt-in, runs first; full design in docs/specs/repair-folder-names.md): renames a movie folder to the Jellyfin NFO `Title (Year)` (`Get-ArmNfoMovieName` of its largest non-upscale .mkv; `<file>.nfo` then `movie.nfo`) when it differs, together with the top-level files/sidecars/`.trickplay` dirs named `<oldFolder><sep>...` (`movie.nfo` and `extras/` untouched), then the normal file repair runs on the new names. Files first, folder last, rolled back on failure; a case-only change goes through a temp name. No NFO -> untouched (no row); NFO without a year, a queue entry (.json/.awaiting-review/.failed) pointing into the folder, an existing target folder or a name clash -> Skipped. The whole run aborts with one Skipped row (Folder empty, nothing changed) while UpscaleQueueDir holds .json/.awaiting-review entries or an Upscale job is Sampling/Upscaling, unless `-Force`. Rows: FolderRenamed | WouldRenameFolder (NewName = new folder). Job records' DestDir/OutputFile are not rewritten. Jellyfin sees renamed folders as new items: rescan afterwards.

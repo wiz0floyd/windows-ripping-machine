@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Subcommands:
-      wrm repair  [-Path <movies root>] [-Since <date>] [-Until <date>] [-RemoveOrphans] [-WhatIf]
+      wrm repair  [-Path <movies root>] [-Since <date>] [-Until <date>] [-RemoveOrphans] [-RenameFolders [-Force]] [-WhatIf]
           Move extras to extras\ and name files so Jellyfin shows the original and the
           upscale as versions of one movie; -RemoveOrphans also deletes the stale Jellyfin
           sidecars (.nfo, posters, .trickplay) left under the old names (tools\Repair-ArmJellyfinNames.ps1).
@@ -43,6 +43,7 @@ param(
     [string] $ContentType,
     [switch] $Force,
     [switch] $RemoveOrphans,
+    [switch] $RenameFolders,
     [switch] $Simulate
 )
 
@@ -269,6 +270,8 @@ if ($MyInvocation.InvocationName -ne '.') {
                 if ($Since) { $a.Since = $Since }
                 if ($Until) { $a.Until = $Until }
                 if ($RemoveOrphans) { $a.RemoveOrphans = $true }
+                if ($RenameFolders) { $a.RenameFolders = $true }
+                if ($Force) { $a.Force = $true }
                 & (Join-Path $script:WrmRoot 'tools' 'Repair-ArmJellyfinNames.ps1') @a
             } else {
                 $dirs = foreach ($f in @($Folder)) {
