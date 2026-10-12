@@ -581,8 +581,9 @@ function Get-UpscaleColorInput {
       Upscale                  engine parameters: Model/Scale (realesrgan), Shader
                                (anime4k), Runner/ModelBase/Ffmpeg/Ffprobe/RequiredFiles
                                (ncnn engines: openproteus, liveaction)
-      Encode                   @{ Codec; Crf; Preset; AudioCodec; ResetSar }
-                               (Preset from UpscalePreset, default 'slow')
+      Encode                   @{ Codec; Crf; Preset; Qp; AmfQuality; PixFmt; AudioCodec; ResetSar }
+                               (Codec from UpscaleEncoder, default 'libx265'; Preset from
+                               UpscalePreset, default 'slow'; Qp/AmfQuality/PixFmt apply to hevc_amf)
       Colour                   @{ Space; Primaries; Transfer; Range; Action } - the source's
                                colour tags; Action is 'convert-to-bt709' or 'tag-only'.
       ColorInput / ColorInputSpec / ColorConvert   from Get-UpscaleColorInput: the engine output's
@@ -730,6 +731,12 @@ function Get-UpscalePlan {
         $planError = "Unknown upscale engine '$engine' for ContentType $ContentType (expected openproteus, liveaction, anime4k, or realesrgan)"
     }
 
+    # Final encoder: libx265 (CPU, CRF + preset) or hevc_amf (GPU, CQP; ~8x faster, bigger files).
+    $encoder = Get-UpscaleSetting -Config $Config -Name 'UpscaleEncoder' -Default 'libx265'
+    if ($encoder -notin @('libx265', 'hevc_amf') -and -not $planError) {
+        $planError = "Unknown UpscaleEncoder '$encoder' (expected libx265 or hevc_amf)"
+    }
+
     # Colour policy (#29): see Get-UpscaleColorInput.
     $color = Get-UpscaleColorInput -SourceInfo $SourceInfo -Engine $engine
     foreach ($w in $color.Warnings) { $warnings.Add($w) }
@@ -750,9 +757,12 @@ function Get-UpscalePlan {
         Target         = $target
         Upscale        = $upscale
         Encode         = [ordered]@{
-            Codec      = 'libx265'
+            Codec      = $encoder
             Crf        = $Config.UpscaleCrf
             Preset     = Get-UpscaleSetting -Config $Config -Name 'UpscalePreset' -Default 'slow'
+            Qp         = Get-UpscaleSetting -Config $Config -Name 'UpscaleQp' -Default 18
+            AmfQuality = Get-UpscaleSetting -Config $Config -Name 'UpscaleAmfQuality' -Default 'quality'
+            PixFmt     = Get-UpscaleSetting -Config $Config -Name 'UpscalePixFmt' -Default 'p010le'
             AudioCodec = 'copy'
             # Upscaled to the exact display size; drop the source's anamorphic SAR
             # (video2x carries it through) so players don't stretch the frame twice.
@@ -899,10 +909,24 @@ function Get-UpscaleEncodeArgumentList {
     }
     # Always tag the output so libx265 writes BT.709 into the HEVC VUI.
     $muxArgs += @('-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-color_range', 'tv')
+    if ($Plan.Encode.Codec -eq 'hevc_amf') {
+        # CQP rate control: AMF's VBR modes failed in the 2026-10 spike.
+        $muxArgs += @(
+            '-c:v', 'hevc_amf',
+            '-quality', "$($Plan.Encode.AmfQuality)",
+            '-rc', 'cqp',
+            '-qp_i', "$($Plan.Encode.Qp)",
+            '-qp_p', "$($Plan.Encode.Qp)",
+            '-pix_fmt', "$($Plan.Encode.PixFmt)"
+        )
+    } else {
+        $muxArgs += @(
+            '-c:v', $Plan.Encode.Codec,
+            '-crf', "$($Plan.Encode.Crf)",
+            '-preset', $Plan.Encode.Preset
+        )
+    }
     $muxArgs += @(
-        '-c:v', $Plan.Encode.Codec,
-        '-crf', "$($Plan.Encode.Crf)",
-        '-preset', $Plan.Encode.Preset,
         '-c:a', $Plan.Encode.AudioCodec,
         '-shortest',
         $OutputFile
@@ -1008,7 +1032,8 @@ function Write-ArmUpscaleProgress {
            realesrgan  -> legacy video2x realesrgan with UpscaleModel/UpscaleScale.
          Output width = round(UpscaleHeight x source DAR / 2) * 2, so anamorphic DVDs
          (e.g. 720x480 SAR 853:720) come out at the right aspect.
-      4. ffmpeg mux: re-encode video libx265 -crf $Config.UpscaleCrf -preset $Config.UpscalePreset (default slow),
+      4. ffmpeg mux: re-encode video with $Config.UpscaleEncoder (libx265 -crf $Config.UpscaleCrf
+         -preset $Config.UpscalePreset (default slow), or hevc_amf -rc cqp -qp $Config.UpscaleQp),
          copy the original file's audio stream(s) untouched. -SampleOnly also trims
          the audio input to the same 10:00-12:00 window as the (already-trimmed)
          video intermediate, plus -shortest, so the sample's audio matches its video

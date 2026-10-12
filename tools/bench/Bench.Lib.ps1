@@ -4,10 +4,9 @@
 
 .DESCRIPTION
     The harness only calls existing src code: Get-UpscalePlan and the Get-Upscale*ArgumentList
-    builders from src/Upscale-Video.ps1, and Invoke-ArmTool for every external tool. The one
-    harness-owned encode builder (Get-BenchEncodeArgumentList, hevc_amf only) exists because
-    the shipping encode builder only emits libx265. Everything here is pure except
-    Invoke-BenchVariantSample, which runs the tools.
+    builders from src/Upscale-Video.ps1, and Invoke-ArmTool for every external tool. Both
+    encoders (libx265, hevc_amf) go through the shipping Get-UpscaleEncodeArgumentList.
+    Everything here is pure except Invoke-BenchVariantSample, which runs the tools.
 #>
 
 . (Join-Path $PSScriptRoot '..' '..' 'src' 'Common.ps1')
@@ -219,9 +218,8 @@ function Get-BenchCutArgumentList {
 .SYNOPSIS
     Encode arguments for one variant, from the upscaled intermediate. Pure.
 .DESCRIPTION
-    libx265: sets the plan's Encode fields and calls the shipping Get-UpscaleEncodeArgumentList.
-    hevc_amf: harness-owned (the shipping builder is libx265-only); mirrors its mapping,
-    SAR reset and audio copy, with CQP rate control and the variant's pixel format.
+    Sets the plan's Encode fields from the variant (libx265: Crf/Preset; hevc_amf: Qp/Quality/
+    PixFmt) and calls the shipping Get-UpscaleEncodeArgumentList.
 #>
 function Get-BenchEncodeArgumentList {
     [CmdletBinding()]
@@ -239,23 +237,11 @@ function Get-BenchEncodeArgumentList {
         $Plan.Encode['Preset'] = "$($encode['Preset'])"
         return Get-UpscaleEncodeArgumentList -Plan $Plan -UpscaledFile $UpscaledFile -OutputFile $OutputFile
     }
-    $argList = @('-y', '-i', $UpscaledFile, '-i', $Plan.InputFile, '-map', '0:v:0', '-map', '1:a')
-    $vfParts = @()
-    if ($Plan.Encode['ResetSar']) { $vfParts += 'setsar=1' }
-    if ($Plan.ColorConvert) { $vfParts += "colorspace=all=bt709:$($Plan.ColorInputSpec):irange=tv:range=tv:dither=fsb" }
-    if ($vfParts.Count -gt 0) { $argList += @('-vf', ($vfParts -join ',')) }
-    $argList += @(
-        '-c:v', 'hevc_amf',
-        '-quality', "$($encode['Quality'])",
-        '-rc', 'cqp',
-        '-qp_i', "$($encode['Qp'])",
-        '-qp_p', "$($encode['Qp'])",
-        '-pix_fmt', "$($encode['PixFmt'])",
-        '-c:a', 'copy',
-        '-shortest',
-        $OutputFile
-    )
-    return [string[]]$argList
+    $Plan.Encode['Codec'] = 'hevc_amf'
+    $Plan.Encode['Qp'] = "$($encode['Qp'])"
+    $Plan.Encode['AmfQuality'] = "$($encode['Quality'])"
+    $Plan.Encode['PixFmt'] = "$($encode['PixFmt'])"
+    return Get-UpscaleEncodeArgumentList -Plan $Plan -UpscaledFile $UpscaledFile -OutputFile $OutputFile
 }
 
 <#
