@@ -85,7 +85,7 @@ wrm/
     UpscaleDvds       = $false
     AutoUpscale       = $false         # $false => stop after -SampleOnly clip, notify for review
     UpscaleActiveHours= @('23:00','08:00')
-    UpscaleLiveAction = 'openproteus'  # openproteus | liveaction | anime4k | realesrgan (legacy)
+    UpscaleLiveAction = 'openproteus'  # any tools/models/registry.psd1 engine (openproteus | liveaction) | anime4k | realesrgan (legacy)
     UpscaleAnimation  = 'anime4k'      # engine when the queue item has ContentType='Animation' (set from the TMDb Animation genre; no config key)
     UpscaleHeight     = 1080           # output height; width = round(height * source DAR / 2) * 2
     UpscaleShader     = 'anime4k-v4-a+a'   # libplacebo shader for the anime4k engine
@@ -436,20 +436,38 @@ Get-UpscalePlan -InputFile <string> -SourceInfo <pscustomobject> -InterlaceType 
 #                       #   Telecined or when unmeasured (then Warnings has the WARN)
 #     Engine; EngineTool; EngineLabel   # EngineTool = 'ncnn' | 'video2x'
 #     Target            # @{ Width; Height; DisplayAspect }, Width = 2*round(Height*DAR/2); $null for realesrgan
-#     Upscale           # engine params: Model/Scale | Shader | Runner/ModelBase/Ffmpeg/Ffprobe/RequiredFiles
+#     Upscale           # engine params: Model/Scale (realesrgan) | Shader (anime4k) |
+#                       #   registry engines: Backend/Runner/Scale/ModelFiles/Ffmpeg/Ffprobe/RequiredFiles
+#                       #   (+ ModelBase for ncnn; Scale = the registry entry's, passed as --scale)
 #     Encode            # @{ Codec=UpscaleEncoder (default 'libx265'); Crf; Preset=UpscalePreset (default 'slow'); Qp; AmfQuality; PixFmt; AudioCodec='copy'; ResetSar }
 #     Colour            # @{ Space; Primaries; Transfer; Range; Action } - source tags; Action = 'convert-to-bt709' | 'tag-only'
-#     ColorInput / ColorInputSpec / ColorConvert   # from the pure Get-UpscaleColorInput -SourceInfo -Engine (#29):
+#     ColorInput / ColorInputSpec / ColorConvert   # from the pure Get-UpscaleColorInput -SourceInfo -Engine [-Backend] (#29):
 #                       #   color_space smpte170m/bt470bg = BT.601, 525 vs 625 from color_primaries (else the space);
 #                       #   bt709 = BT.709. Untagged: height < 720 is BT.601 (<= 500 -> 525, else 625), >= 720 BT.709.
 #                       #   Other tags (bt470m, smpte240m, bt2020nc...) add a plan Warning, then the height rule.
 #                       #   ColorInput 'bt601-6-525'|'bt601-6-625'|'bt601-matrix-bt709-primaries'|$null;
 #                       #   ColorInputSpec = colorspace input options ('iall=bt601-6-525'), $null = tag only.
-#                       #   BT.709 sources are tag only, EXCEPT the ncnn engines openproteus/liveaction (ncnn_upscale.py's swscale default re-encodes
-#                       #   to a BT.601 matrix): ispace=bt470bg:iprimaries=bt709:itrc=bt709. ColorConvert = ColorInputSpec set.
+#                       #   BT.709 sources are tag only, EXCEPT registry (backend) engines such as openproteus/liveaction
+#                       #   (the runner's swscale default re-encodes to a BT.601 matrix): ispace=bt470bg:iprimaries=bt709:itrc=bt709.
+#                       #   -Backend defaults to the engine's registry Backend. ColorConvert = ColorInputSpec set.
 #     Source; OutputFileName; Warnings; Error }
-#  Error is non-$null for an unknown engine or the realesrgan-plus x4-only mismatch;
-#  the plan never throws, Invoke-Upscale fails fast on it (before the slow preprocess).
+#  Error is non-$null for an unknown engine (lists the registry keys + anime4k, realesrgan)
+#  or the realesrgan-plus x4-only mismatch; the plan never throws, Invoke-Upscale fails
+#  fast on it (before the slow preprocess). Optional -ModelRegistry (the
+#  Get-ArmUpscaleModelRegistry result) skips the registry read; its Warnings are added to
+#  the plan's Warnings.
+
+Get-ArmUpscaleModelRegistry [-Config <hashtable>] [-Path <string>] -> [pscustomobject]
+#  @{ Models = [ordered] engine -> entry; Warnings = [string[]] }. Never throws.
+#  Reads tools/models/registry.psd1 (default -Path), then, when -Config is given,
+#  <NcnnModelDir>\registry.local.psd1 (optional; its entries add to or replace repo ones).
+#  Entry = @{ Backend; Files = @(...); Scale = <int >= 1>; License; Bundled = @{ file = sha256 }
+#  | Source = @{ Url; Sha256; Archive = 'tar.gz' } }. Backends ($script:ArmUpscaleBackends):
+#  ncnn -> Invoke-ArmTool 'ncnn', tools/ncnn_upscale.py, files in NcnnModelDir, exactly one
+#  .param + one .bin with the same base name. Invalid entries (built-in name anime4k/realesrgan,
+#  unknown Backend, empty Files, bad Scale, bad ncnn pair) and unreadable files are skipped with
+#  a Warning; a missing repo file is a Warning, a missing local file is silent.
+#  Adding a model on an existing backend = one registry entry + its files (tools/models/README.md).
 #  Pure argument builders turn a plan into the stage command lines:
 #    Get-UpscalePreprocessArgumentList -Plan -OutputFile            (ffmpeg -> ffv1 intermediate)
 #    Get-UpscaleEngineArgumentList -Plan -InputFile -OutputFile     (Invoke-ArmTool -Name $Plan.EngineTool)
@@ -508,7 +526,8 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #                       `progress=continue|end` on stdout.
 #                       model NcnnModelDir\openproteus-x2.{param,bin}
 #        liveaction  -> identical runner call with NcnnModelDir\liveaction-x2.{param,bin}
-#                       (2xLiveActionV1_SPAN; engine->model map $script:ArmNcnnEngineModels)
+#                       (2xLiveActionV1_SPAN). Any registry engine runs the same way: engine ->
+#                       Backend/Files/Scale from Get-ArmUpscaleModelRegistry, --scale = entry Scale
 #        anime4k     -> video2x -p libplacebo --libplacebo-shader $UpscaleShader -w W -h H
 #        realesrgan  -> legacy video2x realesrgan (model/scale from config)
 #  (d) ffmpeg mux: $UpscaleEncoder - libx265 -crf $UpscaleCrf -preset $UpscalePreset (default slow),
@@ -692,9 +711,13 @@ Invoke-ArmWebRequest -Method <string> -Path <string> [-Query <hashtable>] [-Body
 #  Idempotent. winget install GuinpinSoft.MakeMKV, enzo1982.freac, Gyan.FFmpeg
 #  (skip present); print manual step for Video2X (GitHub release, needed for the
 #  anime4k/legacy engines). Install-NcnnUpscaler: venv at NcnnPath + pinned
-#  tools/requirements-ncnn.txt + SHA256-verified OpenProteus model into NcnnModelDir,
-#  plus Install-ArmBundledNcnnModel: the repo-bundled tools/models/liveaction-x2.{param,bin}
-#  copied into NcnnModelDir after a pinned-SHA256 check (warn-only on failure). Create dirs (StagingDir, UpscaleQueueDir, LogDir, StateDir).
+#  tools/requirements-ncnn.txt, then Install-ArmRegistryModels -Backend ncnn -ModelDir
+#  [-RegistryPath tools/models/registry.psd1] [-BundledModelDir tools/models]: for every ncnn
+#  entry, Install-ArmRegistryModel -Name -Entry -ModelDir -BundledModelDir -> [bool] skips
+#  when all Files exist, else Bundled = pinned-SHA256 check then copy from tools/models,
+#  Source = download Url, check Sha256, extract tar.gz (each file = the first member with
+#  the same extension) or copy a single-file download. Warn-only on any failure (no throw,
+#  nothing partial installed). Create dirs (StagingDir, UpscaleQueueDir, LogDir, StateDir).
 #  Prompt for NAS paths/TMDb key/HA URL → write config/config.psd1 (skip prompts
 #  with -NonInteractive; copies example). Register hidden Scheduled Tasks
 #  'wrm-watcher', 'wrm-upscaler' and 'wrm-webui' (at logon, current user,

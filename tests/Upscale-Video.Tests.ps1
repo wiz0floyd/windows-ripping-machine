@@ -1010,6 +1010,34 @@ Describe 'Get-UpscalePlan' {
         $p = New-TestPlan -Override @{ UpscaleLiveAction = 'bogus' }
         $p.Engine | Should -Be 'bogus'
         $p.Error | Should -Match "Unknown upscale engine 'bogus'"
+        $p.Error | Should -Match 'expected one of: liveaction, openproteus, anime4k, realesrgan'
+    }
+
+    It 'plans any registry engine (local registry file in NcnnModelDir) with the entry Scale' {
+        $dir = Join-Path $script:TestDir "reg-$(New-Guid)"
+        $null = New-Item -ItemType Directory -Force -Path $dir
+        Set-Content -LiteralPath (Join-Path $dir 'registry.local.psd1') -Value "@{ custom = @{ Backend = 'ncnn'; Files = @('custom-x4.param', 'custom-x4.bin'); Scale = 4 } }"
+        $p = New-TestPlan -Override @{ UpscaleLiveAction = 'custom'; NcnnModelDir = $dir }
+        $p.Error | Should -BeNullOrEmpty
+        $p.EngineTool | Should -Be 'ncnn'
+        $p.Upscale.Backend | Should -Be 'ncnn'
+        $p.Upscale.Scale | Should -Be 4
+        $p.Upscale.ModelBase | Should -Be (Join-Path $dir 'custom-x4')
+        $a = Get-UpscaleEngineArgumentList -Plan $p -InputFile 'T:\p.mkv' -OutputFile 'T:\u.mkv'
+        $a[([array]::IndexOf($a, '--scale')) + 1] | Should -Be '4'
+    }
+
+    It 'passes registry warnings on to the plan and still plans the valid engines' {
+        $reg = [pscustomobject]@{
+            Models   = [ordered]@{ openproteus = @{ Backend = 'ncnn'; Files = @('openproteus-x2.param', 'openproteus-x2.bin'); Scale = 2 } }
+            Warnings = @("skipping 'broken': Files is empty")
+        }
+        $config = New-UpscaleGoldenConfig -Overrides @{} -LogDir $script:TestDir
+        $p = Get-UpscalePlan -InputFile 'C:\rips\movie.mkv' -SourceInfo $script:Source -InterlaceType Progressive -FrameRate '24000/1001' `
+            -Config $config -ContentType LiveAction -ModelRegistry $reg
+        $p.Error | Should -BeNullOrEmpty
+        $p.Engine | Should -Be 'openproteus'
+        ($p.Warnings -join "`n") | Should -Match "skipping 'broken'"
     }
 
     It 'reports the realesrgan-plus x4-only mismatch in Error' {
@@ -1029,6 +1057,65 @@ Describe 'Get-UpscalePlan' {
         { New-TestPlan -Interlace Telecined -Sample } | Should -Not -Throw
         Should -Invoke Invoke-ArmTool -Times 0
         Should -Invoke Write-ArmLog -Times 0
+    }
+}
+
+Describe 'Get-ArmUpscaleModelRegistry' {
+    BeforeEach {
+        $script:RegDir = Join-Path $script:TestDir "registry-$(New-Guid)"
+        $null = New-Item -ItemType Directory -Force -Path $script:RegDir
+        $script:RegFile = Join-Path $script:RegDir 'registry.psd1'
+        Set-Content -LiteralPath $script:RegFile -Value "@{ a = @{ Backend = 'ncnn'; Files = @('a.param', 'a.bin'); Scale = 2 } }"
+    }
+
+    It 'loads the repo registry: every entry valid, liveaction and openproteus present' {
+        $r = Get-ArmUpscaleModelRegistry
+        $r.Warnings.Count | Should -Be 0
+        $r.Models.Keys | Should -Contain 'openproteus'
+        $r.Models.Keys | Should -Contain 'liveaction'
+        $r.Models['liveaction']['Scale'] | Should -Be 2
+    }
+
+    It 'merges registry.local.psd1 from NcnnModelDir: adds entries and replaces repo ones' {
+        Set-Content -LiteralPath (Join-Path $script:RegDir 'registry.local.psd1') -Value @"
+@{
+    a = @{ Backend = 'ncnn'; Files = @('a2.param', 'a2.bin'); Scale = 4 }
+    b = @{ Backend = 'ncnn'; Files = @('b.param', 'b.bin'); Scale = 1 }
+}
+"@
+        $r = Get-ArmUpscaleModelRegistry -Path $script:RegFile -Config @{ NcnnModelDir = $script:RegDir }
+        $r.Warnings.Count | Should -Be 0
+        @($r.Models.Keys) | Should -Be @('a', 'b')
+        $r.Models['a']['Scale'] | Should -Be 4
+    }
+
+    It 'ignores a missing local file and warns (no throw) for a missing repo file' {
+        (Get-ArmUpscaleModelRegistry -Path $script:RegFile -Config @{ NcnnModelDir = (Join-Path $script:RegDir 'none') }).Warnings.Count | Should -Be 0
+        $r = Get-ArmUpscaleModelRegistry -Path (Join-Path $script:RegDir 'missing.psd1')
+        $r.Models.Count | Should -Be 0
+        $r.Warnings[0] | Should -Match 'registry not found'
+    }
+
+    It 'warns (no throw) for an unreadable file' {
+        Set-Content -LiteralPath $script:RegFile -Value '@{ a = '
+        $r = Get-ArmUpscaleModelRegistry -Path $script:RegFile
+        $r.Models.Count | Should -Be 0
+        $r.Warnings[0] | Should -Match 'could not be read'
+    }
+
+    It 'skips an invalid entry with a warning naming it: <Why>' -ForEach @(
+        @{ Why = 'built-in name'; Entry = "anime4k = @{ Backend = 'ncnn'; Files = @('x.param', 'x.bin'); Scale = 2 }"; Want = 'built-in engine' }
+        @{ Why = 'not a hashtable'; Entry = "bad = 'x'"; Want = 'not a hashtable' }
+        @{ Why = 'unknown backend'; Entry = "bad = @{ Backend = 'cuda'; Files = @('x.param', 'x.bin'); Scale = 2 }"; Want = "unknown Backend 'cuda'" }
+        @{ Why = 'no files'; Entry = "bad = @{ Backend = 'ncnn'; Files = @(); Scale = 2 }"; Want = 'Files is empty' }
+        @{ Why = 'bad scale'; Entry = "bad = @{ Backend = 'ncnn'; Files = @('x.param', 'x.bin'); Scale = 0 }"; Want = 'Scale' }
+        @{ Why = 'ncnn pair mismatch'; Entry = "bad = @{ Backend = 'ncnn'; Files = @('x.param', 'y.bin'); Scale = 2 }"; Want = 'one .param and one .bin' }
+    ) {
+        Set-Content -LiteralPath $script:RegFile -Value "@{ a = @{ Backend = 'ncnn'; Files = @('a.param', 'a.bin'); Scale = 2 }; $Entry }"
+        $r = Get-ArmUpscaleModelRegistry -Path $script:RegFile
+        @($r.Models.Keys) | Should -Be @('a')
+        $r.Warnings.Count | Should -Be 1
+        $r.Warnings[0] | Should -Match ([regex]::Escape($Want))
     }
 }
 

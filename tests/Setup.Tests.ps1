@@ -366,24 +366,15 @@ Describe 'Install-NcnnUpscaler' {
         Set-Content -Path $script:Req -Value 'upscale-ncnn-py==1.2.0'
 
         Mock Invoke-ArmPython { 0 }
-        Mock Invoke-WebRequest { Set-Content -LiteralPath $OutFile -Value 'archive' }
-        Mock Get-FileHash { [pscustomobject]@{ Hash = '0D96689273650613726EBAE4482CDC56943F46E819F99109054D0CA325D6A7C7' } }
-        Mock Expand-ArmTarGz {
-            $inner = Join-Path $Destination 'm'
-            $null = New-Item -ItemType Directory -Force -Path $inner
-            Set-Content -LiteralPath (Join-Path $inner 'x.param') -Value 'param'
-            Set-Content -LiteralPath (Join-Path $inner 'x.bin') -Value 'bin'
-            0
-        }
         Mock Write-Warning {}
-        Mock Install-ArmBundledNcnnModel { $true }
+        Mock Install-ArmRegistryModels {}
     }
 
     AfterEach {
         Remove-Item -Path $script:Root -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    It 'creates the venv, installs requirements, and installs the verified model' {
+    It 'creates the venv, installs requirements, then the ncnn registry models' {
         # venv creation must produce the python.exe the function then re-checks
         Mock Invoke-ArmPython {
             if ($Arguments -contains 'venv') {
@@ -393,47 +384,23 @@ Describe 'Install-NcnnUpscaler' {
             0
         }
 
-        Install-NcnnUpscaler -RequirementsPath $script:Req -PythonPath $script:Py -ModelDir $script:Models
+        Install-NcnnUpscaler -RequirementsPath $script:Req -PythonPath $script:Py -ModelDir $script:Models -BundledModelDir 'X:\bundled'
 
         Should -Invoke Invoke-ArmPython -ParameterFilter { $Arguments -contains 'venv' } -Times 1
         Should -Invoke Invoke-ArmPython -ParameterFilter { $Arguments -contains 'pip' -and $Arguments -contains $script:Req } -Times 1
-        Test-Path (Join-Path $script:Models 'openproteus-x2.param') | Should -Be $true
-        Test-Path (Join-Path $script:Models 'openproteus-x2.bin') | Should -Be $true
-        Should -Invoke Install-ArmBundledNcnnModel -Times 1 -ParameterFilter { $ModelDir -eq $script:Models }
+        Should -Invoke Install-ArmRegistryModels -Times 1 -ParameterFilter {
+            $Backend -eq 'ncnn' -and $ModelDir -eq $script:Models -and $BundledModelDir -eq 'X:\bundled' -and $RegistryPath -like '*tools*models*registry.psd1'
+        }
     }
 
-    It 'still installs the bundled model when OpenProteus is already present' {
-        $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $script:Py), $script:Models
+    It 'skips venv creation when the venv already exists' {
+        $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $script:Py)
         Set-Content -LiteralPath $script:Py -Value 'py'
-        Set-Content -LiteralPath (Join-Path $script:Models 'openproteus-x2.param') -Value 'p'
-        Set-Content -LiteralPath (Join-Path $script:Models 'openproteus-x2.bin') -Value 'b'
-
-        Install-NcnnUpscaler -RequirementsPath $script:Req -PythonPath $script:Py -ModelDir $script:Models -BundledModelDir 'X:\bundled'
-
-        Should -Invoke Install-ArmBundledNcnnModel -Times 1 -ParameterFilter { $SourceDir -eq 'X:\bundled' -and $ModelDir -eq $script:Models }
-    }
-
-    It 'skips venv creation and the download when everything is already installed' {
-        $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $script:Py), $script:Models
-        Set-Content -LiteralPath $script:Py -Value 'py'
-        Set-Content -LiteralPath (Join-Path $script:Models 'openproteus-x2.param') -Value 'p'
-        Set-Content -LiteralPath (Join-Path $script:Models 'openproteus-x2.bin') -Value 'b'
 
         Install-NcnnUpscaler -RequirementsPath $script:Req -PythonPath $script:Py -ModelDir $script:Models
 
         Should -Invoke Invoke-ArmPython -ParameterFilter { $Arguments -contains 'venv' } -Times 0
-        Should -Invoke Invoke-WebRequest -Times 0
-    }
-
-    It 'refuses to install a model whose SHA256 does not match the pin' {
-        $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $script:Py)
-        Set-Content -LiteralPath $script:Py -Value 'py'
-        Mock Get-FileHash { [pscustomobject]@{ Hash = 'DEADBEEF' } }
-
-        Install-NcnnUpscaler -RequirementsPath $script:Req -PythonPath $script:Py -ModelDir $script:Models
-
-        Test-Path (Join-Path $script:Models 'openproteus-x2.param') | Should -Be $false
-        Should -Invoke Write-Warning -ParameterFilter { $Message -match 'SHA256 mismatch' }
+        Should -Invoke Install-ArmRegistryModels -Times 1
     }
 
     It 'warns and stops (no throw) when the venv cannot be created' {
@@ -442,17 +409,18 @@ Describe 'Install-NcnnUpscaler' {
         { Install-NcnnUpscaler -RequirementsPath $script:Req -PythonPath $script:Py -ModelDir $script:Models } | Should -Not -Throw
 
         Should -Invoke Write-Warning -ParameterFilter { $Message -match 'Could not create the Python venv' }
-        Should -Invoke Invoke-WebRequest -Times 0
+        Should -Invoke Install-ArmRegistryModels -Times 0
     }
 }
 
-Describe 'Install-ArmBundledNcnnModel' {
+Describe 'Install-ArmRegistryModel' {
     BeforeAll {
         $script:RepoModels = Join-Path $PSScriptRoot '..' 'tools' 'models'
+        $script:Registry = Import-PowerShellDataFile -LiteralPath (Join-Path $script:RepoModels 'registry.psd1')
     }
 
     BeforeEach {
-        $script:Root = Join-Path $env:TEMP "wrm-bundled-model-test-$(New-Guid)"
+        $script:Root = Join-Path $env:TEMP "wrm-registry-model-test-$(New-Guid)"
         $script:Models = Join-Path $script:Root 'models'
         Mock Write-Warning {}
     }
@@ -461,37 +429,139 @@ Describe 'Install-ArmBundledNcnnModel' {
         Remove-Item -Path $script:Root -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    It 'installs the committed liveaction-x2 files: the pinned SHA256 values match the repo copies' {
-        Install-ArmBundledNcnnModel -SourceDir $script:RepoModels -ModelDir $script:Models | Should -Be $true
+    Context 'Bundled' {
+        It 'every Bundled registry entry installs from the committed files (pinned SHA256 values match)' {
+            $bundled = @($script:Registry.Keys | Where-Object { $script:Registry[$_]['Bundled'] })
+            $bundled | Should -Not -BeNullOrEmpty
+            foreach ($name in $bundled) {
+                Install-ArmRegistryModel -Name $name -Entry $script:Registry[$name] -ModelDir $script:Models -BundledModelDir $script:RepoModels | Should -Be $true
+                foreach ($f in $script:Registry[$name]['Files']) {
+                    (Get-FileHash -LiteralPath (Join-Path $script:Models $f)).Hash | Should -Be (Get-FileHash -LiteralPath (Join-Path $script:RepoModels $f)).Hash
+                }
+            }
+            Should -Invoke Write-Warning -Times 0
+        }
 
-        Should -Invoke Write-Warning -Times 0
-        foreach ($ext in 'param', 'bin') {
-            $installed = Join-Path $script:Models "liveaction-x2.$ext"
-            Test-Path -LiteralPath $installed | Should -Be $true
-            (Get-FileHash -LiteralPath $installed).Hash | Should -Be (Get-FileHash -LiteralPath (Join-Path $script:RepoModels "liveaction-x2.$ext")).Hash
+        It 'leaves installed files alone' {
+            $null = New-Item -ItemType Directory -Force -Path $script:Models
+            Set-Content -LiteralPath (Join-Path $script:Models 'liveaction-x2.param') -Value 'p'
+            Set-Content -LiteralPath (Join-Path $script:Models 'liveaction-x2.bin') -Value 'b'
+
+            Install-ArmRegistryModel -Name liveaction -Entry $script:Registry['liveaction'] -ModelDir $script:Models -BundledModelDir $script:RepoModels | Should -Be $true
+
+            Get-Content -LiteralPath (Join-Path $script:Models 'liveaction-x2.param') | Should -Be 'p'
+        }
+
+        It 'refuses (warns, copies nothing) when a file does not match its pinned SHA256' {
+            $entry = $script:Registry['liveaction'].Clone()
+            $entry['Bundled'] = $entry['Bundled'].Clone()
+            $entry['Bundled']['liveaction-x2.bin'] = '0' * 64
+
+            Install-ArmRegistryModel -Name liveaction -Entry $entry -ModelDir $script:Models -BundledModelDir $script:RepoModels | Should -Be $false
+
+            Should -Invoke Write-Warning -ParameterFilter { $Message -match 'SHA256 mismatch' }
+            Test-Path -LiteralPath (Join-Path $script:Models 'liveaction-x2.param') | Should -Be $false
+        }
+
+        It 'warns and returns false (no throw) when the source files are missing' {
+            Install-ArmRegistryModel -Name liveaction -Entry $script:Registry['liveaction'] -ModelDir $script:Models -BundledModelDir (Join-Path $script:Root 'nowhere') | Should -Be $false
+
+            Should -Invoke Write-Warning -ParameterFilter { $Message -match 'is missing' }
         }
     }
 
-    It 'leaves an installed pair alone' {
-        $null = New-Item -ItemType Directory -Force -Path $script:Models
-        Set-Content -LiteralPath (Join-Path $script:Models 'liveaction-x2.param') -Value 'p'
-        Set-Content -LiteralPath (Join-Path $script:Models 'liveaction-x2.bin') -Value 'b'
+    Context 'Source' {
+        BeforeEach {
+            Mock Invoke-WebRequest { Set-Content -LiteralPath $OutFile -Value 'archive' }
+            Mock Get-FileHash { [pscustomobject]@{ Hash = '0D96689273650613726EBAE4482CDC56943F46E819F99109054D0CA325D6A7C7' } }
+            Mock Expand-ArmTarGz {
+                $inner = Join-Path $Destination 'm'
+                $null = New-Item -ItemType Directory -Force -Path $inner
+                Set-Content -LiteralPath (Join-Path $inner 'x.param') -Value 'param'
+                Set-Content -LiteralPath (Join-Path $inner 'x.bin') -Value 'bin'
+                0
+            }
+        }
 
-        Install-ArmBundledNcnnModel -SourceDir $script:RepoModels -ModelDir $script:Models | Should -Be $true
+        It 'downloads, verifies and extracts an archive: each file is the member with the same extension' {
+            Install-ArmRegistryModel -Name openproteus -Entry $script:Registry['openproteus'] -ModelDir $script:Models -BundledModelDir $script:RepoModels | Should -Be $true
 
-        Get-Content -LiteralPath (Join-Path $script:Models 'liveaction-x2.param') | Should -Be 'p'
+            Should -Invoke Invoke-WebRequest -Times 1 -ParameterFilter { $Uri -eq $script:Registry['openproteus']['Source']['Url'] }
+            Get-Content -LiteralPath (Join-Path $script:Models 'openproteus-x2.param') | Should -Be 'param'
+            Get-Content -LiteralPath (Join-Path $script:Models 'openproteus-x2.bin') | Should -Be 'bin'
+        }
+
+        It 'does not download when the files are already installed' {
+            $null = New-Item -ItemType Directory -Force -Path $script:Models
+            Set-Content -LiteralPath (Join-Path $script:Models 'openproteus-x2.param') -Value 'p'
+            Set-Content -LiteralPath (Join-Path $script:Models 'openproteus-x2.bin') -Value 'b'
+
+            Install-ArmRegistryModel -Name openproteus -Entry $script:Registry['openproteus'] -ModelDir $script:Models -BundledModelDir $script:RepoModels | Should -Be $true
+
+            Should -Invoke Invoke-WebRequest -Times 0
+        }
+
+        It 'refuses a download whose SHA256 does not match the pin' {
+            Mock Get-FileHash { [pscustomobject]@{ Hash = 'DEADBEEF' } }
+
+            Install-ArmRegistryModel -Name openproteus -Entry $script:Registry['openproteus'] -ModelDir $script:Models -BundledModelDir $script:RepoModels | Should -Be $false
+
+            Test-Path (Join-Path $script:Models 'openproteus-x2.param') | Should -Be $false
+            Should -Invoke Write-Warning -ParameterFilter { $Message -match 'SHA256 mismatch' }
+        }
+
+        It 'installs a single-file (non-archive) download as the one Files entry' {
+            $entry = @{ Backend = 'ncnn'; Files = @('one.pth'); Scale = 2; Source = @{ Url = 'https://example.invalid/one.pth'; Sha256 = '0d96689273650613726ebae4482cdc56943f46e819f99109054d0ca325d6a7c7' } }
+
+            Install-ArmRegistryModel -Name one -Entry $entry -ModelDir $script:Models -BundledModelDir $script:RepoModels | Should -Be $true
+
+            Get-Content -LiteralPath (Join-Path $script:Models 'one.pth') | Should -Be 'archive'
+            Should -Invoke Expand-ArmTarGz -Times 0
+        }
+
+        It 'warns (no throw) when the download fails' {
+            Mock Invoke-WebRequest { throw 'offline' }
+
+            Install-ArmRegistryModel -Name openproteus -Entry $script:Registry['openproteus'] -ModelDir $script:Models -BundledModelDir $script:RepoModels | Should -Be $false
+
+            Should -Invoke Write-Warning -ParameterFilter { $Message -match 'install failed' }
+        }
+    }
+}
+
+Describe 'Install-ArmRegistryModels' {
+    BeforeEach {
+        $script:Root = Join-Path $env:TEMP "wrm-registry-models-test-$(New-Guid)"
+        $null = New-Item -ItemType Directory -Force -Path $script:Root
+        $script:RegFile = Join-Path $script:Root 'registry.psd1'
+        Set-Content -LiteralPath $script:RegFile -Value @'
+@{
+    a = @{ Backend = 'ncnn'; Files = @('a.param', 'a.bin'); Scale = 2; Bundled = @{} }
+    b = @{ Backend = 'other'; Files = @('b.pth'); Scale = 2; Bundled = @{} }
+    c = @{ Backend = 'ncnn'; Files = @('c.param', 'c.bin'); Scale = 2; Bundled = @{} }
+}
+'@
+        Mock Install-ArmRegistryModel { $true }
+        Mock Write-Warning {}
     }
 
-    It 'refuses (warns, copies nothing) when a file does not match its pinned SHA256' {
-        Install-ArmBundledNcnnModel -SourceDir $script:RepoModels -ModelDir $script:Models -BinSha256 ('0' * 64) | Should -Be $false
-
-        Should -Invoke Write-Warning -ParameterFilter { $Message -match 'SHA256 mismatch' }
-        Test-Path -LiteralPath (Join-Path $script:Models 'liveaction-x2.param') | Should -Be $false
+    AfterEach {
+        Remove-Item -Path $script:Root -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    It 'warns and returns false (no throw) when the source files are missing' {
-        Install-ArmBundledNcnnModel -SourceDir (Join-Path $script:Root 'nowhere') -ModelDir $script:Models | Should -Be $false
+    It 'installs only the entries of the requested backend' {
+        Install-ArmRegistryModels -Backend ncnn -ModelDir 'X:\m' -RegistryPath $script:RegFile -BundledModelDir 'X:\b'
 
-        Should -Invoke Write-Warning -ParameterFilter { $Message -match 'is missing' }
+        Should -Invoke Install-ArmRegistryModel -Times 2
+        Should -Invoke Install-ArmRegistryModel -Times 1 -ParameterFilter { $Name -eq 'a' -and $ModelDir -eq 'X:\m' -and $BundledModelDir -eq 'X:\b' }
+        Should -Invoke Install-ArmRegistryModel -Times 1 -ParameterFilter { $Name -eq 'c' }
+        Should -Invoke Install-ArmRegistryModel -Times 0 -ParameterFilter { $Name -eq 'b' }
+    }
+
+    It 'warns (no throw) when the registry cannot be read' {
+        { Install-ArmRegistryModels -Backend ncnn -ModelDir 'X:\m' -RegistryPath (Join-Path $script:Root 'missing.psd1') } | Should -Not -Throw
+
+        Should -Invoke Write-Warning -ParameterFilter { $Message -match 'Could not read the upscale model registry' }
+        Should -Invoke Install-ArmRegistryModel -Times 0
     }
 }

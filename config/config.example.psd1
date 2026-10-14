@@ -29,7 +29,7 @@
     UpscaleDvds       = $false
     AutoUpscale       = $false         # $false => stop after -SampleOnly clip, notify for review
     UpscaleActiveHours= @('23:00','08:00')
-    UpscaleLiveAction = 'openproteus'  # engine for live-action: openproteus (2x ncnn, natural) | liveaction (2x ncnn SPAN, fixes compression/halos/deinterlace jaggies) | anime4k (sharper) | realesrgan (legacy, uses UpscaleModel/UpscaleScale)
+    UpscaleLiveAction = 'openproteus'  # engine for live-action: any tools/models/registry.psd1 engine, e.g. openproteus (2x ncnn, natural) | liveaction (2x ncnn SPAN, fixes compression/halos/deinterlace jaggies) | anime4k (sharper) | realesrgan (legacy, uses UpscaleModel/UpscaleScale)
     UpscaleAnimation  = 'anime4k'      # engine for ContentType=Animation (queue item field `ContentType`); same choices
     UpscaleHeight     = 1080           # output height; width comes from the source display aspect ratio
     UpscaleShader     = 'anime4k-v4-a+a'   # libplacebo shader used by the anime4k engine

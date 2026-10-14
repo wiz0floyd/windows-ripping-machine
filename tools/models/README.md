@@ -1,8 +1,30 @@
-# Bundled ncnn models
+# Upscale models
 
-`setup.ps1` (`Install-ArmBundledNcnnModel`) copies these into `NcnnModelDir` after checking
-the SHA256 values below. The `liveaction` engine (`UpscaleLiveAction = 'liveaction'`) runs them
-through `tools/ncnn_upscale.py`.
+`registry.psd1` lists every model-file upscale engine: its backend, files, native scale,
+license, and where setup gets the files (`Bundled` here, or a pinned `Source` download).
+`setup.ps1` (`Install-ArmRegistryModels`) installs each entry into the backend's model dir
+(`NcnnModelDir` for ncnn) after checking the SHA256 values. Select an engine by its registry
+name, e.g. `UpscaleLiveAction = 'liveaction'`; ncnn engines run through `tools/ncnn_upscale.py`.
+
+## Adding a model
+
+For a model on an existing backend (today `ncnn`), no code changes are needed:
+
+1. Add an entry to `registry.psd1`. The fields are documented at the top of that file. An ncnn
+   entry needs exactly one `.param` and one `.bin` with the same base name.
+2. Supply the files in one of two ways:
+   - **Bundled:** commit them here, add them to `.gitattributes` (`-text`), and pin each SHA256
+     under `Bundled`.
+   - **Source:** give a downloadable `Url` (a release asset, not a `/tree/` page), its `Sha256`,
+     and `Archive = 'tar.gz'` if it is an archive.
+3. Add a section below with the source, license and checksums.
+4. Run `setup.ps1` (it installs only what is missing), then set `UpscaleLiveAction` or
+   `UpscaleAnimation` to the new name.
+
+A model you do not want in the repo can go in `<NcnnModelDir>\registry.local.psd1` instead.
+That file has the same format. Its entries add to the repo ones or replace them, and the
+upscaler reads it at plan time. Copy the files into the model dir yourself (setup reads only the
+repo registry). An invalid entry is skipped, and the upscale log shows a WARN naming it.
 
 ## liveaction-x2 (`liveaction-x2.param`, `liveaction-x2.bin`)
 
@@ -28,3 +50,8 @@ through `tools/ncnn_upscale.py`.
 
 `.gitattributes` marks these files `-text` so Git never rewrites their line endings, which
 would change the checksums.
+
+## openproteus-x2 (downloaded, not bundled)
+
+2x_OpenProteus_Compact_i2_70K, from the TNTwise real-video-enhancer-models release (URL and
+SHA256 in `registry.psd1`). No license is declared upstream, so it is for personal use only.
