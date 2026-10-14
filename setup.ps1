@@ -6,7 +6,8 @@ param(
     [string] $NasMusicPath,
     [string] $TmdbApiKey,
     [string] $HaWebhookUrl,
-    [string] $RunAsUser
+    [string] $RunAsUser,
+    [switch] $WithTorch
 )
 
 Set-StrictMode -Version Latest
@@ -111,72 +112,162 @@ function Expand-ArmTarGz {
 
 <#
 .SYNOPSIS
-    Copy a repo-bundled ncnn model (tools/models/<Name>.param/.bin) into ModelDir after
-    checking both files against pinned SHA256 values. Returns $true when installed or
-    already present.
+    Install one upscale model registry entry (tools/models/registry.psd1) into ModelDir.
+    Returns $true when installed or already present.
 
 .DESCRIPTION
-    Non-fatal: a missing or mismatched source file is a warning and nothing is copied.
-    An existing pair in ModelDir is left alone (same idempotency rule as the OpenProteus
-    download). The default is 2xLiveActionV1_SPAN (jcj83429, CC BY-NC-SA 4.0), converted
-    by tools/convert_span_ncnn.py; see tools/models/README.md.
+    Non-fatal: every failure is a warning and nothing is copied. An entry whose Files all
+    exist in ModelDir is left alone. Otherwise:
+      Bundled  each file is copied from BundledModelDir after its pinned SHA256 matches.
+      Source   Url is downloaded and checked against Sha256. Archive 'tar.gz': each Files
+               entry is the first archive member with the same extension. No Archive: the
+               download is the (single) Files entry.
+
+.PARAMETER Name
+    Registry engine name (for messages).
+
+.PARAMETER Entry
+    The registry entry hashtable (Files, Bundled or Source).
 #>
-function Install-ArmBundledNcnnModel {
+function Install-ArmRegistryModel {
     [CmdletBinding()]
     [OutputType([bool])]
     param(
-        [Parameter(Mandatory = $true)] [string] $SourceDir,
+        [Parameter(Mandatory = $true)] [string] $Name,
+        [Parameter(Mandatory = $true)] [hashtable] $Entry,
         [Parameter(Mandatory = $true)] [string] $ModelDir,
-        [string] $Name = 'liveaction-x2',
-        [string] $ParamSha256 = '2b0a04ad8519d2bc526227e7fedde9b7ebe7bce2f42476ad73c3431c49928bdc',
-        [string] $BinSha256 = '5395811c56e60f39e42d9a3587fba1fa7af07a3aed1dfca26ae38e580d3b6f27'
+        [Parameter(Mandatory = $true)] [string] $BundledModelDir
     )
 
-    $targets = @(
-        @{ Ext = 'param'; Sha = $ParamSha256 }
-        @{ Ext = 'bin'; Sha = $BinSha256 }
-    )
-    if (@($targets | Where-Object { -not (Test-Path -LiteralPath (Join-Path $ModelDir "$Name.$($_.Ext)")) }).Count -eq 0) {
+    $files = @($Entry['Files'])
+    if (@($files | Where-Object { -not (Test-Path -LiteralPath (Join-Path $ModelDir $_)) }).Count -eq 0) {
         Write-Host "$Name model already installed: $ModelDir"
         return $true
     }
+
+    if ($Entry['Bundled']) {
+        try {
+            foreach ($f in $files) {
+                $src = Join-Path $BundledModelDir $f
+                $sha = "$($Entry['Bundled'][$f])"
+                if (-not (Test-Path -LiteralPath $src)) {
+                    Write-Warning "Bundled model file $src is missing; the '$Name' model was NOT installed."
+                    return $false
+                }
+                $actual = (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
+                if (-not $sha -or $actual -ne $sha.ToUpperInvariant()) {
+                    Write-Warning "$src SHA256 mismatch (expected $sha, got $($actual.ToLowerInvariant())); the '$Name' model was NOT installed."
+                    return $false
+                }
+            }
+            $null = New-Item -ItemType Directory -Force -Path $ModelDir
+            foreach ($f in $files) {
+                Copy-Item -LiteralPath (Join-Path $BundledModelDir $f) -Destination (Join-Path $ModelDir $f) -Force
+            }
+            Write-Host "Installed $Name model to $ModelDir"
+            return $true
+        } catch {
+            Write-Warning "$Name model install failed: $_"
+            return $false
+        }
+    }
+
+    $source = $Entry['Source']
+    if (-not $source) {
+        Write-Warning "Registry entry '$Name' has neither Bundled nor Source; skipping."
+        return $false
+    }
+    $work = Join-Path ([System.IO.Path]::GetTempPath()) "wrm-model-$Name-$(New-Guid)"
     try {
-        foreach ($t in $targets) {
-            $src = Join-Path $SourceDir "$Name.$($t.Ext)"
-            if (-not (Test-Path -LiteralPath $src)) {
-                Write-Warning "Bundled model file $src is missing; the '$Name' model was NOT installed."
+        $null = New-Item -ItemType Directory -Force -Path $work
+        $download = Join-Path $work 'download'
+        Write-Host "Downloading $Name model..."
+        Invoke-WebRequest -Uri $source['Url'] -OutFile $download -UseBasicParsing
+        $actual = (Get-FileHash -LiteralPath $download -Algorithm SHA256).Hash
+        if ($actual -ne "$($source['Sha256'])".ToUpperInvariant()) {
+            Write-Warning "$Name model SHA256 mismatch (expected $($source['Sha256']), got $($actual.ToLowerInvariant())); NOT installing it."
+            return $false
+        }
+        $copies = @{}
+        if ($source['Archive'] -eq 'tar.gz') {
+            $extracted = Join-Path $work 'x'
+            if ((Expand-ArmTarGz -Archive $download -Destination $extracted) -ne 0) {
+                Write-Warning "Could not extract the $Name model archive; skipping."
                 return $false
             }
-            $actual = (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
-            if ($actual -ne $t.Sha.ToUpperInvariant()) {
-                Write-Warning "$src SHA256 mismatch (expected $($t.Sha), got $($actual.ToLowerInvariant())); the '$Name' model was NOT installed."
-                return $false
+            foreach ($f in $files) {
+                $member = Get-ChildItem -LiteralPath $extracted -Recurse -File -Filter "*$([System.IO.Path]::GetExtension($f))" | Select-Object -First 1
+                if (-not $member) {
+                    Write-Warning "$Name model archive has no $([System.IO.Path]::GetExtension($f)) file; skipping."
+                    return $false
+                }
+                $copies[$f] = $member.FullName
             }
+        } elseif ($source['Archive']) {
+            Write-Warning "$Name model: unsupported Archive '$($source['Archive'])'; skipping."
+            return $false
+        } elseif ($files.Count -eq 1) {
+            $copies[$files[0]] = $download
+        } else {
+            Write-Warning "$Name model: a non-archive Source can only provide one file; skipping."
+            return $false
         }
         $null = New-Item -ItemType Directory -Force -Path $ModelDir
-        foreach ($t in $targets) {
-            Copy-Item -LiteralPath (Join-Path $SourceDir "$Name.$($t.Ext)") -Destination (Join-Path $ModelDir "$Name.$($t.Ext)") -Force
+        foreach ($f in $files) {
+            Copy-Item -LiteralPath $copies[$f] -Destination (Join-Path $ModelDir $f) -Force
         }
         Write-Host "Installed $Name model to $ModelDir"
         return $true
     } catch {
         Write-Warning "$Name model install failed: $_"
         return $false
+    } finally {
+        Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
 <#
 .SYNOPSIS
-    Install the ncnn upscale runtime used by the 'openproteus' and 'liveaction' engines: a
-    dedicated Python venv with tools/requirements-ncnn.txt, the repo-bundled LiveAction SPAN
-    model (Install-ArmBundledNcnnModel), and the OpenProteus 2x ncnn model.
+    Install every registry model of one backend (Install-ArmRegistryModel per entry).
+
+.PARAMETER RegistryPath
+    tools/models/registry.psd1 (an unreadable file is a warning).
+
+.PARAMETER Backend
+    Only entries with this Backend are installed ('ncnn').
+#>
+function Install-ArmRegistryModels {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] [string] $Backend,
+        [Parameter(Mandatory = $true)] [string] $ModelDir,
+        [string] $RegistryPath = (Join-Path $PSScriptRoot 'tools' 'models' 'registry.psd1'),
+        [string] $BundledModelDir = (Join-Path $PSScriptRoot 'tools' 'models')
+    )
+
+    try {
+        $registry = Import-PowerShellDataFile -LiteralPath $RegistryPath
+    } catch {
+        Write-Warning "Could not read the upscale model registry ${RegistryPath}: $_"
+        return
+    }
+    foreach ($name in @($registry.Keys | Sort-Object)) {
+        $entry = $registry[$name]
+        if ($entry -isnot [hashtable] -or $entry['Backend'] -ne $Backend) { continue }
+        $null = Install-ArmRegistryModel -Name $name -Entry $entry -ModelDir $ModelDir -BundledModelDir $BundledModelDir
+    }
+}
+
+<#
+.SYNOPSIS
+    Install the ncnn upscale runtime used by the ncnn registry engines (openproteus,
+    liveaction, ...): a dedicated Python venv with tools/requirements-ncnn.txt, then every
+    Backend='ncnn' model in tools/models/registry.psd1 (Install-ArmRegistryModels).
 
 .DESCRIPTION
     Idempotent and non-fatal: every failure is a warning (the pipeline still works
-    with the anime4k/realesrgan engines). The model download is verified against a
-    pinned SHA256 before it is installed. The model comes from the
-    TNTwise/real-video-enhancer-models release of Sirosky's 2x OpenProteus Compact;
-    the upstream repo declares no license, so this is for personal use.
+    with the anime4k/realesrgan engines). Bundled and downloaded models are verified
+    against the SHA256 pinned in the registry before they are installed.
 
 .PARAMETER RequirementsPath
     tools/requirements-ncnn.txt.
@@ -190,6 +281,9 @@ function Install-ArmBundledNcnnModel {
 .PARAMETER BundledModelDir
     Repo directory holding the bundled models (default tools/models next to this script).
 
+.PARAMETER RegistryPath
+    Upscale model registry (default tools/models/registry.psd1 next to this script).
+
 .PARAMETER BasePython
     Python used to create the venv (default: python on PATH).
 #>
@@ -201,8 +295,7 @@ function Install-NcnnUpscaler {
         [Parameter(Mandatory = $true)] [string] $ModelDir,
         [string] $BasePython = 'python',
         [string] $BundledModelDir = (Join-Path $PSScriptRoot 'tools' 'models'),
-        [string] $ModelUrl = 'https://github.com/TNTwise/real-video-enhancer-models/releases/download/models/2x_OpenProteus_Compact_i2_70K.tar.gz',
-        [string] $ModelSha256 = '0d96689273650613726ebae4482cdc56943f46e819f99109054d0ca325d6a7c7'
+        [string] $RegistryPath = (Join-Path $PSScriptRoot 'tools' 'models' 'registry.psd1')
     )
 
     # --- venv + packages ---
@@ -223,47 +316,124 @@ function Install-NcnnUpscaler {
         return
     }
 
-    # --- bundled model (no download) ---
-    $null = Install-ArmBundledNcnnModel -SourceDir $BundledModelDir -ModelDir $ModelDir
+    # --- models: every ncnn entry of tools/models/registry.psd1 ---
+    Install-ArmRegistryModels -Backend 'ncnn' -ModelDir $ModelDir -RegistryPath $RegistryPath -BundledModelDir $BundledModelDir
+}
 
-    # --- OpenProteus model ---
-    $paramFile = Join-Path $ModelDir 'openproteus-x2.param'
-    $binFile = Join-Path $ModelDir 'openproteus-x2.bin'
-    if ((Test-Path -LiteralPath $paramFile) -and (Test-Path -LiteralPath $binFile)) {
-        Write-Host "OpenProteus model already installed: $ModelDir"
-        return
+<#
+.SYNOPSIS
+    Path of a Python 3.12 python.exe, or $null. Tries the py launcher (`py -3.12`), then
+    the default winget install locations (a PATH change made by a winget install in this
+    session is not visible yet).
+#>
+function Find-ArmPython312 {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+
+    try {
+        $exe = & py -3.12 -c 'import sys; print(sys.executable)' 2>$null
+        if ($LASTEXITCODE -eq 0 -and $exe -and (Test-Path -LiteralPath "$exe".Trim())) { return "$exe".Trim() }
+    } catch {
+        Write-Verbose "py launcher not available: $_"
+    }
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\python.exe'),
+        (Join-Path $env:ProgramFiles 'Python312\python.exe')
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path -LiteralPath $c) { return $c }
+    }
+    return $null
+}
+
+<#
+.SYNOPSIS
+    Install the PyTorch (AMD ROCm) upscale runner: a Python 3.12 venv with the pinned
+    tools/requirements-torch.txt, then the torch engines' models from the registry.
+    Opt-in: setup.ps1 runs it only with -WithTorch.
+
+.DESCRIPTION
+    Idempotent and non-fatal: every failure is a warning, and the ncnn/anime4k engines
+    keep working. Python 3.12 is required by AMD's Windows wheels; winget installs
+    Python.Python.3.12 when none is found. pip installs the requirements; if pip fails
+    (AMD's index-less wheels / the rocm sdist), it retries once with `uv pip` when uv is on
+    PATH and says why. Ends with a torch.cuda.is_available() check that warns when torch
+    sees no GPU (driver/ROCm problem; the torch engines would fail).
+
+.PARAMETER RequirementsPath
+    tools/requirements-torch.txt.
+
+.PARAMETER PythonPath
+    Target venv python.exe (config key TorchPath). Created if missing.
+
+.PARAMETER ModelDir
+    Directory receiving the torch models (config key TorchModelDir).
+
+.PARAMETER BundledModelDir
+    Repo directory holding the bundled models (default tools/models next to this script).
+
+.PARAMETER RegistryPath
+    Upscale model registry (default tools/models/registry.psd1 next to this script).
+#>
+function Install-TorchUpscaler {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] [string] $RequirementsPath,
+        [Parameter(Mandatory = $true)] [string] $PythonPath,
+        [Parameter(Mandatory = $true)] [string] $ModelDir,
+        [string] $BundledModelDir = (Join-Path $PSScriptRoot 'tools' 'models'),
+        [string] $RegistryPath = (Join-Path $PSScriptRoot 'tools' 'models' 'registry.psd1')
+    )
+
+    $unavailable = "The torch engines (e.g. 'liveaction-torch') will be unavailable; keep an ncnn engine in UpscaleLiveAction."
+
+    # --- Python 3.12 venv ---
+    if (-not (Test-Path -LiteralPath $PythonPath)) {
+        $base = Find-ArmPython312
+        if (-not $base) {
+            Install-WingetPackage -Id 'Python.Python.3.12' -DisplayName 'Python 3.12'
+            $base = Find-ArmPython312
+        }
+        if (-not $base) {
+            Write-Warning "Python 3.12 not found after the winget install. $unavailable"
+            return
+        }
+        $venvDir = Split-Path -Parent (Split-Path -Parent $PythonPath)
+        Write-Host "Creating Python 3.12 venv: $venvDir (from $base)"
+        $rc = Invoke-ArmPython -Python $base -Arguments @('-m', 'venv', $venvDir)
+        if ($rc -ne 0 -or -not (Test-Path -LiteralPath $PythonPath)) {
+            Write-Warning "Could not create the Python venv at $venvDir. $unavailable"
+            return
+        }
+    } else {
+        Write-Host "Torch Python venv already exists: $PythonPath"
     }
 
-    $work = Join-Path ([System.IO.Path]::GetTempPath()) "wrm-openproteus-$(New-Guid)"
-    try {
-        $null = New-Item -ItemType Directory -Force -Path $work
-        $archive = Join-Path $work 'model.tar.gz'
-        Write-Host 'Downloading OpenProteus 2x ncnn model...'
-        Invoke-WebRequest -Uri $ModelUrl -OutFile $archive -UseBasicParsing
-        $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
-        if ($actual -ne $ModelSha256.ToUpperInvariant()) {
-            Write-Warning "OpenProteus model SHA256 mismatch (expected $ModelSha256, got $($actual.ToLowerInvariant())); NOT installing it."
+    # --- packages (several GB on first install) ---
+    Write-Host "Installing PyTorch ROCm packages from $RequirementsPath (first run downloads several GB)..."
+    $rc = Invoke-ArmPython -Python $PythonPath -Arguments @('-I', '-m', 'pip', 'install', '--quiet', '-r', $RequirementsPath)
+    if ($rc -ne 0) {
+        $uv = Get-Command -Name 'uv' -CommandType Application -ErrorAction SilentlyContinue
+        if (-not $uv) {
+            Write-Warning "pip install -r $RequirementsPath failed (exit $rc) and uv is not on PATH for a retry. $unavailable"
             return
         }
-        $extracted = Join-Path $work 'x'
-        if ((Expand-ArmTarGz -Archive $archive -Destination $extracted) -ne 0) {
-            Write-Warning 'Could not extract the OpenProteus model archive; skipping.'
+        Write-Warning "pip install -r $RequirementsPath failed (exit $rc); retrying with uv ($($uv.Source))."
+        $rc = Invoke-ArmPython -Python $uv.Source -Arguments @('pip', 'install', '--python', $PythonPath, '-r', $RequirementsPath)
+        if ($rc -ne 0) {
+            Write-Warning "uv pip install -r $RequirementsPath also failed (exit $rc). $unavailable"
             return
         }
-        $param = Get-ChildItem -LiteralPath $extracted -Recurse -Filter '*.param' | Select-Object -First 1
-        $bin = Get-ChildItem -LiteralPath $extracted -Recurse -Filter '*.bin' | Select-Object -First 1
-        if (-not $param -or -not $bin) {
-            Write-Warning 'OpenProteus archive did not contain a .param/.bin pair; skipping.'
-            return
-        }
-        $null = New-Item -ItemType Directory -Force -Path $ModelDir
-        Copy-Item -LiteralPath $param.FullName -Destination $paramFile -Force
-        Copy-Item -LiteralPath $bin.FullName -Destination $binFile -Force
-        Write-Host "Installed OpenProteus model to $ModelDir"
-    } catch {
-        Write-Warning "OpenProteus model install failed: $_"
-    } finally {
-        Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # --- models: every torch entry of tools/models/registry.psd1 ---
+    Install-ArmRegistryModels -Backend 'torch' -ModelDir $ModelDir -RegistryPath $RegistryPath -BundledModelDir $BundledModelDir
+
+    # --- GPU check (same isolated mode the upscaler uses) ---
+    $rc = Invoke-ArmPython -Python $PythonPath -Arguments @('-I', '-c', 'import sys, torch; ok = torch.cuda.is_available(); print("torch", torch.__version__, "GPU:", torch.cuda.get_device_name(0) if ok else "none"); sys.exit(0 if ok else 3)')
+    if ($rc -ne 0) {
+        Write-Warning "torch is installed but sees no GPU (exit $rc). Update the AMD driver (AMD's guide lists 26.2.2+ for ROCm 7.2.1). Until then the torch engines fail."
     }
 }
 
@@ -703,6 +873,12 @@ Administrator (Run as Administrator) pwsh window.
     $example = Import-PowerShellDataFile -Path $examplePath
     Install-NcnnUpscaler -RequirementsPath (Join-Path $repoRoot 'tools' 'requirements-ncnn.txt') `
         -PythonPath $example.NcnnPath -ModelDir $example.NcnnModelDir -BundledModelDir (Join-Path $repoRoot 'tools' 'models')
+    if ($WithTorch) {
+        Install-TorchUpscaler -RequirementsPath (Join-Path $repoRoot 'tools' 'requirements-torch.txt') `
+            -PythonPath $example.TorchPath -ModelDir $example.TorchModelDir -BundledModelDir (Join-Path $repoRoot 'tools' 'models')
+    } else {
+        Write-Host 'PyTorch (ROCm) upscaler not installed; re-run with -WithTorch for the torch engines (e.g. liveaction-torch).'
+    }
     Initialize-ArmDirectories -Paths @{
         StagingDir      = $example.StagingDir
         UpscaleQueueDir = $example.UpscaleQueueDir

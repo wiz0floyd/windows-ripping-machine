@@ -1,12 +1,110 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# ncnn engines (tools/ncnn_upscale.py via the 'ncnn' tool): engine name -> model file base
-# name in NcnnModelDir (<base>.param / <base>.bin). Every model here is 2x, RGB in/out,
-# with 'data' / 'output' blobs; setup.ps1 installs them.
-$script:ArmNcnnEngineModels = [ordered]@{
-    openproteus = 'openproteus-x2'   # 2x OpenProteus Compact (Sirosky), downloaded
-    liveaction  = 'liveaction-x2'    # 2xLiveActionV1_SPAN (jcj83429), bundled in tools/models
+# Model-file engines come from the registry (tools/models/registry.psd1, engine name ->
+# Backend/Files/Scale; setup.ps1 installs the files). A backend is a runner script under
+# tools/ run by an Invoke-ArmTool name, reading its model files from ModelDirKey. Every
+# backend runner decodes to RGB and re-encodes with the swscale default (BT.601 matrix,
+# see Get-UpscaleColorInput). anime4k and realesrgan are built-in video2x engines.
+# PythonKey (torch only) adds the venv python to the plan's RequiredFiles; Setup is the
+# command the missing-file error points at.
+$script:ArmUpscaleBackends = [ordered]@{
+    ncnn  = @{ Tool = 'ncnn'; Runner = 'ncnn_upscale.py'; ModelDirKey = 'NcnnModelDir'; Label = 'ncnn upscale'; Setup = 'setup.ps1' }
+    torch = @{ Tool = 'torch'; Runner = 'torch_upscale.py'; ModelDirKey = 'TorchModelDir'; Label = 'torch upscale'; Setup = 'setup.ps1 -WithTorch'; PythonKey = 'TorchPath' }
+}
+$script:ArmDefaultTorchPath = 'C:\ProgramData\wrm\venv-torch\Scripts\python.exe'
+$script:ArmBuiltinUpscaleEngines = @('anime4k', 'realesrgan')
+$script:ArmUpscaleRegistryPath = Join-Path $PSScriptRoot '..' 'tools' 'models' 'registry.psd1'
+$script:ArmDefaultModelDir = 'C:\ProgramData\wrm\models'
+
+<#
+.SYNOPSIS
+    Load the upscale model registry: tools/models/registry.psd1, plus an optional
+    registry.local.psd1 in NcnnModelDir whose entries are added or replace repo ones.
+
+.DESCRIPTION
+    Never throws. An unreadable file or an invalid entry is skipped with a message in
+    Warnings (Get-UpscalePlan passes them on to the plan). An entry is valid when it is a
+    hashtable with a known Backend ($script:ArmUpscaleBackends), a non-empty Files list,
+    and an integer Scale >= 1; an ncnn entry needs exactly one .param and one .bin file
+    with the same base name. Built-in engine names (anime4k, realesrgan) cannot be used.
+
+.PARAMETER Config
+    Supplies NcnnModelDir for the local registry file. Omit to read the repo registry only.
+
+.PARAMETER Path
+    Repo registry (default tools/models/registry.psd1). Tests pass a temp file.
+
+.OUTPUTS
+    [pscustomobject] @{ Models = [ordered] engine -> entry hashtable; Warnings = [string[]] }
+#>
+function Get-ArmUpscaleModelRegistry {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [hashtable] $Config,
+        [string] $Path = $script:ArmUpscaleRegistryPath
+    )
+
+    $warnings = [System.Collections.Generic.List[string]]::new()
+    $models = [ordered]@{}
+    $sources = @($Path)
+    if ($Config) {
+        $modelDir = Get-UpscaleSetting -Config $Config -Name 'NcnnModelDir' -Default $script:ArmDefaultModelDir
+        $sources += Join-Path $modelDir 'registry.local.psd1'
+    }
+
+    foreach ($file in $sources) {
+        $isLocal = $file -ne $Path
+        if (-not (Test-Path -LiteralPath $file)) {
+            if (-not $isLocal) { $warnings.Add("Upscale model registry not found: $file") }
+            continue
+        }
+        try {
+            $data = Import-PowerShellDataFile -LiteralPath $file
+        } catch {
+            $warnings.Add("Upscale model registry $file could not be read: $($_.Exception.Message)")
+            continue
+        }
+        foreach ($name in @($data.Keys | Sort-Object)) {
+            $problem = Test-ArmUpscaleModelEntry -Name $name -Entry $data[$name]
+            if ($problem) {
+                $warnings.Add("Upscale model registry ${file}: skipping '$name': $problem")
+                continue
+            }
+            $models[$name] = $data[$name]
+        }
+    }
+    return [pscustomobject]@{ Models = $models; Warnings = @($warnings) }
+}
+
+# Why a registry entry is invalid, or $null when it is usable (see Get-ArmUpscaleModelRegistry).
+function Test-ArmUpscaleModelEntry {
+    param([string] $Name, $Entry)
+    if ($Name -in $script:ArmBuiltinUpscaleEngines) { return "'$Name' is a built-in engine name" }
+    if ($Entry -isnot [hashtable]) { return 'entry is not a hashtable' }
+    $backend = $Entry['Backend']
+    if (-not $backend -or -not $script:ArmUpscaleBackends.Contains("$backend")) {
+        return "unknown Backend '$backend' (expected $($script:ArmUpscaleBackends.Keys -join ', '))"
+    }
+    $files = @($Entry['Files'] | Where-Object { $_ })
+    if ($files.Count -eq 0) { return 'Files is empty' }
+    $scale = $Entry['Scale']
+    if ($scale -isnot [int] -or $scale -lt 1) { return "Scale '$scale' is not an integer >= 1" }
+    if ($backend -eq 'ncnn') {
+        $param = @($files | Where-Object { $_ -like '*.param' })
+        $bin = @($files | Where-Object { $_ -like '*.bin' })
+        if ($files.Count -ne 2 -or $param.Count -ne 1 -or $bin.Count -ne 1 -or
+            [System.IO.Path]::GetFileNameWithoutExtension($param[0]) -ne [System.IO.Path]::GetFileNameWithoutExtension($bin[0])) {
+            return 'an ncnn model needs exactly one .param and one .bin file with the same base name'
+        }
+    }
+    if ($backend -eq 'torch') {
+        if ($files.Count -ne 1 -or $files[0] -notmatch '\.(pth|safetensors)$') {
+            return 'a torch model needs exactly one .pth or .safetensors file'
+        }
+    }
+    return $null
 }
 
 <#
@@ -496,19 +594,29 @@ function Get-VideoFrameRate {
     color_primaries, else from the space); bt709 = BT.709. Untagged: height < 720 is BT.601
     (<= 500 lines NTSC/525, else PAL/625); >= 720 or unknown height is BT.709.
     Tags outside smpte170m/bt470bg/bt709 add a Warning and fall back to the height rule.
-    The ncnn engines (openproteus, liveaction: tools/ncnn_upscale.py) re-encode RGB to YUV with
-    the swscale default, so their output is BT.601 matrix with the source's primaries whatever
-    the source was: a BT.709 or untagged-HD source still converts (ispace=bt470bg,
-    iprimaries/itrc bt709). anime4k and realesrgan keep the source matrix and are tag only
-    for BT.709 sources.
+    Registry engines (openproteus, liveaction, ...: a backend runner such as
+    tools/ncnn_upscale.py) re-encode RGB to YUV with the swscale default, so their output is
+    BT.601 matrix with the source's primaries whatever the source was: a BT.709 or
+    untagged-HD source still converts (ispace=bt470bg, iprimaries/itrc bt709). anime4k and
+    realesrgan keep the source matrix and are tag only for BT.709 sources.
+
+.PARAMETER Backend
+    The engine's registry backend ('ncnn', ...), or '' for a built-in video2x engine.
+    Omitted: looked up from -Engine in the repo registry.
 #>
 function Get-UpscaleColorInput {
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory = $true)] [pscustomobject] $SourceInfo,
-        [string] $Engine = ''
+        [string] $Engine = '',
+        [string] $Backend
     )
+
+    if (-not $PSBoundParameters.ContainsKey('Backend')) {
+        $models = (Get-ArmUpscaleModelRegistry).Models
+        $Backend = if ($Engine -and $models.Contains($Engine)) { "$($models[$Engine]['Backend'])" } else { '' }
+    }
 
     $warnings = [System.Collections.Generic.List[string]]::new()
     $space = if ($SourceInfo.ColorSpace) { "$($SourceInfo.ColorSpace)".ToLowerInvariant() } else { '' }
@@ -534,7 +642,7 @@ function Get-UpscaleColorInput {
     $matrix = $null
     $spec = $null
     if ($kind -eq '709') {
-        if ($Engine -in $script:ArmNcnnEngineModels.Keys) {
+        if ($Backend) {
             $matrix = 'bt601-matrix-bt709-primaries'
             $spec = 'ispace=bt470bg:iprimaries=bt709:itrc=bt709'
         }
@@ -555,8 +663,8 @@ function Get-UpscaleColorInput {
     Decide how to upscale a source: turn probe results + config into an upscale plan. Pure.
 
 .DESCRIPTION
-    No I/O and no process launches: everything it needs is passed in, so every decision
-    is unit-testable. Invoke-Upscale gathers the facts (Get-VideoSourceInfo,
+    No process launches and no I/O beyond reading the model registry (pass -ModelRegistry
+    to avoid even that): everything else is passed in, so every decision is unit-testable. Invoke-Upscale gathers the facts (Get-VideoSourceInfo,
     Get-InterlaceType, Get-VideoFrameRate), calls this, then runs the plan's stages
     with the Get-Upscale*Arguments builders.
 
@@ -572,15 +680,17 @@ function Get-UpscaleColorInput {
                                             for non-Telecined sources whose decoded rate
                                             was measured (soft-telecined rips decode at
                                             23.976 under a 29.97 header).
-      Engine                   'openproteus' | 'liveaction' | 'anime4k' | 'realesrgan' (as configured;
+      Engine                   a registry engine (tools/models/registry.psd1: openproteus,
+                               liveaction, ...) | 'anime4k' | 'realesrgan' (as configured;
                                may be invalid - see Error)
-      EngineTool               Invoke-ArmTool name for the upscale stage: 'ncnn' | 'video2x'
+      EngineTool               Invoke-ArmTool name for the upscale stage: the registry
+                               backend's tool ('ncnn') | 'video2x'
       EngineLabel              name used in failure messages
-      Target                   @{ Width; Height; DisplayAspect } for the ncnn engines/anime4k
+      Target                   @{ Width; Height; DisplayAspect } for registry engines/anime4k
                                (width = 2 * round(height * DAR / 2)); $null for realesrgan
       Upscale                  engine parameters: Model/Scale (realesrgan), Shader
-                               (anime4k), Runner/ModelBase/Ffmpeg/Ffprobe/RequiredFiles
-                               (ncnn engines: openproteus, liveaction)
+                               (anime4k), Backend/Runner/Scale/ModelFiles/Ffmpeg/Ffprobe/
+                               RequiredFiles (+ ModelBase for ncnn) for registry engines
       Encode                   @{ Codec; Crf; Preset; Qp; AmfQuality; PixFmt; AudioCodec; ResetSar }
                                (Codec from UpscaleEncoder, default 'libx265'; Preset from
                                UpscalePreset, default 'slow'; Qp/AmfQuality/PixFmt apply to hevc_amf)
@@ -594,7 +704,8 @@ function Get-UpscaleColorInput {
       OutputFileName           '<basename> [AI upscale 1080p].mkv'
       Warnings                 [string[]] for the caller to log at WARN
       Error                    $null, or why the plan cannot run (unknown engine,
-                               realesrgan model/scale mismatch). Validated up front so
+                               realesrgan model/scale mismatch). Registry warnings (skipped
+                               invalid entries) go to Warnings. Validated up front so
                                a bad config fails before the slow preprocess.
 
 .PARAMETER FrameRate
@@ -638,7 +749,10 @@ function Get-UpscalePlan {
         [ValidateSet('LiveAction', 'Animation')]
         [string] $ContentType = 'LiveAction',
 
-        [switch] $SampleOnly
+        [switch] $SampleOnly,
+
+        # Get-ArmUpscaleModelRegistry result; omitted => loaded here (the only file read).
+        [pscustomobject] $ModelRegistry
     )
 
     $warnings = [System.Collections.Generic.List[string]]::new()
@@ -691,6 +805,14 @@ function Get-UpscalePlan {
     $target = $null
     $upscale = [ordered]@{}
 
+    if (-not $ModelRegistry) {
+        $ModelRegistry = Get-ArmUpscaleModelRegistry -Config $Config
+    }
+    foreach ($w in $ModelRegistry.Warnings) { $warnings.Add($w) }
+    $models = $ModelRegistry.Models
+    $entry = if ($models.Contains("$engine")) { $models["$engine"] } else { $null }
+    $backend = if ($entry) { "$($entry['Backend'])" } else { '' }
+
     if ($engine -eq 'realesrgan') {
         # Legacy path. realesrgan-plus/-anime only ship x4 weights under video2x 6.4
         # (see SPEC.md); catch the mismatch with a clear error instead of an opaque
@@ -702,7 +824,7 @@ function Get-UpscalePlan {
         $engineLabel = 'video2x'
         $upscale['Model'] = $Config.UpscaleModel
         $upscale['Scale'] = $Config.UpscaleScale
-    } elseif ($engine -in @(@($script:ArmNcnnEngineModels.Keys) + 'anime4k')) {
+    } elseif ($entry -or $engine -eq 'anime4k') {
         # Target size from the display aspect ratio, not the frame size: DVD rips are
         # anamorphic (720x480 with SAR 853:720 is 16:9), and video2x keeps the SAR.
         $targetHeight = [int](Get-UpscaleSetting -Config $Config -Name 'UpscaleHeight' -Default 1080)
@@ -712,23 +834,47 @@ function Get-UpscalePlan {
             Height        = $targetHeight
             DisplayAspect = $dar
         }
-        if ($engine -in $script:ArmNcnnEngineModels.Keys) {
-            $runner = Join-Path $PSScriptRoot '..' 'tools' 'ncnn_upscale.py'
-            $modelBase = Join-Path (Get-UpscaleSetting -Config $Config -Name 'NcnnModelDir' -Default 'C:\ProgramData\wrm\models') $script:ArmNcnnEngineModels[$engine]
-            $engineTool = 'ncnn'
-            $engineLabel = 'ncnn upscale'
+        if ($entry) {
+            $spec = $script:ArmUpscaleBackends[$backend]
+            $runner = Join-Path $PSScriptRoot '..' 'tools' $spec.Runner
+            $modelDir = Get-UpscaleSetting -Config $Config -Name $spec.ModelDirKey -Default $script:ArmDefaultModelDir
+            $modelFiles = @($entry['Files'] | ForEach-Object { Join-Path $modelDir $_ })
+            $engineTool = $spec.Tool
+            $engineLabel = $spec.Label
+            $upscale['Backend'] = $backend
             $upscale['Runner'] = $runner
-            $upscale['ModelBase'] = $modelBase
+            $upscale['Scale'] = [int]$entry['Scale']
+            $upscale['ModelFiles'] = $modelFiles
+            $upscale['Setup'] = $spec.Setup
+            if ($backend -eq 'ncnn') {
+                # <base>.param + <base>.bin (Test-ArmUpscaleModelEntry enforces the shared base)
+                $param = @($modelFiles | Where-Object { $_ -like '*.param' })[0]
+                $upscale['ModelBase'] = $param.Substring(0, $param.Length - '.param'.Length)
+            }
+            if ($backend -eq 'torch') {
+                $upscale['Dtype'] = Get-UpscaleSetting -Config $Config -Name 'UpscaleTorchDtype' -Default 'fp16'
+                $upscale['Batch'] = Get-UpscaleSetting -Config $Config -Name 'UpscaleTorchBatch' -Default 4
+                if ($upscale['Dtype'] -notin @('fp16', 'fp32')) {
+                    $planError = "Unknown UpscaleTorchDtype '$($upscale['Dtype'])' (expected fp16 or fp32)"
+                } elseif (-not ("$($upscale['Batch'])" -match '^\d+$' -and [int]$upscale['Batch'] -ge 1)) {
+                    $planError = "UpscaleTorchBatch '$($upscale['Batch'])' is not an integer >= 1"
+                }
+            }
             $upscale['Ffmpeg'] = Get-UpscaleSetting -Config $Config -Name 'FfmpegPath' -Default 'ffmpeg'
             $upscale['Ffprobe'] = Resolve-ArmFfprobePath -Config $Config
-            $upscale['RequiredFiles'] = @($runner, "$modelBase.param", "$modelBase.bin")
+            $upscale['RequiredFiles'] = @($runner) + $modelFiles
+            if ($spec['PythonKey']) {
+                # A missing venv fails at plan-check time with the setup hint, not as an opaque launch error.
+                $upscale['RequiredFiles'] += Get-UpscaleSetting -Config $Config -Name $spec.PythonKey -Default $script:ArmDefaultTorchPath
+            }
         } else {
             $engineTool = 'video2x'
             $engineLabel = 'video2x upscale'
             $upscale['Shader'] = Get-UpscaleSetting -Config $Config -Name 'UpscaleShader' -Default 'anime4k-v4-a+a'
         }
     } else {
-        $planError = "Unknown upscale engine '$engine' for ContentType $ContentType (expected openproteus, liveaction, anime4k, or realesrgan)"
+        $known = @(@($models.Keys) + $script:ArmBuiltinUpscaleEngines)
+        $planError = "Unknown upscale engine '$engine' for ContentType $ContentType (expected one of: $($known -join ', '); see tools/models/registry.psd1)"
     }
 
     # Final encoder: libx265 (CPU, CRF + preset) or hevc_amf (GPU, CQP; ~8x faster, bigger files).
@@ -738,7 +884,7 @@ function Get-UpscalePlan {
     }
 
     # Colour policy (#29): see Get-UpscaleColorInput.
-    $color = Get-UpscaleColorInput -SourceInfo $SourceInfo -Engine $engine
+    $color = Get-UpscaleColorInput -SourceInfo $SourceInfo -Engine $engine -Backend $backend
     foreach ($w in $color.Warnings) { $warnings.Add($w) }
     $colorInput = $color.Input
     $colorConvert = $color.Convert
@@ -829,13 +975,29 @@ function Get-UpscaleEngineArgumentList {
         [Parameter(Mandatory = $true)] [string] $OutputFile
     )
 
-    if ($Plan.Engine -in $script:ArmNcnnEngineModels.Keys) {
+    if ($Plan.EngineTool -eq 'ncnn') {
+        $scale = if ($Plan.Upscale['Scale']) { $Plan.Upscale['Scale'] } else { 2 }
         return [string[]]@(
             '-I', $Plan.Upscale.Runner,
             '--input', $InputFile,
             '--param', "$($Plan.Upscale.ModelBase).param",
             '--bin', "$($Plan.Upscale.ModelBase).bin",
-            '--scale', '2',
+            '--scale', "$scale",
+            '--out-width', "$($Plan.Target.Width)",
+            '--out-height', "$($Plan.Target.Height)",
+            '--ffmpeg', $Plan.Upscale.Ffmpeg,
+            '--ffprobe', $Plan.Upscale.Ffprobe,
+            '--output', $OutputFile
+        )
+    }
+    if ($Plan.EngineTool -eq 'torch') {
+        return [string[]]@(
+            '-I', $Plan.Upscale.Runner,
+            '--input', $InputFile,
+            '--model', $Plan.Upscale.ModelFiles[0],
+            '--scale', "$($Plan.Upscale.Scale)",
+            '--dtype', "$($Plan.Upscale.Dtype)",
+            '--batch', "$($Plan.Upscale.Batch)",
             '--out-width', "$($Plan.Target.Width)",
             '--out-height', "$($Plan.Target.Height)",
             '--ffmpeg', $Plan.Upscale.Ffmpeg,
@@ -1001,7 +1163,7 @@ function Write-ArmUpscaleProgress {
 
 <#
 .SYNOPSIS
-    Deinterlace/IVTC, upscale (ncnn runner: OpenProteus or LiveAction SPAN, Video2X libplacebo/Anime4K, or Real-ESRGAN), and re-encode a DVD-sourced video.
+    Deinterlace/IVTC, upscale (a registry model such as OpenProteus or LiveAction SPAN, Video2X libplacebo/Anime4K, or Real-ESRGAN), and re-encode a DVD-sourced video.
 
 .DESCRIPTION
     Probe, plan, execute:
@@ -1022,11 +1184,11 @@ function Write-ArmUpscaleProgress {
       3. Upscale the intermediate with the engine chosen for -ContentType
          ($Config.UpscaleLiveAction for LiveAction, $Config.UpscaleAnimation for
          Animation):
-           openproteus -> tools/ncnn_upscale.py via the 'ncnn' tool: OpenProteus 2x ncnn
-                          model (NcnnModelDir\openproteus-x2.*), scaled to the exact
-                          UpscaleHeight x DAR-derived width, SAR reset to 1.
-           liveaction  -> same runner with the 2xLiveActionV1_SPAN model
-                          (NcnnModelDir\liveaction-x2.*).
+           registry engine (tools/models/registry.psd1) -> its backend runner, e.g.
+                          openproteus: tools/ncnn_upscale.py via the 'ncnn' tool with the
+                          OpenProteus 2x ncnn model (NcnnModelDir\openproteus-x2.*);
+                          liveaction: same runner with 2xLiveActionV1_SPAN. Scaled to the
+                          exact UpscaleHeight x DAR-derived width, SAR reset to 1.
            anime4k     -> video2x -p libplacebo --libplacebo-shader $Config.UpscaleShader
                           at the same DAR-derived output size.
            realesrgan  -> legacy video2x realesrgan with UpscaleModel/UpscaleScale.
@@ -1062,7 +1224,7 @@ function Write-ArmUpscaleProgress {
     file - used for review before committing to AutoUpscale=$false's full run.
 
 .OUTPUTS
-    [pscustomobject] @{ Success; OutputFile; InterlaceType; Engine; Error }  (Engine: openproteus | liveaction | anime4k | realesrgan; $null if it failed before engine selection)
+    [pscustomobject] @{ Success; OutputFile; InterlaceType; Engine; Error }  (Engine: a registry engine | anime4k | realesrgan; $null if it failed before engine selection)
 
 .EXAMPLE
     Invoke-Upscale -InputFile 'C:\rips\staging\movie.mkv' -OutputDir 'C:\rips\staging' -Config $config
@@ -1136,7 +1298,7 @@ function Invoke-Upscale {
             foreach ($required in $plan.Upscale.RequiredFiles) {
                 if (-not (Test-Path -LiteralPath $required)) {
                     $engine = $plan.Engine
-                    throw "$($plan.Engine) engine needs '$required' - run setup.ps1 to install the ncnn runner and model"
+                    throw "$($plan.Engine) engine needs '$required' - run $($plan.Upscale.Setup) to install the $($plan.Upscale.Backend) runner and model"
                 }
             }
         }
@@ -1179,7 +1341,8 @@ function Invoke-Upscale {
         $upscaledFile = Join-Path $tempDir 'upscaled.mkv'
         $engine = $plan.Engine
         $upscaleProgressState = & $newProgressState 'upscale'
-        $engineProgress = if ($plan.EngineTool -eq 'ncnn') { $onToolProgress } else { $null }
+        # Backend runners print key=value progress blocks; video2x does not.
+        $engineProgress = if ($plan.Upscale.Contains('Backend')) { $onToolProgress } else { $null }
         $upscaleResult = Invoke-ArmTool -Name $plan.EngineTool -Config $Config -TimeoutSec $longTimeoutSec -ProgressHandler $engineProgress `
             -Arguments (Get-UpscaleEngineArgumentList -Plan $plan -InputFile $preprocessedFile -OutputFile $upscaledFile)
         if ($upscaleResult.ExitCode -ne 0) {

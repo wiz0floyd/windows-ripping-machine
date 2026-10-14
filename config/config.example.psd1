@@ -14,6 +14,10 @@
     Video2xPath       = 'C:\Program Files\Video2X\video2x.exe'
     NcnnPath          = 'C:\ProgramData\wrm\venv\Scripts\python.exe'   # venv python that runs tools/ncnn_upscale.py (setup.ps1 creates it)
     NcnnModelDir      = 'C:\ProgramData\wrm\models'                      # holds openproteus-x2 / liveaction-x2 .param/.bin (setup.ps1 installs them)
+    TorchPath         = 'C:\ProgramData\wrm\venv-torch\Scripts\python.exe' # Python 3.12 venv that runs tools/torch_upscale.py (setup.ps1 -WithTorch creates it; AMD ROCm PyTorch)
+    TorchModelDir     = 'C:\ProgramData\wrm\models'                      # holds the torch engines' .pth files (setup.ps1 -WithTorch installs them)
+    UpscaleTorchDtype = 'fp16'         # torch engines: fp16 (fast, ~3 GB VRAM at batch 4) | fp32
+    UpscaleTorchBatch = 4              # torch engines: frames per GPU batch
     # --- Behavior ---
     MinTitleLengthSec = 600
     RipAllTitles      = $true          # else main title only
@@ -29,7 +33,7 @@
     UpscaleDvds       = $false
     AutoUpscale       = $false         # $false => stop after -SampleOnly clip, notify for review
     UpscaleActiveHours= @('23:00','08:00')
-    UpscaleLiveAction = 'openproteus'  # engine for live-action: openproteus (2x ncnn, natural) | liveaction (2x ncnn SPAN, fixes compression/halos/deinterlace jaggies) | anime4k (sharper) | realesrgan (legacy, uses UpscaleModel/UpscaleScale)
+    UpscaleLiveAction = 'openproteus'  # engine for live-action: any tools/models/registry.psd1 engine, e.g. openproteus (2x ncnn, natural) | liveaction (2x ncnn SPAN, fixes compression/halos/deinterlace jaggies) | liveaction-torch (same SPAN model on PyTorch/ROCm, ~3x faster; needs setup.ps1 -WithTorch) | anime4k (sharper) | realesrgan (legacy, uses UpscaleModel/UpscaleScale)
     UpscaleAnimation  = 'anime4k'      # engine for ContentType=Animation (queue item field `ContentType`); same choices
     UpscaleHeight     = 1080           # output height; width comes from the source display aspect ratio
     UpscaleShader     = 'anime4k-v4-a+a'   # libplacebo shader used by the anime4k engine

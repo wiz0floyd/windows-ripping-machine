@@ -1,0 +1,42 @@
+# Simulated torch runner (venv python + tools/torch_upscale.py) for Simulate=$true
+# runs. Invoked out-of-process by Invoke-ArmTool as
+# `pwsh -NoProfile -File stub-torch.ps1 <args>` where <args> are the arguments that
+# would follow python.exe: `-I <runner.py> --input X --output Y --model ... --dtype ...`.
+# Only --input/--output matter: copies the input to the output path so the final
+# mux has a real file to read. No param() block (see stub-video2x.ps1 for why).
+
+$argList = @($args)
+
+$inputFile = $null
+$outputFile = $null
+
+for ($i = 0; $i -lt $argList.Count; $i++) {
+    if ($argList[$i] -eq '--input' -and ($i + 1) -lt $argList.Count) {
+        $inputFile = $argList[$i + 1]
+    }
+    if ($argList[$i] -eq '--output' -and ($i + 1) -lt $argList.Count) {
+        $outputFile = $argList[$i + 1]
+    }
+}
+
+if (-not $inputFile -or -not $outputFile) {
+    [Console]::Error.WriteLine('stub-torch: missing --input or --output argument')
+    exit 1
+}
+
+$outDir = Split-Path -Parent $outputFile
+if ($outDir -and -not (Test-Path -LiteralPath $outDir)) {
+    $null = New-Item -ItemType Directory -Path $outDir -Force
+}
+
+Copy-Item -LiteralPath $inputFile -Destination $outputFile -Force
+
+# The runner's periodic progress lines (key=value blocks, see tools/torch_upscale.py).
+foreach ($block in @(@{ Frame = 1000; State = 'continue' }, @{ Frame = 2878; State = 'end' })) {
+    [Console]::Out.WriteLine("frame=$($block.Frame)")
+    [Console]::Out.WriteLine('fps=57.00')
+    [Console]::Out.WriteLine("progress=$($block.State)")
+}
+
+Write-Output "stub-torch: upscaled $inputFile -> $outputFile"
+exit 0

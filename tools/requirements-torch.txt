@@ -1,0 +1,25 @@
+# Python 3.12 deps for tools/torch_upscale.py (installed into a dedicated venv by
+# setup.ps1 -WithTorch). AMD's Windows PyTorch preview: ROCm 7.2.1 + torch 2.9.1, wheels
+# from repo.radeon.com (not on PyPI). Pinned to the set verified in
+# docs/spike-pytorch-rocm-results.md (RX 7800 XT, AMD driver 26.2.2). torchaudio is not needed.
+https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm-7.2.1.tar.gz
+https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_core-7.2.1-py3-none-win_amd64.whl
+https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_devel-7.2.1-py3-none-win_amd64.whl
+https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_libraries_custom-7.2.1-py3-none-win_amd64.whl
+https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torch-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl
+https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torchvision-0.24.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl
+spandrel==0.4.2
+numpy==2.5.4
+einops==0.8.2
+safetensors==0.8.0
+# transitive deps, pinned to the spike venv's versions
+filelock==4.1.1
+fsspec==2026.9.0
+Jinja2==3.1.6
+MarkupSafe==3.0.4
+mpmath==1.3.0
+networkx==3.7
+pillow==12.3.0
+sympy==1.14.0
+typing_extensions==4.16.0
+setuptools==84.0.0

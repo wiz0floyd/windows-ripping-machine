@@ -14,5 +14,7 @@
         # so they do not rank models); UpscaleFps gives the speed.
         @{ Name = 'model-openproteus';  ContentType = 'LiveAction'; Config = @{ UpscaleLiveAction = 'openproteus' }; Encode = @{ Codec = 'libx265'; Crf = 16; Preset = 'slow' } }
         @{ Name = 'model-liveaction';   ContentType = 'LiveAction'; Config = @{ UpscaleLiveAction = 'liveaction' };  Encode = @{ Codec = 'libx265'; Crf = 16; Preset = 'slow' } }
+        # Same SPAN model on the torch backend (needs setup.ps1 -WithTorch): compare UpscaleFps and frames with model-liveaction.
+        @{ Name = 'model-liveaction-torch'; ContentType = 'LiveAction'; Config = @{ UpscaleLiveAction = 'liveaction-torch' }; Encode = @{ Codec = 'libx265'; Crf = 16; Preset = 'slow' } }
     )
 }
