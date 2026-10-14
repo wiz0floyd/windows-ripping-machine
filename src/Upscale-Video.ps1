@@ -6,9 +6,13 @@ $ErrorActionPreference = 'Stop'
 # tools/ run by an Invoke-ArmTool name, reading its model files from ModelDirKey. Every
 # backend runner decodes to RGB and re-encodes with the swscale default (BT.601 matrix,
 # see Get-UpscaleColorInput). anime4k and realesrgan are built-in video2x engines.
+# PythonKey (torch only) adds the venv python to the plan's RequiredFiles; Setup is the
+# command the missing-file error points at.
 $script:ArmUpscaleBackends = [ordered]@{
-    ncnn = @{ Tool = 'ncnn'; Runner = 'ncnn_upscale.py'; ModelDirKey = 'NcnnModelDir'; Label = 'ncnn upscale' }
+    ncnn  = @{ Tool = 'ncnn'; Runner = 'ncnn_upscale.py'; ModelDirKey = 'NcnnModelDir'; Label = 'ncnn upscale'; Setup = 'setup.ps1' }
+    torch = @{ Tool = 'torch'; Runner = 'torch_upscale.py'; ModelDirKey = 'TorchModelDir'; Label = 'torch upscale'; Setup = 'setup.ps1 -WithTorch'; PythonKey = 'TorchPath' }
 }
+$script:ArmDefaultTorchPath = 'C:\ProgramData\wrm\venv-torch\Scripts\python.exe'
 $script:ArmBuiltinUpscaleEngines = @('anime4k', 'realesrgan')
 $script:ArmUpscaleRegistryPath = Join-Path $PSScriptRoot '..' 'tools' 'models' 'registry.psd1'
 $script:ArmDefaultModelDir = 'C:\ProgramData\wrm\models'
@@ -93,6 +97,11 @@ function Test-ArmUpscaleModelEntry {
         if ($files.Count -ne 2 -or $param.Count -ne 1 -or $bin.Count -ne 1 -or
             [System.IO.Path]::GetFileNameWithoutExtension($param[0]) -ne [System.IO.Path]::GetFileNameWithoutExtension($bin[0])) {
             return 'an ncnn model needs exactly one .param and one .bin file with the same base name'
+        }
+    }
+    if ($backend -eq 'torch') {
+        if ($files.Count -ne 1 -or $files[0] -notmatch '\.(pth|safetensors)$') {
+            return 'a torch model needs exactly one .pth or .safetensors file'
         }
     }
     return $null
@@ -836,14 +845,28 @@ function Get-UpscalePlan {
             $upscale['Runner'] = $runner
             $upscale['Scale'] = [int]$entry['Scale']
             $upscale['ModelFiles'] = $modelFiles
+            $upscale['Setup'] = $spec.Setup
             if ($backend -eq 'ncnn') {
                 # <base>.param + <base>.bin (Test-ArmUpscaleModelEntry enforces the shared base)
                 $param = @($modelFiles | Where-Object { $_ -like '*.param' })[0]
                 $upscale['ModelBase'] = $param.Substring(0, $param.Length - '.param'.Length)
             }
+            if ($backend -eq 'torch') {
+                $upscale['Dtype'] = Get-UpscaleSetting -Config $Config -Name 'UpscaleTorchDtype' -Default 'fp16'
+                $upscale['Batch'] = Get-UpscaleSetting -Config $Config -Name 'UpscaleTorchBatch' -Default 4
+                if ($upscale['Dtype'] -notin @('fp16', 'fp32')) {
+                    $planError = "Unknown UpscaleTorchDtype '$($upscale['Dtype'])' (expected fp16 or fp32)"
+                } elseif (-not ("$($upscale['Batch'])" -match '^\d+$' -and [int]$upscale['Batch'] -ge 1)) {
+                    $planError = "UpscaleTorchBatch '$($upscale['Batch'])' is not an integer >= 1"
+                }
+            }
             $upscale['Ffmpeg'] = Get-UpscaleSetting -Config $Config -Name 'FfmpegPath' -Default 'ffmpeg'
             $upscale['Ffprobe'] = Resolve-ArmFfprobePath -Config $Config
             $upscale['RequiredFiles'] = @($runner) + $modelFiles
+            if ($spec['PythonKey']) {
+                # A missing venv fails at plan-check time with the setup hint, not as an opaque launch error.
+                $upscale['RequiredFiles'] += Get-UpscaleSetting -Config $Config -Name $spec.PythonKey -Default $script:ArmDefaultTorchPath
+            }
         } else {
             $engineTool = 'video2x'
             $engineLabel = 'video2x upscale'
@@ -960,6 +983,21 @@ function Get-UpscaleEngineArgumentList {
             '--param', "$($Plan.Upscale.ModelBase).param",
             '--bin', "$($Plan.Upscale.ModelBase).bin",
             '--scale', "$scale",
+            '--out-width', "$($Plan.Target.Width)",
+            '--out-height', "$($Plan.Target.Height)",
+            '--ffmpeg', $Plan.Upscale.Ffmpeg,
+            '--ffprobe', $Plan.Upscale.Ffprobe,
+            '--output', $OutputFile
+        )
+    }
+    if ($Plan.EngineTool -eq 'torch') {
+        return [string[]]@(
+            '-I', $Plan.Upscale.Runner,
+            '--input', $InputFile,
+            '--model', $Plan.Upscale.ModelFiles[0],
+            '--scale', "$($Plan.Upscale.Scale)",
+            '--dtype', "$($Plan.Upscale.Dtype)",
+            '--batch', "$($Plan.Upscale.Batch)",
             '--out-width', "$($Plan.Target.Width)",
             '--out-height', "$($Plan.Target.Height)",
             '--ffmpeg', $Plan.Upscale.Ffmpeg,
@@ -1260,7 +1298,7 @@ function Invoke-Upscale {
             foreach ($required in $plan.Upscale.RequiredFiles) {
                 if (-not (Test-Path -LiteralPath $required)) {
                     $engine = $plan.Engine
-                    throw "$($plan.Engine) engine needs '$required' - run setup.ps1 to install the $($plan.Upscale.Backend) runner and model"
+                    throw "$($plan.Engine) engine needs '$required' - run $($plan.Upscale.Setup) to install the $($plan.Upscale.Backend) runner and model"
                 }
             }
         }

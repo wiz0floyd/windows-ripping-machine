@@ -413,6 +413,108 @@ Describe 'Install-NcnnUpscaler' {
     }
 }
 
+Describe 'Install-TorchUpscaler' {
+    BeforeEach {
+        $script:Root = Join-Path $env:TEMP "wrm-torch-setup-test-$(New-Guid)"
+        $script:Py = Join-Path $script:Root 'venv-torch\Scripts\python.exe'
+        $script:Models = Join-Path $script:Root 'models'
+        $script:Req = Join-Path $script:Root 'req-torch.txt'
+        $null = New-Item -ItemType Directory -Force -Path $script:Root
+        Set-Content -Path $script:Req -Value 'spandrel==0.4.2'
+
+        Mock Find-ArmPython312 { 'C:\Py312\python.exe' }
+        Mock Install-WingetPackage {}
+        Mock Write-Warning {}
+        Mock Install-ArmRegistryModels {}
+        Mock Get-Command { $null } -ParameterFilter { $Name -eq 'uv' }
+        # venv creation must produce the python.exe the function then re-checks
+        Mock Invoke-ArmPython {
+            if ($Arguments -contains 'venv') {
+                $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $script:Py)
+                Set-Content -LiteralPath $script:Py -Value 'py'
+            }
+            0
+        }
+    }
+
+    AfterEach {
+        Remove-Item -Path $script:Root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'creates a Python 3.12 venv, installs requirements, the torch registry models, then checks the GPU' {
+        Install-TorchUpscaler -RequirementsPath $script:Req -PythonPath $script:Py -ModelDir $script:Models -BundledModelDir 'X:\bundled'
+
+        Should -Invoke Install-WingetPackage -Times 0
+        Should -Invoke Invoke-ArmPython -Times 1 -ParameterFilter { $Python -eq 'C:\Py312\python.exe' -and $Arguments -contains 'venv' }
+        Should -Invoke Invoke-ArmPython -Times 1 -ParameterFilter { $Python -eq $script:Py -and $Arguments[0] -eq '-I' -and $Arguments -contains 'pip' -and $Arguments -contains $script:Req }
+        Should -Invoke Install-ArmRegistryModels -Times 1 -ParameterFilter {
+            $Backend -eq 'torch' -and $ModelDir -eq $script:Models -and $BundledModelDir -eq 'X:\bundled' -and $RegistryPath -like '*tools*models*registry.psd1'
+        }
+        Should -Invoke Invoke-ArmPython -Times 1 -ParameterFilter { $Python -eq $script:Py -and ($Arguments -join ' ') -match 'torch\.cuda\.is_available' }
+        Should -Invoke Write-Warning -Times 0
+    }
+
+    It 'installs Python 3.12 with winget when none is found, then uses it' {
+        $script:findCalls = 0
+        Mock Find-ArmPython312 { $script:findCalls++; if ($script:findCalls -gt 1) { 'C:\New312\python.exe' } }
+
+        Install-TorchUpscaler -RequirementsPath $script:Req -PythonPath $script:Py -ModelDir $script:Models
+
+        Should -Invoke Install-WingetPackage -Times 1 -ParameterFilter { $Id -eq 'Python.Python.3.12' }
+        Should -Invoke Invoke-ArmPython -Times 1 -ParameterFilter { $Python -eq 'C:\New312\python.exe' -and $Arguments -contains 'venv' }
+    }
+
+    It 'warns and stops (no throw) when Python 3.12 is still missing after winget' {
+        Mock Find-ArmPython312 { $null }
+
+        { Install-TorchUpscaler -RequirementsPath $script:Req -PythonPath $script:Py -ModelDir $script:Models } | Should -Not -Throw
+
+        Should -Invoke Write-Warning -Times 1 -ParameterFilter { $Message -match 'Python 3\.12 not found' }
+        Should -Invoke Invoke-ArmPython -Times 0
+        Should -Invoke Install-ArmRegistryModels -Times 0
+    }
+
+    It 'skips venv creation when the venv already exists' {
+        $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $script:Py)
+        Set-Content -LiteralPath $script:Py -Value 'py'
+
+        Install-TorchUpscaler -RequirementsPath $script:Req -PythonPath $script:Py -ModelDir $script:Models
+
+        Should -Invoke Find-ArmPython312 -Times 0
+        Should -Invoke Invoke-ArmPython -ParameterFilter { $Arguments -contains 'venv' } -Times 0
+        Should -Invoke Install-ArmRegistryModels -Times 1
+    }
+
+    It 'retries with uv pip when pip fails and uv is on PATH, saying why' {
+        Mock Get-Command { [pscustomobject]@{ Source = 'C:\uv\uv.exe' } } -ParameterFilter { $Name -eq 'uv' }
+        Mock Invoke-ArmPython { 1 } -ParameterFilter { $Arguments -contains '-m' -and $Arguments -contains 'pip' }
+
+        Install-TorchUpscaler -RequirementsPath $script:Req -PythonPath $script:Py -ModelDir $script:Models
+
+        Should -Invoke Write-Warning -Times 1 -ParameterFilter { $Message -match 'failed \(exit 1\); retrying with uv' }
+        Should -Invoke Invoke-ArmPython -Times 1 -ParameterFilter { $Python -eq 'C:\uv\uv.exe' -and ($Arguments -join ' ') -eq "pip install --python $($script:Py) -r $($script:Req)" }
+        Should -Invoke Install-ArmRegistryModels -Times 1
+    }
+
+    It 'warns and stops when pip fails and uv is not on PATH' {
+        Mock Invoke-ArmPython { 1 } -ParameterFilter { $Arguments -contains '-m' -and $Arguments -contains 'pip' }
+
+        Install-TorchUpscaler -RequirementsPath $script:Req -PythonPath $script:Py -ModelDir $script:Models
+
+        Should -Invoke Write-Warning -Times 1 -ParameterFilter { $Message -match 'uv is not on PATH' }
+        Should -Invoke Install-ArmRegistryModels -Times 0
+    }
+
+    It 'warns (models still installed) when torch sees no GPU' {
+        Mock Invoke-ArmPython { 3 } -ParameterFilter { ($Arguments -join ' ') -match 'torch\.cuda\.is_available' }
+
+        Install-TorchUpscaler -RequirementsPath $script:Req -PythonPath $script:Py -ModelDir $script:Models
+
+        Should -Invoke Install-ArmRegistryModels -Times 1
+        Should -Invoke Write-Warning -Times 1 -ParameterFilter { $Message -match 'sees no GPU \(exit 3\)' }
+    }
+}
+
 Describe 'Install-ArmRegistryModel' {
     BeforeAll {
         $script:RepoModels = Join-Path $PSScriptRoot '..' 'tools' 'models'

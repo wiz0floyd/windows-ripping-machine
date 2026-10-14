@@ -152,7 +152,7 @@ function Get-ArmConfig {
     # Expand relative paths to absolute. Bare tool names (no path separator, e.g.
     # FfmpegPath = 'ffmpeg') are left untouched so Invoke-ArmTool/Test-Path can
     # resolve them via PATH instead of joining them onto the repo root.
-    $pathKeys = @('StagingDir', 'UpscaleQueueDir', 'LogDir', 'StateDir', 'MakeMkvConPath', 'FreacCmdPath', 'FfmpegPath', 'FfprobePath', 'Video2xPath', 'NcnnPath', 'NcnnModelDir')
+    $pathKeys = @('StagingDir', 'UpscaleQueueDir', 'LogDir', 'StateDir', 'MakeMkvConPath', 'FreacCmdPath', 'FfmpegPath', 'FfprobePath', 'Video2xPath', 'NcnnPath', 'NcnnModelDir', 'TorchPath', 'TorchModelDir')
     foreach ($key in $pathKeys) {
         if ($config.ContainsKey($key) -and $config[$key] -and -not [System.IO.Path]::IsPathRooted($config[$key])) {
             $hasSeparator = $config[$key] -match '[\\/]'
@@ -342,7 +342,7 @@ $script:ArmStdErrErrorPattern = '(?i)\b(error|fatal|failed|invalid|cannot|could 
     Execute an external tool, optionally routing to a test stub in simulation mode.
 
 .DESCRIPTION
-    Runs an external tool (makemkvcon, freaccmd, ffmpeg, ffprobe, video2x, or ncnn - the venv python.exe that runs tools/ncnn_upscale.py) with given arguments.
+    Runs an external tool (makemkvcon, freaccmd, ffmpeg, ffprobe, video2x, ncnn - the venv python.exe that runs tools/ncnn_upscale.py, or torch - the venv python.exe that runs tools/torch_upscale.py) with given arguments.
     Returns a hashtable with ExitCode, StdOut (array of lines), and StdErr (array of lines).
 
     When $Config.Simulate is $true, runs tests/stubs/stub-<name>.ps1 instead.
@@ -355,7 +355,7 @@ $script:ArmStdErrErrorPattern = '(?i)\b(error|fatal|failed|invalid|cannot|could 
     separate lines); empty lines are dropped.
 
 .PARAMETER Name
-    Tool name: makemkvcon, freaccmd, ffmpeg, ffprobe, video2x, or ncnn.
+    Tool name: makemkvcon, freaccmd, ffmpeg, ffprobe, video2x, ncnn, or torch.
 
 .PARAMETER Arguments
     String array of command-line arguments.
@@ -376,7 +376,7 @@ $script:ArmStdErrErrorPattern = '(?i)\b(error|fatal|failed|invalid|cannot|could 
 .PARAMETER ProgressHandler
     Scriptblock called with one parsed progress object (see Update-ArmToolProgress) each
     time a stdout key=value block closes with `progress=continue|end` (ffmpeg -progress
-    pipe:1, tools/ncnn_upscale.py). Those key=value lines are consumed: neither logged nor
+    pipe:1, tools/ncnn_upscale.py, tools/torch_upscale.py). Those key=value lines are consumed: neither logged nor
     kept in StdOut. A handler that throws is logged at WARN once and never fails the run.
 
 .OUTPUTS
@@ -390,7 +390,7 @@ function Invoke-ArmTool {
     [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateSet('makemkvcon', 'freaccmd', 'ffmpeg', 'ffprobe', 'video2x', 'ncnn')]
+        [ValidateSet('makemkvcon', 'freaccmd', 'ffmpeg', 'ffprobe', 'video2x', 'ncnn', 'torch')]
         [string] $Name,
 
         [Parameter(Mandatory = $true)]

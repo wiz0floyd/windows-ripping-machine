@@ -1010,7 +1010,30 @@ Describe 'Get-UpscalePlan' {
         $p = New-TestPlan -Override @{ UpscaleLiveAction = 'bogus' }
         $p.Engine | Should -Be 'bogus'
         $p.Error | Should -Match "Unknown upscale engine 'bogus'"
-        $p.Error | Should -Match 'expected one of: liveaction, openproteus, anime4k, realesrgan'
+        $p.Error | Should -Match 'expected one of: liveaction, liveaction-torch, openproteus, anime4k, realesrgan'
+    }
+
+    It 'plans liveaction-torch on the torch backend: .pth from TorchModelDir, dtype/batch, venv python required' {
+        $p = New-TestPlan -Override @{ UpscaleLiveAction = 'liveaction-torch'; TorchModelDir = 'D:\tm'; TorchPath = 'D:\vt\python.exe' }
+        $p.Error | Should -BeNullOrEmpty
+        $p.EngineTool | Should -Be 'torch'
+        $p.Upscale.Backend | Should -Be 'torch'
+        $p.Upscale.Dtype | Should -Be 'fp16'
+        $p.Upscale.Batch | Should -Be 4
+        $p.Upscale.Setup | Should -Be 'setup.ps1 -WithTorch'
+        $p.Upscale.ModelFiles | Should -Be @('D:\tm\2xLiveActionV1_SPAN_490000.pth')
+        $p.Upscale.RequiredFiles | Should -Contain 'D:\tm\2xLiveActionV1_SPAN_490000.pth'
+        $p.Upscale.RequiredFiles[-1] | Should -Be 'D:\vt\python.exe'
+        $p.ColorConvert | Should -Not -BeNullOrEmpty
+        $fp32 = New-TestPlan -Override @{ UpscaleLiveAction = 'liveaction-torch'; UpscaleTorchDtype = 'fp32'; UpscaleTorchBatch = 1 }
+        $fp32.Upscale.Dtype | Should -Be 'fp32'
+        $fp32.Upscale.Batch | Should -Be 1
+    }
+
+    It 'reports a bad UpscaleTorchDtype / UpscaleTorchBatch in Error' {
+        (New-TestPlan -Override @{ UpscaleLiveAction = 'liveaction-torch'; UpscaleTorchDtype = 'bf16' }).Error | Should -Match "Unknown UpscaleTorchDtype 'bf16'"
+        (New-TestPlan -Override @{ UpscaleLiveAction = 'liveaction-torch'; UpscaleTorchBatch = 0 }).Error | Should -Match "UpscaleTorchBatch '0' is not an integer >= 1"
+        (New-TestPlan -Override @{ UpscaleLiveAction = 'liveaction-torch'; UpscaleTorchBatch = 'x' }).Error | Should -Match "UpscaleTorchBatch 'x'"
     }
 
     It 'plans any registry engine (local registry file in NcnnModelDir) with the entry Scale' {
@@ -1074,6 +1097,7 @@ Describe 'Get-ArmUpscaleModelRegistry' {
         $r.Models.Keys | Should -Contain 'openproteus'
         $r.Models.Keys | Should -Contain 'liveaction'
         $r.Models['liveaction']['Scale'] | Should -Be 2
+        $r.Models['liveaction-torch']['Backend'] | Should -Be 'torch'
     }
 
     It 'merges registry.local.psd1 from NcnnModelDir: adds entries and replaces repo ones' {
@@ -1110,6 +1134,8 @@ Describe 'Get-ArmUpscaleModelRegistry' {
         @{ Why = 'no files'; Entry = "bad = @{ Backend = 'ncnn'; Files = @(); Scale = 2 }"; Want = 'Files is empty' }
         @{ Why = 'bad scale'; Entry = "bad = @{ Backend = 'ncnn'; Files = @('x.param', 'x.bin'); Scale = 0 }"; Want = 'Scale' }
         @{ Why = 'ncnn pair mismatch'; Entry = "bad = @{ Backend = 'ncnn'; Files = @('x.param', 'y.bin'); Scale = 2 }"; Want = 'one .param and one .bin' }
+        @{ Why = 'torch with two files'; Entry = "bad = @{ Backend = 'torch'; Files = @('x.pth', 'y.pth'); Scale = 2 }"; Want = 'exactly one .pth or .safetensors' }
+        @{ Why = 'torch wrong extension'; Entry = "bad = @{ Backend = 'torch'; Files = @('x.onnx'); Scale = 2 }"; Want = 'exactly one .pth or .safetensors' }
     ) {
         Set-Content -LiteralPath $script:RegFile -Value "@{ a = @{ Backend = 'ncnn'; Files = @('a.param', 'a.bin'); Scale = 2 }; $Entry }"
         $r = Get-ArmUpscaleModelRegistry -Path $script:RegFile
@@ -1146,6 +1172,11 @@ Describe 'Upscale stage argument builders' {
             Should -Be '-i T:\p.mkv -p libplacebo --libplacebo-shader anime4k-v4-a+a -w 1920 -h 1080 -o T:\u.mkv'
         (Get-UpscaleEngineArgumentList -Plan (New-TestPlan -Override @{ UpscaleLiveAction = 'realesrgan' }) -InputFile 'T:\p.mkv' -OutputFile 'T:\u.mkv') -join ' ' |
             Should -Be '-i T:\p.mkv -p realesrgan --realesrgan-model realesr-animevideov3 -s 2 -o T:\u.mkv'
+    }
+
+    It 'builds the torch engine argument list' {
+        (Get-UpscaleEngineArgumentList -Plan (New-TestPlan -Override @{ UpscaleLiveAction = 'liveaction-torch'; TorchModelDir = 'C:\tm' }) -InputFile 'T:\p.mkv' -OutputFile 'T:\u.mkv') -join ' ' |
+            Should -Match '^-I .*torch_upscale\.py --input T:\\p\.mkv --model C:\\tm\\2xLiveActionV1_SPAN_490000\.pth --scale 2 --dtype fp16 --batch 4 --out-width 1920 --out-height 1080 --ffmpeg ffmpeg --ffprobe ffprobe --output T:\\u\.mkv$'
     }
 
     It 'builds the liveaction runner arguments: identical to openproteus except the model files' {
@@ -1278,7 +1309,7 @@ Describe 'Invoke-Upscale engine routing' {
                 return [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @($script:ProbeStderr) }
             }
             $outFile = $Arguments[$Arguments.Count - 1]
-            if ($Name -eq 'ncnn') { $outFile = $Arguments[[array]::IndexOf($Arguments, '--output') + 1] }
+            if ($Name -in 'ncnn', 'torch') { $outFile = $Arguments[[array]::IndexOf($Arguments, '--output') + 1] }
             if ($Name -eq 'video2x') { $outFile = $Arguments[[array]::IndexOf($Arguments, '-o') + 1] }
             Set-Content -LiteralPath $outFile -Value 'fake bytes'
             [pscustomobject]@{ ExitCode = 0; StdOut = @(); StdErr = @() }
@@ -1322,6 +1353,41 @@ Describe 'Invoke-Upscale engine routing' {
         $r.Engine | Should -Be 'liveaction'
         $r.Error | Should -Match "liveaction engine needs '.*liveaction-x2\.param' - run setup\.ps1"
         Should -Invoke Invoke-ArmTool -Times 0 -ParameterFilter { $Name -eq 'ncnn' -or ($Name -eq 'ffmpeg' -and ($Arguments -join ' ') -match 'ffv1|libx265') }
+    }
+
+    It 'runs the torch runner with the .pth, scale, dtype and batch when UpscaleLiveAction = liveaction-torch' {
+        $script:Config.UpscaleLiveAction = 'liveaction-torch'
+        $script:Config.TorchModelDir = 'C:\tmodels'
+        $script:Config.UpscaleTorchBatch = 2
+
+        $r = Invoke-Upscale -InputFile $script:InputFile -OutputDir $script:OutputDir -Config $script:Config
+        $r.Success | Should -Be $true -Because $r.Error
+        $r.Engine | Should -Be 'liveaction-torch'
+
+        Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter {
+            $j = $Arguments -join ' '
+            $Name -eq 'torch' -and $j -match 'torch_upscale\.py' -and $j -match '--model C:\\tmodels\\2xLiveActionV1_SPAN_490000\.pth' -and
+            $j -match '--scale 2 --dtype fp16 --batch 2 --out-width 1920 --out-height 1080'
+        }
+        Should -Invoke Invoke-ArmTool -Times 0 -ParameterFilter { $Name -eq 'ncnn' }
+        Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter {
+            $Name -eq 'ffmpeg' -and ($Arguments -join ' ') -match '-vf setsar=1,colorspace=all=bt709:iall=bt601-6-525'
+        }
+    }
+
+    It 'fails before any encode, pointing at setup.ps1 -WithTorch, when the torch venv is missing' {
+        $script:Config.UpscaleLiveAction = 'liveaction-torch'
+        $script:Config.Simulate = $false
+        $models = Join-Path $script:TestDir "tmodels-$(New-Guid)"
+        $null = New-Item -ItemType Directory -Path $models
+        Set-Content -LiteralPath (Join-Path $models '2xLiveActionV1_SPAN_490000.pth') -Value 'pth'
+        $script:Config.TorchModelDir = $models
+        $script:Config.TorchPath = Join-Path $script:TestDir "no-venv-$(New-Guid)\Scripts\python.exe"
+
+        $r = Invoke-Upscale -InputFile $script:InputFile -OutputDir $script:OutputDir -Config $script:Config
+        $r.Success | Should -Be $false
+        $r.Error | Should -Match "liveaction-torch engine needs '.*no-venv-.*python\.exe' - run setup\.ps1 -WithTorch to install the torch runner"
+        Should -Invoke Invoke-ArmTool -Times 0 -ParameterFilter { $Name -eq 'torch' -or ($Name -eq 'ffmpeg' -and ($Arguments -join ' ') -match 'ffv1|libx265') }
     }
 
     It 'derives a 1440 width for a 4:3 source' {
@@ -1642,5 +1708,22 @@ Describe 'Invoke-Upscale output handling with the Simulate stubs (#32)' {
         Should -Invoke Invoke-ArmTool -Times 2 -ParameterFilter { ($Arguments -join ' ') -match 'idet' -and $Arguments[-1] -eq '-' -and $StdErrLevel -eq 'None' }
         Should -Invoke Invoke-ArmTool -Times 1 -ParameterFilter { ($Arguments -join ' ') -match '-map 0:v:0 -f null -$' -and $StdErrLevel -eq 'None' }
         Should -Invoke Invoke-ArmTool -Times 3 -ParameterFilter { $Name -in 'ffmpeg', 'ncnn' -and $TimeoutSec -eq 86400 -and $null -ne $ProgressHandler }
+    }
+
+    It 'routes liveaction-torch through Invoke-ArmTool to stub-torch, with upscale progress' {
+        $logDir = Join-Path $script:TestDir "logs-torch-$(New-Guid)"
+        $config = $script:Config32.Clone()
+        $config.LogDir = $logDir
+        $config.UpscaleLiveAction = 'liveaction-torch'
+        $script:ProgressT = [System.Collections.Generic.List[object]]::new()
+
+        $r = Invoke-Upscale -InputFile $script:Input32 -OutputDir (Join-Path $script:TestDir "outT-$(New-Guid)") -Config $config -SampleOnly -ProgressHandler { param($p) $script:ProgressT.Add($p) }
+
+        $r.Success | Should -Be $true -Because $r.Error
+        $r.Engine | Should -Be 'liveaction-torch'
+        $log = @(Get-ChildItem -Path $logDir -Filter '*.log' | Get-Content)
+        @($log | Where-Object { $_ -match '\[torch\] stub-torch: upscaled ' }).Count | Should -Be 1
+        @($log | Where-Object { $_ -match 'Upscale upscale progress: frame 2878/2877, 100\.0%' }).Count | Should -Be 1
+        @($script:ProgressT | Where-Object { $_.Stage -eq 'upscale' -and $_.Ended }).Count | Should -Be 1
     }
 }

@@ -1,3 +1,4 @@
 # Bundled ncnn models: byte-exact (setup.ps1 verifies their SHA256)
 tools/models/*.param -text
 tools/models/*.bin binary
+tools/models/*.pth binary

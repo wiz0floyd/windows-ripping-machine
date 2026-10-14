@@ -3,18 +3,23 @@
 `registry.psd1` lists every model-file upscale engine: its backend, files, native scale,
 license, and where setup gets the files (`Bundled` here, or a pinned `Source` download).
 `setup.ps1` (`Install-ArmRegistryModels`) installs each entry into the backend's model dir
-(`NcnnModelDir` for ncnn) after checking the SHA256 values. Select an engine by its registry
-name, e.g. `UpscaleLiveAction = 'liveaction'`; ncnn engines run through `tools/ncnn_upscale.py`.
+(`NcnnModelDir` for ncnn, `TorchModelDir` for torch) after checking the SHA256 values. Select an
+engine by its registry name, e.g. `UpscaleLiveAction = 'liveaction'`. ncnn engines run through
+`tools/ncnn_upscale.py`. torch engines run through `tools/torch_upscale.py` (PyTorch on AMD ROCm),
+which `setup.ps1 -WithTorch` installs; their models are installed only with that switch.
 
 ## Adding a model
 
-For a model on an existing backend (today `ncnn`), no code changes are needed:
+For a model on an existing backend (`ncnn` or `torch`), no code changes are needed:
 
 1. Add an entry to `registry.psd1`. The fields are documented at the top of that file. An ncnn
-   entry needs exactly one `.param` and one `.bin` with the same base name.
+   entry needs exactly one `.param` and one `.bin` with the same base name. A torch entry needs
+   exactly one `.pth` or `.safetensors` that [spandrel](https://github.com/chaiNNer-org/spandrel)
+   can load (SPAN, ESRGAN, Compact, DAT, HAT, SwinIR and more). That is usually the file
+   OpenModelDB links to, with no conversion.
 2. Supply the files in one of two ways:
-   - **Bundled:** commit them here, add them to `.gitattributes` (`-text`), and pin each SHA256
-     under `Bundled`.
+   - **Bundled:** commit them here, add them to `.gitattributes` (`-text` or `binary`), and pin
+     each SHA256 under `Bundled`.
    - **Source:** give a downloadable `Url` (a release asset, not a `/tree/` page), its `Sha256`,
      and `Archive = 'tar.gz'` if it is an archive.
 3. Add a section below with the source, license and checksums.
@@ -50,6 +55,17 @@ repo registry). An invalid entry is skipped, and the upscale log shows a WARN na
 
 `.gitattributes` marks these files `-text` so Git never rewrites their line endings, which
 would change the checksums.
+
+## liveaction-torch (`2xLiveActionV1_SPAN_490000.pth`)
+
+The original PyTorch checkpoint of the model above, unchanged (same source, SHA256 and
+CC BY-NC-SA 4.0 license; attribution above). The `liveaction-torch` engine loads it with spandrel
+in `tools/torch_upscale.py`. On an RX 7800 XT it ran at about 57 fps (fp16, batch 4), against
+17.6 fps for the ncnn conversion (`docs/spike-pytorch-rocm-results.md`).
+
+| File | Bytes | SHA256 |
+|---|---|---|
+| `2xLiveActionV1_SPAN_490000.pth` | 8947821 | `8b166c75831ea7f694d9058ee9c8df8148af8cc1d2b57e69e6581b15cab572f7` |
 
 ## openproteus-x2 (downloaded, not bundled)
 

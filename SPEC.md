@@ -48,7 +48,7 @@ wrm/
 ├── setup.ps1
 ├── tests/
 │   ├── *.Tests.ps1              # Pester 5, one per src module
-│   ├── stubs/                   # stub-makemkvcon.ps1, stub-freaccmd.ps1, stub-ffmpeg.ps1, stub-ffprobe.ps1, stub-video2x.ps1, stub-ncnn.ps1
+│   ├── stubs/                   # stub-makemkvcon.ps1, stub-freaccmd.ps1, stub-ffmpeg.ps1, stub-ffprobe.ps1, stub-video2x.ps1, stub-ncnn.ps1, stub-torch.ps1
 │   ├── fixtures/                # makemkvcon robot output, TMDb JSON, ffmpeg idet samples, ffprobe JSON, golden upscale args
 │   └── browser/                 # Playwright specs for the web UI (Node, test-only)
 ├── .gitignore                   # config/config.psd1, logs/, *.log
@@ -74,6 +74,10 @@ wrm/
     Video2xPath       = 'C:\Program Files\Video2X\video2x.exe'
     NcnnPath          = 'C:\ProgramData\wrm\venv\Scripts\python.exe'   # venv python running tools/ncnn_upscale.py
     NcnnModelDir      = 'C:\ProgramData\wrm\models'                      # openproteus-x2 / liveaction-x2 .param/.bin
+    TorchPath         = 'C:\ProgramData\wrm\venv-torch\Scripts\python.exe' # Python 3.12 venv running tools/torch_upscale.py (setup.ps1 -WithTorch)
+    TorchModelDir     = 'C:\ProgramData\wrm\models'                      # torch engines' .pth files
+    UpscaleTorchDtype = 'fp16'         # torch engines: fp16 | fp32
+    UpscaleTorchBatch = 4              # torch engines: frames per GPU batch (int >= 1)
     # --- Behavior ---
     MinTitleLengthSec = 600
     RipAllTitles      = $true          # else main title only
@@ -85,7 +89,7 @@ wrm/
     UpscaleDvds       = $false
     AutoUpscale       = $false         # $false => stop after -SampleOnly clip, notify for review
     UpscaleActiveHours= @('23:00','08:00')
-    UpscaleLiveAction = 'openproteus'  # any tools/models/registry.psd1 engine (openproteus | liveaction) | anime4k | realesrgan (legacy)
+    UpscaleLiveAction = 'openproteus'  # any tools/models/registry.psd1 engine (openproteus | liveaction | liveaction-torch) | anime4k | realesrgan (legacy)
     UpscaleAnimation  = 'anime4k'      # engine when the queue item has ContentType='Animation' (set from the TMDb Animation genre; no config key)
     UpscaleHeight     = 1080           # output height; width = round(height * source DAR / 2) * 2
     UpscaleShader     = 'anime4k-v4-a+a'   # libplacebo shader for the anime4k engine
@@ -141,14 +145,16 @@ Write-ArmLog -Level <INFO|WARN|ERROR> -Message <string> [-Config <hashtable>] [-
 #  wrm-<yyyyMMdd>-pid<PID>.log beside it. Must never throw (log dir auto-created; falls
 #  back to console-only).
 
-Invoke-ArmTool -Name <makemkvcon|freaccmd|ffmpeg|ffprobe|video2x|ncnn> -Arguments <string[]>
+Invoke-ArmTool -Name <makemkvcon|freaccmd|ffmpeg|ffprobe|video2x|ncnn|torch> -Arguments <string[]>
                -Config <hashtable> [-TimeoutSec <int>] [-StdErrLevel <WARN|INFO|None>]
                [-ProgressHandler <scriptblock>] -> [pscustomobject]
 #  Returns @{ ExitCode=[int]; StdOut=[string[]]; StdErr=[string[]] } (unchanged; ExitCode -1
 #  and empty arrays on a launch failure or timeout, which also logs ERROR; never throws for those).
 #  When $Config.Simulate: runs tests/stubs/stub-<name>.ps1 with same args instead.
 #  `ncnn` runs $Config.NcnnPath (the venv python.exe); its Arguments start with
-#  `-I <repo>\tools\ncnn_upscale.py`. Default -TimeoutSec is 3600; Invoke-Upscale passes 86400.
+#  `-I <repo>\tools\ncnn_upscale.py`; `torch` runs $Config.TorchPath (the Python 3.12 venv
+#  from setup.ps1 -WithTorch) with `-I <repo>\tools\torch_upscale.py`.
+#  Default -TimeoutSec is 3600; Invoke-Upscale passes 86400.
 #  On timeout the process tree is killed ("Tool <name> timed out after <n> seconds").
 #  `ffprobe` runs Resolve-ArmFfprobePath (i.e. $Config.FfprobePath).
 #  Streaming (#32): output is read line by line WHILE the tool runs - the calling thread
@@ -434,11 +440,15 @@ Get-UpscalePlan -InputFile <string> -SourceInfo <pscustomobject> -InterlaceType 
 #                       #    Unknown 'bwdif=mode=send_frame' (blanket, pre-#30), Progressive $null);
 #                       #   FrameRate = measured rate for `-fps_mode cfr -r`, $null for
 #                       #   Telecined or when unmeasured (then Warnings has the WARN)
-#     Engine; EngineTool; EngineLabel   # EngineTool = 'ncnn' | 'video2x'
+#     Engine; EngineTool; EngineLabel   # EngineTool = 'ncnn' | 'torch' | 'video2x'
 #     Target            # @{ Width; Height; DisplayAspect }, Width = 2*round(Height*DAR/2); $null for realesrgan
 #     Upscale           # engine params: Model/Scale (realesrgan) | Shader (anime4k) |
-#                       #   registry engines: Backend/Runner/Scale/ModelFiles/Ffmpeg/Ffprobe/RequiredFiles
-#                       #   (+ ModelBase for ncnn; Scale = the registry entry's, passed as --scale)
+#                       #   registry engines: Backend/Runner/Scale/ModelFiles/Setup/Ffmpeg/Ffprobe/RequiredFiles
+#                       #   (+ ModelBase for ncnn; + Dtype=UpscaleTorchDtype (fp16|fp32, default fp16) and
+#                       #   Batch=UpscaleTorchBatch (int >= 1, default 4) for torch, else plan Error;
+#                       #   RequiredFiles = runner + ModelFiles (+ TorchPath for torch);
+#                       #   Setup = the install hint, 'setup.ps1' | 'setup.ps1 -WithTorch';
+#                       #   Scale = the registry entry's, passed as --scale)
 #     Encode            # @{ Codec=UpscaleEncoder (default 'libx265'); Crf; Preset=UpscalePreset (default 'slow'); Qp; AmfQuality; PixFmt; AudioCodec='copy'; ResetSar }
 #     Colour            # @{ Space; Primaries; Transfer; Range; Action } - source tags; Action = 'convert-to-bt709' | 'tag-only'
 #     ColorInput / ColorInputSpec / ColorConvert   # from the pure Get-UpscaleColorInput -SourceInfo -Engine [-Backend] (#29):
@@ -464,9 +474,13 @@ Get-ArmUpscaleModelRegistry [-Config <hashtable>] [-Path <string>] -> [pscustomo
 #  Entry = @{ Backend; Files = @(...); Scale = <int >= 1>; License; Bundled = @{ file = sha256 }
 #  | Source = @{ Url; Sha256; Archive = 'tar.gz' } }. Backends ($script:ArmUpscaleBackends):
 #  ncnn -> Invoke-ArmTool 'ncnn', tools/ncnn_upscale.py, files in NcnnModelDir, exactly one
-#  .param + one .bin with the same base name. Invalid entries (built-in name anime4k/realesrgan,
-#  unknown Backend, empty Files, bad Scale, bad ncnn pair) and unreadable files are skipped with
-#  a Warning; a missing repo file is a Warning, a missing local file is silent.
+#  .param + one .bin with the same base name; torch -> Invoke-ArmTool 'torch',
+#  tools/torch_upscale.py, files in TorchModelDir, exactly one .pth or .safetensors (any
+#  architecture spandrel loads). Invalid entries (built-in name anime4k/realesrgan,
+#  unknown Backend, empty Files, bad Scale, bad ncnn pair, bad torch file) and unreadable files
+#  are skipped with a Warning; a missing repo file is a Warning, a missing local file is silent.
+#  The local file is read from NcnnModelDir only (TorchModelDir defaults to the same dir).
+#  setup.ps1 installs from the repo registry without this validation (it is pinned and tested).
 #  Adding a model on an existing backend = one registry entry + its files (tools/models/README.md).
 #  Pure argument builders turn a plan into the stage command lines:
 #    Get-UpscalePreprocessArgumentList -Plan -OutputFile            (ffmpeg -> ffv1 intermediate)
@@ -481,25 +495,27 @@ Get-ArmUpscaleModelRegistry [-Config <hashtable>] [-Path <string>] -> [pscustomo
 Write-ArmUpscaleProgress -State <hashtable> -Progress <pscustomobject> [-Config] [-Now <datetime>]
 #  -> @{ Stage; Frame; Fps; Percent; EtaSec; Ended }. State = @{ Stage; IntervalSec; TotalSec;
 #  TotalFrames; LastLog }. Percent/ETA from out_time vs TotalSec at Speed (ffmpeg), else
-#  frames vs TotalFrames at Fps (ncnn runner); $null when unknown. Logs INFO
+#  frames vs TotalFrames at Fps (ncnn/torch runner); $null when unknown. Logs INFO
 #  "Upscale <stage> progress: frame F/T, P%, N fps, Sx, ETA hh:mm:ss|done" for the first block,
 #  then at most once per IntervalSec, and once when the stage ends. Never throws.
 
 Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
                [-ContentType <LiveAction|Animation>] [-SampleOnly] [-ProgressHandler <scriptblock>] -> [pscustomobject]
 #  Progress (#32): the preprocess and final encode run with `-progress pipe:1` prepended, and
-#  the openproteus (ncnn) upscale stage's runner prints frame/fps blocks; all three pass an
+#  the registry engines' (ncnn/torch) upscale runner prints frame/fps blocks; all three pass an
 #  Invoke-ArmTool -ProgressHandler that calls Write-ArmUpscaleProgress (IntervalSec 60;
 #  TotalSec = the sample window or source duration; TotalFrames = TotalSec x the
 #  intermediate rate: 24000/1001 for Telecined, else the forced/measured rate) and forwards
 #  each result (with Stage = preprocess|upscale|encode) to the optional -ProgressHandler.
 #  video2x stages (anime4k, realesrgan) report no progress.
 #  @{ Success; OutputFile; InterlaceType; Engine; SourceHeight; Error }   # SourceHeight = probed source frame height or $null
-#  Engine = openproteus|liveaction|anime4k|realesrgan ($null if failed before engine selection)
+#  Engine = any registry engine (openproteus|liveaction|liveaction-torch|...)|anime4k|realesrgan
+#  ($null if failed before engine selection)
 #  Probe, plan, execute. (a) Probe: Get-VideoSourceInfo (ffprobe, source file),
 #  Get-InterlaceType (-SourceDuration from the probe) and Get-VideoFrameRate. Then Get-UpscalePlan;
-#  plan Warnings are logged, plan Error and (non-Simulate) missing ncnn-engine
-#  runner/model files (error points at setup.ps1) fail the run before any encode.
+#  plan Warnings are logged, plan Error and (non-Simulate) missing registry-engine
+#  RequiredFiles fail the run before any encode, with "<engine> engine needs '<file>' - run
+#  <plan Upscale.Setup> to install the <backend> runner and model".
 #  (b) preprocess with ffmpeg:
 #     Telecined  → -vf fieldmatch,yadif=deint=interlaced,decimate  (→23.976p)
 #                  Soft-telecine guard (in Get-UpscalePlan): a Telecined verdict while the decoded
@@ -528,6 +544,11 @@ Invoke-Upscale -InputFile <string> -OutputDir <string> -Config <hashtable>
 #        liveaction  -> identical runner call with NcnnModelDir\liveaction-x2.{param,bin}
 #                       (2xLiveActionV1_SPAN). Any registry engine runs the same way: engine ->
 #                       Backend/Files/Scale from Get-ArmUpscaleModelRegistry, --scale = entry Scale
+#        liveaction-torch -> torch tool: tools/torch_upscale.py, same SPAN model as a .pth
+#                       (TorchModelDir\2xLiveActionV1_SPAN_490000.pth) loaded by spandrel on
+#                       PyTorch ROCm; same ffmpeg in/out, args and progress contract as the ncnn
+#                       runner plus `--model <file> --dtype <Dtype> --batch <Batch>`. Exits 2
+#                       when torch sees no GPU or the model's scale != --scale.
 #        anime4k     -> video2x -p libplacebo --libplacebo-shader $UpscaleShader -w W -h H
 #        realesrgan  -> legacy video2x realesrgan (model/scale from config)
 #  (d) ffmpeg mux: $UpscaleEncoder - libx265 -crf $UpscaleCrf -preset $UpscalePreset (default slow),
@@ -717,7 +738,13 @@ Invoke-ArmWebRequest -Method <string> -Path <string> [-Query <hashtable>] [-Body
 #  when all Files exist, else Bundled = pinned-SHA256 check then copy from tools/models,
 #  Source = download Url, check Sha256, extract tar.gz (each file = the first member with
 #  the same extension) or copy a single-file download. Warn-only on any failure (no throw,
-#  nothing partial installed). Create dirs (StagingDir, UpscaleQueueDir, LogDir, StateDir).
+#  nothing partial installed). -WithTorch (opt-in) also runs Install-TorchUpscaler
+#  -RequirementsPath tools/requirements-torch.txt -PythonPath TorchPath -ModelDir TorchModelDir:
+#  Python 3.12 via Find-ArmPython312 (py -3.12, then the default install dirs; winget
+#  Python.Python.3.12 when none), venv, pip install -r (on failure one retry with `uv pip`
+#  when uv is on PATH), Install-ArmRegistryModels -Backend torch, then a
+#  torch.cuda.is_available() check. Warn-only on any failure. Without -WithTorch it prints
+#  a hint. Create dirs (StagingDir, UpscaleQueueDir, LogDir, StateDir).
 #  Prompt for NAS paths/TMDb key/HA URL → write config/config.psd1 (skip prompts
 #  with -NonInteractive; copies example). Register hidden Scheduled Tasks
 #  'wrm-watcher', 'wrm-upscaler' and 'wrm-webui' (at logon, current user,
@@ -749,7 +776,7 @@ Invoke-ArmWebRequest -Method <string> -Path <string> [-Query <hashtable>] [-Body
   `Invoke-ArmTool`, or run with `Simulate=$true`).
 - Stubs (`tests/stubs/stub-*.ps1`) accept the real CLI argument shapes and emit
   realistic output: makemkvcon robot lines + create fake .mkv (a few KB of random
-  bytes); freaccmd creates tagged-path .flac placeholder; video2x and ncnn copy input to
+  bytes); freaccmd creates tagged-path .flac placeholder; video2x, ncnn and torch copy input to
   output. Fixtures include at least one real-format makemkvcon `-r` transcript
   (info + rip), a TMDb search JSON, and ffmpeg idet stderr samples for all three
   interlace classes.
