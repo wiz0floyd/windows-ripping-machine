@@ -1179,6 +1179,20 @@ Describe 'Upscale stage argument builders' {
             Should -Match '^-I .*torch_upscale\.py --input T:\\p\.mkv --model C:\\tm\\2xLiveActionV1_SPAN_490000\.pth --scale 2 --dtype fp16 --batch 4 --out-width 1920 --out-height 1080 --ffmpeg ffmpeg --ffprobe ffprobe --output T:\\u\.mkv$'
     }
 
+    It 'passes only flags the <Engine> runner argparse defines, and every required one' -ForEach @(
+        @{ Engine = 'openproteus'; Runner = 'ncnn_upscale.py' }
+        @{ Engine = 'liveaction-torch'; Runner = 'torch_upscale.py' }
+    ) {
+        $py = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..' 'tools' $Runner) -Raw
+        $defined = @([regex]::Matches($py, "add_argument\('(--[a-z-]+)'") | ForEach-Object { $_.Groups[1].Value })
+        $required = @([regex]::Matches($py, "add_argument\('(--[a-z-]+)'[^)]*required=True") | ForEach-Object { $_.Groups[1].Value })
+        $a = Get-UpscaleEngineArgumentList -Plan (New-TestPlan -Override @{ UpscaleLiveAction = $Engine }) -InputFile 'T:\p.mkv' -OutputFile 'T:\u.mkv'
+        $passed = @($a | Where-Object { $_ -like '--*' })
+        $defined.Count | Should -BeGreaterThan 5
+        $passed | Where-Object { $_ -notin $defined } | Should -BeNullOrEmpty
+        $required | Where-Object { $_ -notin $passed } | Should -BeNullOrEmpty
+    }
+
     It 'builds the liveaction runner arguments: identical to openproteus except the model files' {
         $op = (Get-UpscaleEngineArgumentList -Plan (New-TestPlan) -InputFile 'T:\p.mkv' -OutputFile 'T:\u.mkv') -join ' '
         $la = (Get-UpscaleEngineArgumentList -Plan (New-TestPlan -Override @{ UpscaleLiveAction = 'liveaction' }) -InputFile 'T:\p.mkv' -OutputFile 'T:\u.mkv') -join ' '
