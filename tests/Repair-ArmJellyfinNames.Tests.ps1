@@ -107,6 +107,31 @@ Describe 'Repair-ArmJellyfinNames' {
         @($rows | Where-Object Action -eq 'Renamed').Count | Should -Be 1
     }
 
+    It 'never moves a labelled version ("- 1080p") to extras/ even when its stem is not the folder name and it is smaller' {
+        # Disc-name folder: the upscale was named from the NFO title, so it does not start with the folder name.
+        $dir = New-MovieDir 'Hp7 Part 2_2026' @{ 'Hp7 Part 2_2026.mkv' = ('a' * 500); 'Hp7 Part 2_2026 (2026) - 1080p.mkv' = ('b' * 50) }
+        $rows = @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config)
+        Test-Path -LiteralPath (Join-Path $dir 'extras') | Should -BeFalse
+        Get-Names $dir | Should -Be @('Hp7 Part 2_2026 - 1080p.mkv', 'Hp7 Part 2_2026.mkv')
+        @($rows | Where-Object Action -eq 'Moved').Count | Should -Be 0
+    }
+
+    It 'keeps a larger labelled upscale as a version and does not let it displace the raw as main feature' {
+        $dir = New-MovieDir 'Hp7 Part 2_2026' @{ 'B1_t00.mkv' = ('a' * 50); 'Hp7 Part 2_2026 (2026) - 1080p.mkv' = ('b' * 500) }
+        $null = Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config
+        Test-Path -LiteralPath (Join-Path $dir 'extras') | Should -BeFalse
+        Get-Names $dir | Should -Be @('Hp7 Part 2_2026 - 1080p.mkv', 'Hp7 Part 2_2026.mkv')
+        (Get-Content -LiteralPath (Join-Path $dir 'Hp7 Part 2_2026.mkv') -Raw).Trim() | Should -Be ('a' * 50)
+    }
+
+    It 'skips a mis-stemmed labelled version when its target name already exists, moving nothing' {
+        $dir = New-MovieDir 'Movie' @{ 'Movie.mkv' = 'raw'; 'Movie - 1080p.mkv' = 'one'; 'Movie (2026) - 1080p.mkv' = 'two' }
+        $rows = @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config)
+        Get-Names $dir | Should -Be @('Movie - 1080p.mkv', 'Movie (2026) - 1080p.mkv', 'Movie.mkv')
+        Test-Path -LiteralPath (Join-Path $dir 'extras') | Should -BeFalse
+        @($rows | Where-Object Action -eq 'Skipped').Count | Should -BeGreaterThan 0
+    }
+
     It '-WhatIf reports WouldMove and WouldRename for several raw mkvs and changes nothing' {
         $dir = New-MovieDir 'Grease (1978)' @{ 'B1_t00.mkv' = ('a' * 50); 'B1_t01.mkv' = ('b' * 500) }
         $rows = @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config -WhatIf)

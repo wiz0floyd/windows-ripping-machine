@@ -13,6 +13,9 @@
     every movie folder directly under -Path (top-level .mkv files only):
       - raw .mkv files that Jellyfin would not group with the folder: the largest is
         renamed to '<Folder>.mkv' and every other one is moved into extras/
+      - a version already labelled '<anything> - <N>p.mkv' / '<anything> - DVD.mkv' is never moved to
+        extras/ and never competes to be the main feature; when its stem is not the folder name (an
+        upscale named from the NFO title in a disc-name folder) it is renamed to '<Folder> - <label>.mkv'
       - a '* [AI upscale 1080p].mkv' file is renamed to '<Folder> - <UpscaleHeight>p.mkv'
         (1080p by default) and the largest raw file (its source) to
         '<Folder> - <H>p.mkv' (H = source height from ffprobe; 'DVD' when unknown), so
@@ -310,7 +313,20 @@ function Repair-ArmJellyfinNames {
         $top = @(Get-ChildItem -LiteralPath $dir.FullName -File -Filter '*.mkv')
         $upscales = @($top | Where-Object { $_.Name.EndsWith($script:UpscaleSuffix, [System.StringComparison]::OrdinalIgnoreCase) })
         $raws = @($top | Where-Object { -not $_.Name.EndsWith($script:UpscaleSuffix, [System.StringComparison]::OrdinalIgnoreCase) })
-        if ($raws.Count -eq 0) { continue }
+
+        # '<stem> - <N>p.mkv' / '<stem> - DVD.mkv' is a version WRM (or Jellyfin multi-version) already labelled:
+        # never an extra and never a main-feature candidate. Only its stem may be wrong (the upscale is named from the
+        # NFO title, the folder may still carry the disc name), so it is renamed to '<Folder> - <label>.mkv'.
+        $labelRx = '^.+ - (?<label>\d{3,4}p|DVD)$'
+        $labeled = @($raws | Where-Object { $_.BaseName -match $labelRx })
+        $raws = @($raws | Where-Object { $_.BaseName -notmatch $labelRx })
+        $labelRenames = [System.Collections.Generic.List[object]]::new()
+        foreach ($lf in $labeled) {
+            if (Test-ArmJellyfinVersionName -BaseName $lf.BaseName -Folder $folder) { continue }
+            $null = $lf.BaseName -match $labelRx
+            $labelRenames.Add([pscustomobject]@{ File = $lf; Target = "$folder - $($Matches['label']).mkv" })
+        }
+        if ($raws.Count -eq 0 -and $labeled.Count -eq 0) { continue }
 
         $queuedRaws = @($raws | Where-Object { $queued.Contains($_.FullName) })
         if ($queuedRaws.Count -gt 0) {
@@ -321,6 +337,27 @@ function Repair-ArmJellyfinNames {
             $rows.Add((New-RepairRow $folder ($upscales.Name -join ', ') 'Skipped' $null 'ambiguous: several upscale files'))
             continue
         }
+
+        $labelClash = @($labelRenames | Where-Object { Test-Path -LiteralPath (Join-Path $dir.FullName $_.Target) })
+        if ($labelClash.Count -gt 0) {
+            $rows.Add((New-RepairRow $folder ($labelClash.File.Name -join ', ') 'Skipped' $null "target name already exists: $($labelClash.Target -join ', ')"))
+            continue
+        }
+        $applyLabelRenames = {
+            foreach ($lr in $labelRenames) {
+                if ($PSCmdlet.ShouldProcess($lr.File.FullName, "Rename to '$($lr.Target)'")) {
+                    try {
+                        Move-Item -LiteralPath $lr.File.FullName -Destination (Join-Path $dir.FullName $lr.Target)
+                        $rows.Add((New-RepairRow $folder $lr.File.Name 'Renamed' $lr.Target $null))
+                    } catch {
+                        $rows.Add((New-RepairRow $folder $lr.File.Name 'Skipped' $lr.Target "rename failed: $_"))
+                    }
+                } else {
+                    $rows.Add((New-RepairRow $folder $lr.File.Name 'WouldRename' $lr.Target $null))
+                }
+            }
+        }
+        if ($raws.Count -eq 0) { & $applyLabelRenames; continue }
 
         $bySize = @($raws | Sort-Object -Property Length -Descending)
         $main = $bySize[0]
@@ -386,7 +423,14 @@ function Repair-ArmJellyfinNames {
             }
         }
 
-        $nothingToDo = ($toExtras.Count -eq 0) -and ($upscales.Count -eq 0) -and (-not $mainTarget)
+        $plannedTargets = @($upTarget, $mainTarget) | Where-Object { $_ }
+        $labelCollide = @($labelRenames | Where-Object { $plannedTargets -contains $_.Target })
+        if ($labelCollide.Count -gt 0) {
+            $rows.Add((New-RepairRow $folder ($labelCollide.File.Name -join ', ') 'Skipped' $null "target name already planned: $($labelCollide.Target -join ', ')"))
+            continue
+        }
+
+        $nothingToDo = ($toExtras.Count -eq 0) -and ($upscales.Count -eq 0) -and (-not $mainTarget) -and ($labelRenames.Count -eq 0)
         if ($nothingToDo) { continue }
 
         # --- extras ---
@@ -427,6 +471,8 @@ function Repair-ArmJellyfinNames {
                 $rows.Add((New-RepairRow $folder $main.Name 'WouldRename' $mainTarget $null))
             }
         }
+
+        & $applyLabelRenames
     }
 
     if ($RemoveOrphans) {
