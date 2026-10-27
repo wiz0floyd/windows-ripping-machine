@@ -355,8 +355,12 @@ Rename-ArmUpscaleVersions -FolderName <string> -UpscaledFile <string> -SourceFil
 # tools/Repair-ArmJellyfinNames.ps1 -Path <movies root> [-ConfigPath] [-Simulate] [-Since <date>] [-Until <date>] [-RemoveOrphans] [-RenameFolders [-Force]] [-WhatIf]
 #  One-off repair of existing libraries (SupportsShouldProcess; Repair-ArmJellyfinNames function returns
 #  rows Folder, File, Action Renamed|WouldRename|Moved|WouldMove|Skipped, NewName, Reason). Per movie
-#  folder, top-level .mkv only; the largest raw file is the main feature and every other raw file that
-#  Jellyfin would not group with the folder is an extra: main -> '<Folder>.mkv', the rest -> extras/;
+#  folder, top-level .mkv only; files already labelled '<stem> - <N>p.mkv' / '<stem> - DVD.mkv' are versions:
+#  never extras, never main-feature candidates, renamed to '<Folder> - <label>.mkv' only when the stem is not
+#  the folder name (whole folder skipped if that target exists, collides with a planned main/upscale target,
+#  or two labelled files would get the same target). Of the remaining raw files the largest is the main
+#  feature and every other raw file that Jellyfin would not group with the folder is an extra:
+#  main -> '<Folder>.mkv', the rest -> extras/;
 #  one '* [AI upscale 1080p].mkv' -> '<Folder> - <UpscaleHeight>p.mkv' and its source (same base name, else
 #  largest raw) -> '<Folder> - <H>p.mkv' (H via Get-VideoSourceInfo, 'DVD' if unknown). Whole folder skipped
 #  + listed when a raw is the Source of a queue entry (.json/.awaiting-review/.failed in UpscaleQueueDir),

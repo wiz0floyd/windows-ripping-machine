@@ -10,7 +10,7 @@ Pipeline: `DiscWatcher` → `Invoke-VideoRip` (calls `Resolve-Title` up front, w
 
 ## Rules that aren't obvious from the code
 
-- **`SPEC.md` is the authoritative contract** for every function signature, parameters, and return shape. Read the relevant section before module work; update it in the same change if a signature/behavior changes. Don't duplicate its details here.
+- **`SPEC.md` is the authoritative contract** for every function signature, parameters, and return shape. Read the relevant section before module work; update it in the same change if a signature/behavior changes. This covers `tools/` scripts too, not only `src/`. Don't duplicate its details here.
 - **Never call `makemkvcon`/`freaccmd`/`ffmpeg`/`ffprobe`/`video2x`/`ncnn` (venv python running `tools/ncnn_upscale.py`)/`torch` (venv-torch python running `tools/torch_upscale.py`) directly** — go through `Invoke-ArmTool`, which routes to `tests/stubs/stub-<name>.ps1` when `$Config.Simulate`. This is what makes everything testable without hardware.
 - Pipeline functions **don't throw** for expected failures — return `New-ArmResult` / `@{ Success=$false; Error=<msg> }` so the watcher loop survives. Exceptions = programmer errors only.
 - `src/*.ps1` libraries are dot-sourced and have **no top-level side effects**. Only `DiscWatcher.ps1`, `Upscale-Worker.ps1`, `WebUi.ps1`, `setup.ps1` run top-level logic, guarded by `if ($MyInvocation.InvocationName -ne '.')` so tests can dot-source their functions.
@@ -72,6 +72,7 @@ Plain `Invoke-Pester -Path tests` also picks up `tests/manual` — use the confi
 | `src/Upscale-Worker.ps1` | Entry point (`-ConfigPath -Simulate -Once`): `Test-ArmActiveWindow`, `Invoke-ArmUpscaleQueueItem`, `Invoke-ArmUpscaleQueuePass`, `Start-UpscaleWorker` |
 | `src/JobState.ps1` | Job-state store (one JSON file per job in `StateDirjobs`): `New-ArmJob`, `Update-ArmJob`, `Get-ArmJob`, `Get-ArmJobList`, `Remove-ArmStaleJobs`. Never throws. Field whitelist `$script:ArmJobFields` — new job fields must be added there and in `ConvertTo-ArmWebJob` |
 | `src/WebUi.ps1` + `src/webui/` | Entry point for task `wrm-webui` (localhost-only `HttpListener`, default port 8765): dashboard, `/api/jobs`, upscale approve/retry/cancel, manual metadata edit. Route table + `Invoke-ArmWebRequest`; POSTs need `X-WRM-Action: 1`. Static `app.js`/`app.css` (textContent only, strict CSP) |
+| `tools/Repair-ArmJellyfinNames.ps1` | One-off NAS library repair (`wrm repair`): label/version renames, extras/ moves, folder renames. Contract = the "Repair-ArmJellyfinNames" paragraph in `SPEC.md`; tests in `tests/Repair-ArmJellyfinNames.Tests.ps1`. Every new `Skipped` reason, row action and `-WhatIf` path needs a test and a SPEC line |
 | `tests/browser/` | Playwright specs for the web UI (Node; CI job `browser`; run `npm ci && npx playwright test` there) |
 | `setup.ps1` | Installer: winget deps, dirs, writes `config.psd1`, registers tasks; `-NonInteractive`, `-Uninstall`. Needs admin (self-elevates); fails fast over SSH |
 | `tests/<Name>.Tests.ps1` | One per `src/<Name>.ps1` (+ `Setup.Tests.ps1`), success + failure paths |
