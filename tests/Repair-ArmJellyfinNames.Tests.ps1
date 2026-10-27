@@ -132,6 +132,14 @@ Describe 'Repair-ArmJellyfinNames' {
         @($rows | Where-Object Action -eq 'Skipped').Count | Should -BeGreaterThan 0
     }
 
+    It 'skips when two labelled versions would be renamed to the same target, moving nothing' {
+        $dir = New-MovieDir 'Movie' @{ 'Movie.mkv' = 'raw'; 'A (2026) - 1080p.mkv' = 'one'; 'B (2026) - 1080p.mkv' = 'two' }
+        $rows = @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config)
+        Get-Names $dir | Should -Be @('A (2026) - 1080p.mkv', 'B (2026) - 1080p.mkv', 'Movie.mkv')
+        @($rows | Where-Object Action -eq 'Skipped').Count | Should -Be 1
+        @($rows | Where-Object Action -eq 'Renamed').Count | Should -Be 0
+    }
+
     It '-WhatIf reports WouldMove and WouldRename for several raw mkvs and changes nothing' {
         $dir = New-MovieDir 'Grease (1978)' @{ 'B1_t00.mkv' = ('a' * 50); 'B1_t01.mkv' = ('b' * 500) }
         $rows = @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config -WhatIf)

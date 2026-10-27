@@ -343,6 +343,11 @@ function Repair-ArmJellyfinNames {
             $rows.Add((New-RepairRow $folder ($labelClash.File.Name -join ', ') 'Skipped' $null "target name already exists: $($labelClash.Target -join ', ')"))
             continue
         }
+        $labelDup = @($labelRenames | Group-Object -Property Target | Where-Object { $_.Count -gt 1 })
+        if ($labelDup.Count -gt 0) {
+            $rows.Add((New-RepairRow $folder (($labelDup.Group.File.Name) -join ', ') 'Skipped' $null "several files map to the same target name: $($labelDup.Name -join ', ')"))
+            continue
+        }
         $applyLabelRenames = {
             foreach ($lr in $labelRenames) {
                 if ($PSCmdlet.ShouldProcess($lr.File.FullName, "Rename to '$($lr.Target)'")) {
