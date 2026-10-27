@@ -140,6 +140,14 @@ Describe 'Repair-ArmJellyfinNames' {
         @($rows | Where-Object Action -eq 'Renamed').Count | Should -Be 0
     }
 
+    It '-WhatIf reports WouldRename for a mis-stemmed labelled version and changes nothing' {
+        $dir = New-MovieDir 'Movie' @{ 'Movie.mkv' = 'raw'; 'Movie (2026) - 1080p.mkv' = 'one' }
+        $rows = @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config -WhatIf)
+        Get-Names $dir | Should -Be @('Movie (2026) - 1080p.mkv', 'Movie.mkv')
+        @($rows | Where-Object Action -eq 'WouldRename').Count | Should -Be 1
+        @($rows | Where-Object Action -eq 'WouldRename').NewName | Should -Be 'Movie - 1080p.mkv'
+    }
+
     It '-WhatIf reports WouldMove and WouldRename for several raw mkvs and changes nothing' {
         $dir = New-MovieDir 'Grease (1978)' @{ 'B1_t00.mkv' = ('a' * 50); 'B1_t01.mkv' = ('b' * 500) }
         $rows = @(Repair-ArmJellyfinNames -Path $script:Root -Config $script:Config -WhatIf)
