@@ -14,3 +14,6 @@ tests/browser/playwright-report/
 # Upscale benchmark harness (tools/bench, issue #33): local sample manifest and outputs
 tools/bench/samples.local.psd1
 tools/bench/out/
+
+# graphify knowledge graph output
+graphify-out/
